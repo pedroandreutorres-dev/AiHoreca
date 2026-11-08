@@ -243,9 +243,9 @@ Nuestra arquitectura resuelve este cuello de botella combinando:
 
 ---
 
-## 5. Despliegue Web (Streamlit Cloud) y Telemetría Relacional en Hugging Face (`despliegue_web_y_telemetria_hf.md`)
+## 5. Despliegue Web y Telemetría Relacional (`despliegue_web_y_telemetria_hf.md`)
 
-El diseño de publicación a coste 0 € como Demo Web en **Streamlit Community Cloud (GitHub)** y el subsistema de observabilidad relacional hacia el **Dataset privado en Hugging Face Hub (`Andregon79/aihoreca-logs`)** se detallan en [`despliegue_web_y_telemetria_hf.md`](file:///d:/Proyectos/AiHoreca/despliegue_web_y_telemetria_hf.md):
+El diseño de publicación como Demo Web en **Streamlit Community Cloud** y el subsistema de observabilidad relacional (local en `data/logs/` por defecto y sincronizable opcionalmente con un Dataset privado propio en Hugging Face Hub) se detallan en [`despliegue_web_y_telemetria_hf.md`](file:///d:/Proyectos/AiHoreca/despliegue_web_y_telemetria_hf.md):
 
 1. **Aislamiento por Visitante en UI (`st.session_state["visitor_session_ids"]`):** Cada navegador visualiza únicamente sus propias sesiones en la barra lateral, sin exponer sesiones ajenas ni paneles de administración en el frontend.
 2. **Modelo Relacional de Logs (`session_id` + `turn_index`):**

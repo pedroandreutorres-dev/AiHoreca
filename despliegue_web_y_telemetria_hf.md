@@ -1,6 +1,6 @@
 # Plan de Publicación Web (Streamlit Cloud) y Telemetría Relacional en Hugging Face (`AiHoreca`)
 
-Este documento especifica la arquitectura de despliegue a coste 0 € como **Demo Web en Streamlit Community Cloud (conectada a GitHub)** y el sistema de **persistencia y telemetría relacional de conversaciones** sincronizado automáticamente con el **Repositorio de Dataset Privado en Hugging Face Hub (`Andregon79/aihoreca-logs`)**.
+Este documento especifica la arquitectura de despliegue a coste 0 € como **Demo Web en Streamlit Community Cloud (conectada a GitHub)** y el sistema de **persistencia y telemetría relacional de conversaciones** sincronizado automáticamente con el **Repositorio de Dataset Privado en Hugging Face Hub (`tu-usuario/tu-dataset-logs`)**.
 
 ---
 
@@ -16,7 +16,7 @@ Este documento especifica la arquitectura de despliegue a coste 0 € como **Dem
 4. **Separación Relacional entre Lectura Cualitativa (`.txt`) y Explotación Analítica (`.csv` / `.db`):**
    - Un archivo de texto plano limpio (`conversaciones.txt`) agrupado por `session_id` para lectura humana de principio a fin, vinculado mediante la clave compuesta `(session_id, turn_index)` con la tabla estructurada (`turnos_metricas.csv` y tabla `session_turns` en `aihoreca_sessions.db`).
 5. **Cero Reinicios en Streamlit Cloud y Control de Rate-Limits en Hugging Face Hub:**
-   - Como el código vive en GitHub (desplegado en Streamlit Community Cloud) pero los logs se envían por API al Dataset privado de Hugging Face (`Andregon79/aihoreca-logs`), **el repositorio de GitHub no sufre commits en caliente y Streamlit Cloud jamás reinicia la aplicación mientras los usuarios conversan**.
+   - Como el código vive en GitHub (desplegado en Streamlit Community Cloud) pero los logs se envían por API al Dataset privado de Hugging Face (`tu-usuario/tu-dataset-logs`), **el repositorio de GitHub no sufre commits en caliente y Streamlit Cloud jamás reinicia la aplicación mientras los usuarios conversan**.
    - Además, la sincronización hacia Hugging Face utiliza una ventana de amortiguación (*debounce* de 15 s) para evitar bloqueos `429 Too Many Requests` y restaura automáticamente `aihoreca_sessions.db` al arrancar el contenedor (`restore_on_startup`).
 
 ---
@@ -30,7 +30,7 @@ Este documento especifica la arquitectura de despliegue a coste 0 € como **Dem
 │    Incluye `data/qdrant_storage/` (~20,5 MB) pre-calculado en el repo Git.   │
 │                                                                              │
 │  [1] Al arrancar el contenedor (`restore_on_startup`):                       │
-│      • Descarga `aihoreca_sessions.db` desde `Andregon79/aihoreca-logs`      │
+│      • Descarga `aihoreca_sessions.db` desde `tu-usuario/tu-dataset-logs`      │
 │        si existe, evitando perder el histórico cuando el contenedor despierta│
 │      • Regenera `data/logs/conversaciones.txt` y `turnos_metricas.csv`.      │
 │                                                                              │
@@ -51,7 +51,7 @@ Este documento especifica la arquitectura de despliegue a coste 0 € como **Dem
                                        ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ 2. ALMACÉN PERSISTENTE DE LOGS: HUGGING FACE DATASET (100% Privado y Gratis) │
-│    `https://huggingface.co/datasets/Andregon79/aihoreca-logs`                │
+│    `https://huggingface.co/datasets/tu-usuario/tu-dataset-logs`                │
 │                                                                              │
 │  ├── conversaciones.txt      (Diálogos íntegros en texto plano por sesión)   │
 │  ├── turnos_metricas.csv     (Tabla relacional con session_id + turn_index)  │
@@ -160,7 +160,7 @@ Contiene las tablas `sessions` y `session_turns` completas, incluyendo las colum
 ## 5. Pasos para Publicar en Streamlit Community Cloud + Hugging Face Dataset
 
 1. **Dataset Privado para Logs en Hugging Face (Completado):**
-   - Repositorio privado creado en `https://huggingface.co/datasets/Andregon79/aihoreca-logs`.
+   - Repositorio privado creado en `https://huggingface.co/datasets/tu-usuario/tu-dataset-logs`.
 2. **Crear un Access Token con permiso de escritura en Hugging Face:**
    - En `https://huggingface.co/settings/tokens`, crear un token de tipo `Write` (`hf_...`).
 3. **Subir el código del proyecto a un repositorio en GitHub:**
@@ -173,6 +173,6 @@ Contiene las tablas `sessions` y `session_turns` completas, incluyendo las colum
      GOOGLE_API_KEY = "AIza..."
      COHERE_API_KEY = "..."
      HF_LOG_TOKEN = "hf_..."
-     HF_LOG_DATASET_REPO = "Andregon79/aihoreca-logs"
+     HF_LOG_DATASET_REPO = "tu-usuario/tu-dataset-logs"
      ```
    - Pulsar **Deploy**.

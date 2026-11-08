@@ -1,9 +1,9 @@
-"""Sincronizador Asíncrono de Telemetría hacia Hugging Face Dataset Privado (`src/app/telemetry_sync.py`).
+"""Sincronizador Asíncrono de Telemetría hacia Almacenamiento Remoto en Hugging Face Hub (`src/app/telemetry_sync.py`).
 
-Resuelve dos problemas de ingeniería en despliegues sobre contenedores efímeros (Streamlit Community Cloud):
+Resuelve dos problemas de ingeniería en despliegues sobre contenedores efímeros (ej. Streamlit Community Cloud):
 1. Restauración al Arranque (`restore_from_hf_if_needed`):
    - Cuando el contenedor despierta o se redespliega con una base SQLite local vacía, descarga automáticamente
-     `aihoreca_sessions.db` desde el Dataset privado (`Andregon79/aihoreca-logs`), preservando todo el histórico acumulado.
+     `aihoreca_sessions.db` desde el repositorio Dataset privado configurado en `HF_LOG_DATASET_REPO`, preservando todo el histórico acumulado.
 2. Subida Asíncrona con Ventana de Amortiguación (`trigger_async_sync` con Debounce):
    - Agrupa actualizaciones cercanas (ej. varios turnos seguidos o un voto 👍 segundos después de la respuesta)
      en un único commit Git hacia Hugging Face Hub, evitando bloqueos HTTP `429 Too Many Requests` y sin añadir

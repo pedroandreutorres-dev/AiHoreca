@@ -22,8 +22,7 @@ TURNS_CSV_PATH = LOGS_DIR / "turnos_metricas.csv"
 BOUNDARIES_CACHE_PATH = PROCESSED_DATA_DIR / "boundaries_cache.json"
 EVALUATION_RESULTS_PATH = PROCESSED_DATA_DIR / "evaluation_results.json"
 
-# Parámetros de Sincronización Remota de Telemetría hacia Hugging Face Dataset Privado
-HF_DEFAULT_DATASET_REPO = "Andregon79/aihoreca-logs"
+# Parámetros de Sincronización Remota de Telemetría (Opcional via variables de entorno)
 HF_SYNC_DEBOUNCE_SECONDS = float(os.getenv("HF_SYNC_DEBOUNCE_SECONDS", "15.0"))
 
 GEMINI_LITE_MODEL = "gemini-3.1-flash-lite"
@@ -71,11 +70,16 @@ def load_environment() -> None:
 
 
 def get_hf_telemetry_config() -> tuple[Optional[str], Optional[str]]:
-    """Devuelve (token, dataset_repo) para sincronización de logs en Hugging Face Hub si están configurados."""
+    """Devuelve (token, dataset_repo) para sincronización remota de logs si ambos están configurados en el entorno."""
     load_environment()
     token = (os.getenv("HF_LOG_TOKEN") or os.getenv("HF_TOKEN") or "").strip()
-    repo = (os.getenv("HF_LOG_DATASET_REPO") or HF_DEFAULT_DATASET_REPO).strip()
-    if not token or token == "hf_...":
+    repo = (os.getenv("HF_LOG_DATASET_REPO") or "").strip()
+    if (
+        not token
+        or token == "hf_..."
+        or not repo
+        or "tu-usuario" in repo
+    ):
         return None, None
     return token, repo
 

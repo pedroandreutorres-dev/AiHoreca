@@ -38,8 +38,8 @@ Thumbs.db
 
 # ==============================================================================
 # 4. Datos de Sesiones de Usuario, Logs de Telemetría y Bloqueos Locales
-#    (Las conversaciones y métricas se sincronizan con el Dataset privado de HF:
-#     Andregon79/aihoreca-logs, NUNCA con el repositorio de código en GitHub)
+#    (Los logs y sesiones se almacenan localmente o en el backend remoto propio
+#     configurado por cada usuario, NUNCA en el repositorio de código en GitHub)
 # ==============================================================================
 data/sessions/
 data/logs/
