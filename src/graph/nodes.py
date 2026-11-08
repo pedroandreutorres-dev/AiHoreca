@@ -56,93 +56,31 @@ T = TypeVar("T", bound=BaseModel)
 _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 _COOLDOWN_SECONDS = 90.0
 
-# Mapa geográfico general de provincias españolas y sus alias autonómicos/locales (agnóstico al MVP)
-SPANISH_PROVINCE_ALIASES: dict[str, str] = {
-    "a coruna": "a_coruna",
-    "la coruna": "a_coruna",
-    "coruna": "a_coruna",
-    "alava": "alava",
-    "araba": "alava",
-    "vitoria": "alava",
-    "albacete": "albacete",
-    "alicante": "alicante",
-    "alacant": "alicante",
-    "almeria": "almeria",
-    "asturias": "asturias",
-    "oviedo": "asturias",
-    "gijon": "asturias",
-    "avila": "avila",
-    "badajoz": "badajoz",
-    "baleares": "baleares",
-    "illes balears": "baleares",
-    "mallorca": "baleares",
-    "ibiza": "baleares",
-    "menorca": "baleares",
-    "barcelona": "barcelona",
-    "bcn": "barcelona",
-    "burgos": "burgos",
-    "caceres": "caceres",
-    "cadiz": "cadiz",
-    "cantabria": "cantabria",
-    "santander": "cantabria",
-    "castellon": "castellon",
-    "castello": "castellon",
-    "ciudad real": "ciudad_real",
-    "cordoba": "cordoba",
-    "cuenca": "cuenca",
-    "girona": "girona",
-    "gerona": "girona",
-    "granada": "granada",
-    "guadalajara": "guadalajara",
-    "guipuzcoa": "guipuzcoa",
-    "gipuzkoa": "guipuzcoa",
-    "san sebastian": "guipuzcoa",
-    "donostia": "guipuzcoa",
-    "huelva": "huelva",
-    "huesca": "huesca",
-    "jaen": "jaen",
-    "la rioja": "la_rioja",
-    "logrono": "la_rioja",
-    "las palmas": "las_palmas",
-    "gran canaria": "las_palmas",
-    "leon": "leon",
-    "ponferrada": "leon",
-    "lleida": "lleida",
-    "lerida": "lleida",
-    "lugo": "lugo",
-    "madrid": "madrid",
-    "malaga": "malaga",
-    "marbella": "malaga",
-    "murcia": "murcia",
-    "navarra": "navarra",
-    "pamplona": "navarra",
-    "ourense": "ourense",
-    "orense": "ourense",
-    "palencia": "palencia",
-    "pontevedra": "pontevedra",
-    "vigo": "pontevedra",
-    "salamanca": "salamanca",
-    "santa cruz de tenerife": "santa_cruz_tenerife",
-    "tenerife": "santa_cruz_tenerife",
-    "segovia": "segovia",
-    "sevilla": "sevilla",
-    "soria": "soria",
-    "tarragona": "tarragona",
-    "teruel": "teruel",
-    "toledo": "toledo",
-    "valencia": "valencia",
-    "valladolid": "valladolid",
-    "vizcaya": "vizcaya",
-    "bizkaia": "vizcaya",
-    "bilbao": "vizcaya",
-    "zamora": "zamora",
-    "zaragoza": "zaragoza",
-    "catalunya": "catalunya",
-    "cataluna": "catalunya",
-}
-
 AUTONOMOUS_COMMUNITY_EXPANSION: dict[str, list[str]] = {
     "catalunya": ["barcelona", "girona", "tarragona", "lleida", "catalunya"],
+}
+
+# Normalización canónica de variantes ortográficas/cooficiales de nombres de provincia devueltos por el LLM
+_CANONICAL_PROVINCE_MAP: dict[str, str] = {
+    "la coruna": "a_coruna",
+    "a coruna": "a_coruna",
+    "coruna": "a_coruna",
+    "araba": "alava",
+    "alacant": "alicante",
+    "illes balears": "baleares",
+    "bcn": "barcelona",
+    "castello": "castellon",
+    "ciudad real": "ciudad_real",
+    "gerona": "girona",
+    "gipuzkoa": "guipuzcoa",
+    "la rioja": "la_rioja",
+    "las palmas": "las_palmas",
+    "lerida": "lleida",
+    "comunidad de madrid": "madrid",
+    "orense": "ourense",
+    "santa cruz de tenerife": "santa_cruz_tenerife",
+    "bizkaia": "vizcaya",
+    "cataluna": "catalunya",
 }
 
 
@@ -150,6 +88,19 @@ def _normalize_text(text: str) -> str:
     """Elimina tildes y pasa a minúsculas para comparaciones deterministas."""
     nfkd = unicodedata.normalize("NFKD", text.lower())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _canonicalize_llm_province(raw_prov: Optional[str]) -> Optional[str]:
+    """Normaliza el nombre de provincia devuelto por el LLM al identificador canónico de Qdrant."""
+    if not raw_prov:
+        return None
+    cleaned = _normalize_text(raw_prov).strip()
+    cleaned = re.sub(r"^(?:provincia\s+de\s+|comunidad\s+de\s+)", "", cleaned).strip()
+    if not cleaned or cleaned in ("null", "none", "n/a", "ninguna", "estatal"):
+        return None
+    if cleaned in _CANONICAL_PROVINCE_MAP:
+        return _CANONICAL_PROVINCE_MAP[cleaned]
+    return cleaned.replace(" ", "_")
 
 
 def get_indexed_territories() -> set[str]:
@@ -176,16 +127,6 @@ def get_indexed_territories() -> set[str]:
             else:
                 indexed.add(stem)
     return indexed
-
-
-def detect_province_deterministic(text: str) -> Optional[str]:
-    """Detecta de forma determinista si el texto menciona alguna provincia o ciudad española."""
-    norm = _normalize_text(text)
-    for alias in sorted(SPANISH_PROVINCE_ALIASES.keys(), key=len, reverse=True):
-        pattern = rf"\b{re.escape(alias)}\b"
-        if re.search(pattern, norm):
-            return SPANISH_PROVINCE_ALIASES[alias]
-    return None
 
 
 def _call_structured_llm(
@@ -268,9 +209,6 @@ class AiHorecaGraphNodes:
         history = state.get("conversation_history") or []
         slots = SessionContextSlots.model_validate(state.get("session_slots") or {})
 
-        # REGLA CRÍTICA DE INGENIERÍA: Evaluamos primero EXCLUSIVAMENTE el turno actual (`query`)
-        # para evitar contaminar el turno actual con provincias mencionadas en turnos antiguos.
-        det_province_current = detect_province_deterministic(query)
         indexed_list_str = ", ".join(sorted(self.indexed_territories))
 
         system_instruction = (
@@ -278,31 +216,37 @@ class AiHorecaGraphNodes:
             "Tu misión es ejecutar simultáneamente 4 tareas de alta precisión:\n"
             "1. RESOLUCIÓN DE CORREFERENCIA Y PROGRESIÓN CONVERSACIONAL (SIN RE-PREGUNTAR LO YA RESUELTO):\n"
             "   - CASO A (Desbloqueo de aclaración pendiente): Si en `SLOTS ACTIVOS DE LA SESIÓN` existe `pending_clarification_query` (una consulta previa que quedó "
-            "detenida esperando provincia) y el mensaje actual del usuario aporta la provincia (ej. 'Trabajo en Madrid', 'En Barcelona'), "
+            "detenida esperando provincia, puesto de trabajo o ambos) y el mensaje actual del usuario aporta el dato que faltaba (ej. 'Trabajo en Madrid', 'Es camarera', 'De cocinero en León'), "
             "clasifica como 'HOSPITALITY_CORE' (o 'UNSUPPORTED_PROVINCE' si la provincia no está soportada) y fusiona la pregunta pendiente "
-            "con la provincia en `consulta_autocontenida_resuelta`.\n"
+            "con los datos conocidos de la sesión y el nuevo dato aportado en `consulta_autocontenida_resuelta`.\n"
             "   - CASO B (Repregunta o seguimiento en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta o seguimiento "
-            "(ej. '¿Y cómo sé a qué clase corresponde?', '¿Cómo puedo saber la categoría del bar?', '¿Y para el cocinero a media jornada?'), "
+            "(ej. '¿Y cómo sé a qué clase corresponde?', '¿Cómo puedo saber la categoría del bar?', '¿Y cuántos días le tocan por mudanza?'), "
             "hereda de `SLOTS ACTIVOS DE LA SESIÓN` y de `VENTANA COMPACTA DE TURNOS RECIENTES` el territorio, puesto(s) y condiciones del caso (como horas de contrato o varios trabajadores), "
             "PERO centra `consulta_autocontenida_resuelta` y `query_busqueda_hibrida` EXCLUSIVAMENTE en responder la nueva duda planteada en el `MENSAJE ACTUAL`. "
-            "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores (ej. si en el Turno 1 preguntó el sueldo y en el Turno 2 pregunta cómo saber la categoría del establecimiento, NO vuelvas a preguntar cuál es el sueldo en `consulta_autocontenida_resuelta`).\n\n"
+            "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores.\n\n"
             "2. GUARDRAIL DE DOMINIO:\n"
             "   - Clasifica como 'OUT_OF_SCOPE' cualquier consulta ajena al derecho laboral de hostelería/restauración/alojamiento/turismo "
             "(ej. accidentes de tráfico, herencias, divorcios, convenios del metal/construcción/comercio general, programación, medicina, etc.).\n"
             f"   - Clasifica como 'UNSUPPORTED_PROVINCE' si la consulta es de hostelería pero el territorio aplicable es una provincia española "
             f"NO incluida en los territorios indexados actuales ({indexed_list_str}).\n"
-            "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida.\n\n"
-            "3. GATEKEEPER TERRITORIAL CON PRECEDENCIA TEMPORAL:\n"
-            "   - `provincia_detectada_en_turno_actual`: Pon aquí ÚNICAMENTE la provincia si el usuario la menciona en el `MENSAJE ACTUAL`, o null si no menciona ninguna en este turno.\n"
-            "   - Marca `requiere_convenio_provincial=True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
+            "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida (incluyendo respuestas breves que indican un puesto como 'Es camarera' o una provincia cuando había una consulta pendiente).\n\n"
+            "3. GATEKEEPER CONTEXTUAL GENERALISTA (PROVINCIA Y PUESTO/CATEGORÍA):\n"
+            "   - `provincia_detectada_en_turno_actual`: Identifica por contexto semántico la **provincia española donde se ubica físicamente el centro de trabajo** mencionado en el `MENSAJE ACTUAL`, en minúsculas y sin tildes (ej. 'madrid', 'leon', 'barcelona', 'girona', 'tarragona', 'lleida', 'catalunya', 'sevilla', 'valencia').\n"
+            "     * Si el usuario menciona un municipio, ciudad o comarca (incluso con erratas tipográficas, ej. 'Ponferrada' o 'Ponferada' -> 'leon', 'Móstoles' -> 'madrid', 'Sitges' -> 'barcelona'), devuelve su provincia oficial.\n"
+            "     * **REGLA CRÍTICA DE DESAMBIGUACIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de bares, hoteles o calles que contengan topónimos (ej. en 'trabaja en el Café Madrid de Ponferrada', 'Café Madrid' es el nombre comercial del bar y la provincia real es 'leon'). Si tienes dudas de si un nombre propio es el local o la ciudad, o si no menciona ubicación en este turno, devuelve null.\n"
+            "   - `requiere_convenio_provincial`: Marca `True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
             "nocturnidad, horas extra, vacaciones, jornada anual, descansos, licencias/permisos retribuidos, bajas médicas (complemento IT), "
-            "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo.\n\n"
-            "4. TRADUCTOR DE OFICIOS COLOQUIALES AL VI ALEH (Acuerdo Laboral Estatal de Hostelería):\n"
-            "   - Mapea cualquier término coloquial (del turno actual o heredado de los slots de la sesión) a su denominación técnica en el VI ALEH:\n"
+            "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo.\n"
+            "   - `requiere_puesto_o_categoria`: Marca `True` cuando para responder la pregunta con exactitud sea imprescindible saber el puesto o categoría profesional del trabajador "
+            "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extra, nivel salarial o periodo de prueba según grupo profesional). "
+            "Marca `False` cuando la pregunta sea general del convenio o estatuto y aplique igual a todos los puestos (ej. cuántos días de vacaciones anuales corresponden, cuántas pagas extras hay al año, jornada máxima anual o días de permiso por mudanza/matrimonio).\n\n"
+            "4. TRADUCTOR DE OFICIOS COLOQUIALES AL VI ALEH (PROHIBIDO ADIVINAR EL PUESTO POR EL TIPO DE NEGOCIO):\n"
+            "   - **REGLA ESTRICTA**: Si el usuario solo menciona el tipo de establecimiento ('trabaja en un bar', 'en un restaurante', 'en un hotel', 'en una cafetería') pero **NO especifica qué puesto u oficio desempeña** (ni consta en `SLOTS ACTIVOS DE LA SESIÓN`), DEBES dejar `oficio_coloquial_detectado = null` y `categoria_profesional_aleh = null`. Jamás des por hecho ni inventes un puesto.\n"
+            "   - Cuando el usuario SÍ indique un puesto u oficio (en el turno actual o heredado de los slots de la sesión), mapéalo a su denominación técnica en el VI ALEH:\n"
             "     * 'friegaplatos' / 'office' / 'pica' -> 'Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)'\n"
             "     * 'pinche' / 'ayudante de cocina' -> 'Ayudante/a de cocina / Auxiliar de cocina (Área Funcional 2ª Cocina y Economato, Grupo Profesional II/III)'\n"
             "     * 'cocinero' / 'chef' -> 'Jefe/a de cocina, Segundo/a Jefe/a de cocina, Jefe/a de partida o Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupos Profesionales I y II)'\n"
-            "     * 'camarero' / 'chico de barra' / 'mesero' -> 'Camarero/a, Sumiller, Barman o Ayudante/a de camarero/a (Área Funcional 3ª Restauración, Grupo Profesional II/III)'\n"
+            "     * 'camarero' / 'camarera' / 'chico de barra' / 'mesero' -> 'Camarero/a, Sumiller, Barman o Ayudante/a de camarero/a (Área Funcional 3ª Restauración, Grupo Profesional II/III)'\n"
             "     * 'rider' / 'repartidor' / 'delivery' -> 'Repartidor/a de comida a domicilio (Área Funcional 3ª Restauración / Disposición Adicional ALEH y Convenio Provincial)'\n"
             "     * 'camarera de pisos' / 'kelly' / 'limpiadora de habitaciones' -> 'Camarero/a de pisos / Gobernante/a / Auxiliar de pisos y limpieza (Área Funcional 4ª Pisos y Limpieza, Grupos Profesionales I/II/III)'\n"
             "     * 'recepcionista' / 'botones' / 'conserje' -> 'Recepcionista / Conserje / Auxiliar de recepción y conserjería (Área Funcional 1ª Recepción, Conserjería, Relaciones Públicas, Administración y Gestión)'\n"
@@ -315,7 +259,6 @@ class AiHorecaGraphNodes:
             f"SLOTS ACTIVOS DE LA SESIÓN (WORKING MEMORY): {json.dumps(slots.model_dump(), ensure_ascii=False)}\n"
             f"VENTANA COMPACTA DE TURNOS RECIENTES: {json.dumps(history, ensure_ascii=False)}\n"
             f"MENSAJE ACTUAL DEL USUARIO: {query}\n"
-            f"PROVINCIA DETECTADA DETERMINÍSTICAMENTE EN MENSAJE ACTUAL: {det_province_current or 'Ninguna'}\n"
             f"TERRITORIOS SOPORTADOS EN ÍNDICE QDRANT: {indexed_list_str}"
         )
 
@@ -327,18 +270,10 @@ class AiHorecaGraphNodes:
             temperature=0.0,
         )
 
-        # 1. Resolución de Provincia con Precedencia Temporal Estricta:
-        #    Prioridad 1: Provincia mencionada en el mensaje actual (determinista o LLM).
+        # 1. Resolución de Provincia con Precedencia Temporal Estricta (100% decidida por el análisis semántico del LLM):
+        #    Prioridad 1: Provincia detectada semánticamente en el mensaje actual.
         #    Prioridad 2: Slot `active_territorio` heredado de la sesión (solo si no hubo mención en el turno actual).
-        llm_prov_current = (
-            _normalize_text(analysis.provincia_detectada_en_turno_actual)
-            if analysis.provincia_detectada_en_turno_actual
-            else None
-        )
-        if llm_prov_current and llm_prov_current in SPANISH_PROVINCE_ALIASES:
-            llm_prov_current = SPANISH_PROVINCE_ALIASES[llm_prov_current]
-
-        current_turn_prov = det_province_current or llm_prov_current
+        current_turn_prov = _canonicalize_llm_province(analysis.provincia_detectada_en_turno_actual)
         raw_prov = current_turn_prov if current_turn_prov is not None else slots.active_territorio
 
         intent = analysis.intent
@@ -365,16 +300,26 @@ class AiHorecaGraphNodes:
 
         # 3. Consulta autocontenida resuelta (fusión de pending_clarification_query o correferencia)
         effective_query = (analysis.consulta_autocontenida_resuelta or query).strip()
-        if slots.pending_clarification_query and current_turn_prov and len(query.split()) <= 8:
-            # Garantía determinista: si el usuario solo respondió "En Madrid", aseguramos que la pregunta original no se pierda
+        if slots.pending_clarification_query and len(query.split()) <= 10:
+            # Garantía determinista: si había una pregunta bloqueada y el usuario respondió con un dato corto
+            # (ej. "En Madrid" o "De camarera"), aseguramos que la pregunta original no se pierda
             if slots.pending_clarification_query.lower()[:20] not in effective_query.lower():
-                effective_query = f"{slots.pending_clarification_query} (Provincia: {current_turn_prov})"
+                context_parts: list[str] = []
+                if territorio_norm:
+                    context_parts.append(f"Provincia: {territorio_norm}")
+                if oficio_resuelto:
+                    context_parts.append(f"Puesto: {oficio_resuelto}")
+                suffix = f" ({', '.join(context_parts)})" if context_parts else f" ({query})"
+                effective_query = f"{slots.pending_clarification_query}{suffix}"
 
-        # 4. Decisión determinista de enrutamiento (Aristas condicionales)
+        # 4. Decisión determinista de enrutamiento (Gatekeeper de Provincia y Puesto/Categoría)
+        missing_prov = bool(analysis.requiere_convenio_provincial and not territorio_norm)
+        missing_role = bool(analysis.requiere_puesto_o_categoria and not cat_aleh_resuelta)
+
         if intent in ("OUT_OF_SCOPE", "UNSUPPORTED_PROVINCE"):
             datos_completos = False
             route_decision: RouteDecision = "block_out_of_scope"
-        elif analysis.requiere_convenio_provincial and not territorio_norm:
+        elif missing_prov or missing_role:
             datos_completos = False
             route_decision = "ask_clarification"
         else:
@@ -394,6 +339,7 @@ class AiHorecaGraphNodes:
             "provincia_detectada": raw_prov,
             "territorio_normalizado": territorio_norm,
             "requiere_convenio_provincial": analysis.requiere_convenio_provincial,
+            "requiere_puesto_o_categoria": analysis.requiere_puesto_o_categoria,
             "datos_completos": datos_completos,
             "route_decision": route_decision,
             "oficio_coloquial_detectado": oficio_resuelto,
@@ -450,11 +396,17 @@ class AiHorecaGraphNodes:
         }
 
     def ask_clarification_node(self, state: LegalGraphState) -> LegalGraphState:
-        """Nodo de Clarificación HITL (0 tokens extra): solicita la provincia cuando es indispensable para consultar el convenio."""
+        """Nodo de Clarificación HITL (0 tokens extra): solicita la provincia, el puesto de trabajo o ambos cuando son indispensables."""
         t0 = time.perf_counter()
+        terr = state.get("territorio_normalizado")
         oficio = state.get("oficio_coloquial_detectado")
         cat_aleh = state.get("categoria_profesional_aleh")
         area_aleh = state.get("area_funcional_aleh")
+        req_prov = bool(state.get("requiere_convenio_provincial", True))
+        req_role = bool(state.get("requiere_puesto_o_categoria", False))
+
+        missing_prov = req_prov and not terr
+        missing_role = req_role and not cat_aleh
 
         aleh_note = ""
         if cat_aleh or area_aleh:
@@ -464,20 +416,49 @@ class AiHorecaGraphNodes:
                 f"dentro del **{area_aleh or 'Área Funcional correspondiente del VI ALEH'}**."
             )
 
-        msg = (
-            "### Información Territorial Requerida (Gatekeeper Contextual)\n\n"
-            "Para darte una respuesta jurídicamente exacta y sin inventar cifras, **necesito saber en qué provincia trabajas**.\n\n"
-            "En el sector de hostelería en España:\n"
-            "1. El **Estatuto de los Trabajadores** fija únicamente los mínimos legales estatales.\n"
-            "2. El **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** regula las Áreas Funcionales, Grupos Profesionales y el régimen disciplinario.\n"
-            "3. Sin embargo, **las tablas salariales, pluses (nocturnidad, transporte, manutención), jornada anual, descansos y días de vacaciones/licencias** "
-            "dependen directamente de tu **Convenio Colectivo Provincial o Autonómico**."
-            f"{aleh_note}\n\n"
-            "**¿En cuál de las provincias o territorios soportados prestas servicios?**\n"
-            "- **Madrid** (Comunidad de Madrid)\n"
-            "- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n"
-            "- **León** (Provincia de León)"
-        )
+        if missing_prov and missing_role:
+            msg = (
+                "### Información Requerida para el Cálculo (Provincia y Puesto de Trabajo)\n\n"
+                "Para darte una respuesta jurídicamente exacta y sin asumir datos que alterarían las cifras, **necesito conocer dos datos básicos**:\n\n"
+                "1. **¿En qué provincia o localidad está ubicado el centro de trabajo?** (Cada provincia tiene su propio Convenio Colectivo de Hostelería con tablas salariales, número de pagas extras y jornada anual propios).\n"
+                "2. **¿Qué puesto u oficio desempeña dentro del establecimiento?** (Por ejemplo: *camarero/a, ayudante de camarero/a, cocinero/a, ayudante de cocina/pinche, friegaplatos/limpieza, recepcionista...*, ya que el salario base varía según el Grupo Profesional y Nivel salarial).\n\n"
+                "**Territorios disponibles actualmente en el índice:**\n"
+                "- **Madrid** (Comunidad de Madrid)\n"
+                "- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n"
+                "- **León** (Provincia de León)"
+            )
+            warn_msg = "Gatekeeper contextual detuvo la consulta por falta de provincia y puesto de trabajo."
+        elif missing_role and not missing_prov:
+            terr_pretty = (terr or "").replace("_", " ").title()
+            msg = (
+                f"### Puesto de Trabajo Requerido (Convenio de Hostelería — {terr_pretty})\n\n"
+                f"He registrado que el centro de trabajo se encuentra en la provincia/territorio de **{terr_pretty}**.\n\n"
+                "Sin embargo, para calcular el **sueldo exacto o las condiciones retributivas** sin adivinar datos, "
+                "**necesito saber qué puesto u oficio desempeña** dentro del establecimiento.\n\n"
+                "En un establecimiento de hostelería coexisten distintos Grupos Profesionales y niveles salariales según la función:\n"
+                "- **Sala / Barra:** Camarero/a (Grupo II), Ayudante de camarero/a (Grupo III), Barman/Sumiller.\n"
+                "- **Cocina:** Jefe/a de cocina (Grupo I), Cocinero/a (Grupo II), Ayudante de cocina / Pinche (Grupo III).\n"
+                "- **Limpieza / Servicios auxiliares:** Auxiliar de limpieza / Friegaplatos (Grupo III), Camarero/a de pisos.\n\n"
+                "**¿Cuál es su puesto o categoría profesional?** *(Respóndeme directamente con el puesto y calcularé al instante su tabla salarial aplicable en "
+                f"{terr_pretty}).*"
+            )
+            warn_msg = f"Gatekeeper contextual detuvo la consulta en {terr_pretty} por falta de puesto/categoría profesional."
+        else:
+            msg = (
+                "### Información Territorial Requerida (Gatekeeper Contextual)\n\n"
+                "Para darte una respuesta jurídicamente exacta y sin inventar cifras, **necesito saber en qué provincia trabajas**.\n\n"
+                "En el sector de hostelería en España:\n"
+                "1. El **Estatuto de los Trabajadores** fija únicamente los mínimos legales estatales.\n"
+                "2. El **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** regula las Áreas Funcionales, Grupos Profesionales y el régimen disciplinario.\n"
+                "3. Sin embargo, **las tablas salariales, pluses (nocturnidad, transporte, manutención), jornada anual, descansos y días de vacaciones/licencias** "
+                "dependen directamente de tu **Convenio Colectivo Provincial o Autonómico**."
+                f"{aleh_note}\n\n"
+                "**¿En cuál de las provincias o territorios soportados prestas servicios?**\n"
+                "- **Madrid** (Comunidad de Madrid)\n"
+                "- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n"
+                "- **León** (Provincia de León)"
+            )
+            warn_msg = "Gatekeeper contextual detuvo la consulta por falta de provincia obligatoria."
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         timings = dict(state.get("node_timings_ms") or {})
@@ -491,7 +472,7 @@ class AiHorecaGraphNodes:
                 has_explicit_citations=True,
                 verified_numbers=[],
                 unverified_numbers=[],
-                warnings=["Gatekeeper contextual detuvo la consulta por falta de provincia obligatoria."],
+                warnings=[warn_msg],
             ).model_dump(),
             "node_timings_ms": timings,
         }
@@ -561,7 +542,8 @@ class AiHorecaGraphNodes:
             "Tu comunicación debe ser **natural, clara, directa y práctica**, manteniendo una precisión técnica y jurídica absoluta.\n"
             "Debes responder la consulta del usuario basándote en los FRAGMENTOS NORMATIVOS proporcionados, citando siempre de qué artículo, disposición o anexo/tabla sale cada dato.\n\n"
             "REGLAS INQUEBRANTABLES DE INGENIERÍA JURÍDICA Y CONVERSACIONAL:\n"
-            "1. CONTINUIDAD CONVERSACIONAL Y PROHIBICIÓN DE REPETICIÓN ENTRE TURNOS:\n"
+            "1. CONTINUIDAD CONVERSACIONAL, COHERENCIA TERRITORIAL Y PROHIBICIÓN DE REPETICIÓN ENTRE TURNOS:\n"
+            "   - **PROHIBICIÓN ABSOLUTA DE SUSTITUCIÓN JURISDICCIONAL**: Está terminantemente prohibido aplicar tablas salariales, número de pagas o artículos de un convenio provincial/autonómico distinto al `TERRITORIO APLICABLE` del trabajador. Jamás utilices el convenio de otra provincia 'por analogía' ni ocultes a qué provincia pertenece el convenio citado.\n"
             "   - Revisa `HISTORIAL RECIENTE DE LA CONVERSACIÓN` para mantener todos los detalles del caso ya aportados por el usuario (ej. si tiene contrato de 30 horas, si ha preguntado por uno o varios puestos, localidad, etc.) sin olvidarlos.\n"
             "   - **PROHIBIDO REPETIR EXPLICACIONES O TABLAS DE TURNOS ANTERIORES**: Si en un turno previo ya desglosaste el sueldo base o las horas extras y en el `MENSAJE ACTUAL` el usuario hace una repregunta o duda de seguimiento (ej. '¿Y cómo sé a qué clase corresponde?', '¿Y cuántos días le tocan por mudanza?'), **responde directa y exclusivamente a la nueva pregunta del turno actual**, sin volver a volcar la tabla salarial ni repetir el discurso del turno anterior salvo que el usuario pida recalcularlo.\n"
             "2. ADECUACIÓN DE LA ESTRUCTURA A LA INTENCIÓN DEL TURNO:\n"
@@ -602,6 +584,7 @@ class AiHorecaGraphNodes:
             synthesis=synthesis,
             docs=docs,
             user_query=f"{raw_query} {effective_query}",
+            expected_territorio=provincia,
         )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -636,8 +619,9 @@ class AiHorecaGraphNodes:
         synthesis: LegalSynthesisSchema,
         docs: list[RetrievedDocument],
         user_query: str = "",
+        expected_territorio: Optional[str] = None,
     ) -> AuditReport:
-        """Nodo 5 (Guardrail Determinista de Salida): verifica citas explícitas, cifras literales y cálculos derivados trazables."""
+        """Nodo 5 (Guardrail Determinista de Salida): verifica citas explícitas, coherencia territorial, cifras literales y cálculos derivados."""
         combined_corpus = "\n".join(d.text for d in docs)
         norm_corpus_numbers = {
             cls._normalize_number_token(m.group(0))
@@ -758,6 +742,26 @@ class AiHorecaGraphNodes:
                     unverified.append(raw_num)
 
         warnings: list[str] = []
+        territory_consistent = True
+        if expected_territorio:
+            valid_terrs = {expected_territorio}
+            for comm, provs in AUTONOMOUS_COMMUNITY_EXPANSION.items():
+                if expected_territorio in provs:
+                    valid_terrs.add(comm)
+                    valid_terrs.update(provs)
+            mismatched_terrs = {
+                d.territorio
+                for d in docs
+                if d.capa_normativa == "convenio_provincial"
+                and d.territorio
+                and _normalize_text(d.territorio) not in valid_terrs
+            }
+            if mismatched_terrs:
+                territory_consistent = False
+                warnings.append(
+                    f"Incoherencia territorial detectada: se recuperaron fragmentos de {mismatched_terrs} para una consulta de '{expected_territorio}'."
+                )
+
         if not has_citations:
             warnings.append("La respuesta no contiene citas explícitas a artículos o anexos normativos.")
         if unverified:
@@ -765,7 +769,7 @@ class AiHorecaGraphNodes:
                 f"Se detectaron cifras monetarias/porcentuales no localizadas en los chunks ni en cálculos trazables: {unverified}"
             )
 
-        passed = has_citations and len(unverified) == 0
+        passed = has_citations and len(unverified) == 0 and territory_consistent
         return AuditReport(
             passed=passed,
             has_explicit_citations=has_citations,

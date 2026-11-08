@@ -87,9 +87,13 @@ class QueryAnalysisSchema(BaseModel):
     provincia_detectada_en_turno_actual: Optional[str] = Field(
         default=None,
         description=(
-            "Provincia o comunidad autónoma mencionada EXPLÍCITAMENTE en el mensaje actual del usuario, en minúsculas y sin tildes "
-            "(ej. 'madrid', 'barcelona', 'girona', 'tarragona', 'lleida', 'catalunya', 'leon', 'sevilla', 'valencia'), "
-            "o null si el mensaje actual no menciona ninguna provincia."
+            "Provincia o comunidad autónoma española donde se ubica físicamente el centro de trabajo mencionado en el MENSAJE ACTUAL, "
+            "normalizada en minúsculas y sin tildes (ej. 'madrid', 'barcelona', 'girona', 'tarragona', 'lleida', 'catalunya', 'leon', 'sevilla', 'valencia'). "
+            "Si el usuario menciona un municipio o localidad (incluso con erratas tipográficas, ej. 'Ponferrada' o 'Ponferada' -> 'leon', 'Móstoles' -> 'madrid', 'Sitges' -> 'barcelona'), "
+            "devuelve su provincia oficial. "
+            "REGLA CRÍTICA DE DESAMBIGUACIÓN: Ignora topónimos que formen parte del nombre comercial del establecimiento o de una calle "
+            "(ej. en 'trabaja en el Café Madrid de Ponferrada', 'Café Madrid' es el nombre del local y la provincia real es 'leon'). "
+            "Si tienes dudas de si un nombre es el local o la ubicación geográfica, o si el mensaje actual no menciona ubicación, devuelve null."
         ),
     )
     cambio_de_puesto_en_turno_actual: bool = Field(
@@ -103,16 +107,28 @@ class QueryAnalysisSchema(BaseModel):
             "False SOLO si la consulta se refiere exclusivamente a la estructura general estatal del ALEH VI o del Estatuto de los Trabajadores sin depender de condiciones provinciales."
         )
     )
+    requiere_puesto_o_categoria: bool = Field(
+        default=False,
+        description=(
+            "True si para responder con exactitud la pregunta del usuario es imprescindible conocer el puesto de trabajo o categoría profesional del trabajador "
+            "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extraordinaria, conocer su nivel retributivo, funciones de su puesto o periodo de prueba por grupo). "
+            "False si la consulta es general del convenio o estatuto y aplica por igual sin importar el puesto (ej. cuántos días de vacaciones anuales hay, cuántas pagas extras tiene el convenio, cuál es la jornada máxima anual o días de permiso por mudanza/matrimonio)."
+        ),
+    )
     oficio_coloquial_detectado: Optional[str] = Field(
         default=None,
-        description="Puesto u oficio coloquial aplicable (del mensaje actual o heredado de los slots de la sesión), o null."
+        description=(
+            "Puesto u oficio concreto mencionado por el usuario en el mensaje actual o heredado de los slots de la sesión (ej. 'camarera', 'cocinero', 'pinche', 'friegaplatos', 'recepcionista', 'rider'), o null. "
+            "PROHIBIDO adivinar o asumir un puesto solo porque el usuario mencione el tipo de negocio ('trabaja en un bar', 'en un restaurante', 'en un hotel'); si no especifica qué puesto ocupa, devuelve null."
+        ),
     )
     categoria_profesional_aleh: Optional[str] = Field(
         default=None,
         description=(
             "Denominación oficial de la categoría y Grupo Profesional según el VI Acuerdo Laboral Estatal de Hostelería (ALEH VI) "
             "y los convenios de hostelería (ej. 'Auxiliar de limpieza / Friegaplatos - Grupo Profesional III', "
-            "'Ayudante de cocina - Grupo Profesional III', 'Repartidor/a de comida a domicilio', 'Camarero/a - Grupo Profesional II')."
+            "'Ayudante de cocina - Grupo Profesional III', 'Repartidor/a de comida a domicilio', 'Camarero/a - Grupo Profesional II'), "
+            "o null si el usuario aún no ha indicado el puesto de trabajo."
         ),
     )
     area_funcional_aleh: Optional[str] = Field(
@@ -248,6 +264,7 @@ class LegalGraphState(TypedDict, total=False):
     provincia_detectada: Optional[str]
     territorio_normalizado: Optional[str]
     requiere_convenio_provincial: bool
+    requiere_puesto_o_categoria: bool
     datos_completos: bool
     route_decision: RouteDecision
     oficio_coloquial_detectado: Optional[str]

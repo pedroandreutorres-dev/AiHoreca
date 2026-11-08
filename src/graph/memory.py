@@ -267,6 +267,8 @@ class SessionMemoryStore:
         if route == "ask_clarification":
             # Guardamos la consulta pendiente para fusionarla cuando el usuario indique la provincia
             new_pending = effective_query
+            if terr:
+                new_territorio = terr
             if oficio:
                 new_oficio = oficio
             if cat_aleh:
