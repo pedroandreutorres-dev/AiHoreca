@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -112,14 +113,15 @@ class AiHorecaEngineService:
     def get_instance(cls, code_version: Optional[str] = None) -> AiHorecaEngineService:
         """Devuelve la instancia única del motor y recarga en caliente si los módulos de `src/` cambiaron."""
         ver = code_version or cls.compute_code_version()
-        if cls._instance is None or cls._instance_version != ver:
+        cached_inst = getattr(sys, "_aihoreca_service_instance", None)
+        cached_ver = getattr(sys, "_aihoreca_service_version", "")
+
+        if cached_inst is None or cached_ver != ver:
             with cls._instance_lock:
-                if cls._instance is None or cls._instance_version != ver:
-                    if cls._instance is not None:
-                        try:
-                            cls._instance.close()
-                        except Exception:
-                            pass
+                cached_inst = getattr(sys, "_aihoreca_service_instance", None)
+                cached_ver = getattr(sys, "_aihoreca_service_version", "")
+                if cached_inst is None or cached_ver != ver:
+                    if cached_inst is not None:
                         importlib.reload(src.config)
                         importlib.reload(src.retrieval.vector_store)
                         importlib.reload(src.graph.state)
@@ -127,9 +129,12 @@ class AiHorecaEngineService:
                         importlib.reload(src.graph.nodes)
                         importlib.reload(src.graph.workflow)
                         importlib.reload(src.app.telemetry_sync)
-                    cls._instance = cls()
+                    cached_inst = cls()
+                    setattr(sys, "_aihoreca_service_instance", cached_inst)
+                    setattr(sys, "_aihoreca_service_version", ver)
+                    cls._instance = cached_inst
                     cls._instance_version = ver
-        return cls._instance
+        return cached_inst
 
     def close(self) -> None:
         """Cierra limpiamente la conexión de Qdrant local."""

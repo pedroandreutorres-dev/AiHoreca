@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -52,16 +53,35 @@ class AiHorecaVectorStore:
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name
-        self.qdrant = QdrantClient(path=str(self.storage_dir))
+
+        # Registro global a nivel de proceso (`sys`) para reutilizar la instancia de QdrantLocal
+        # ante recargas en caliente de Streamlit (@st.cache_resource / importlib.reload) sin colisión de portalocker.
+        qdrant_registry: dict[str, QdrantClient] = getattr(sys, "_aihoreca_qdrant_clients", {})
+        setattr(sys, "_aihoreca_qdrant_clients", qdrant_registry)
+        storage_key = str(self.storage_dir.resolve())
+
+        if storage_key in qdrant_registry and qdrant_registry[storage_key] is not None:
+            self.qdrant = qdrant_registry[storage_key]
+        else:
+            self.qdrant = QdrantClient(path=str(self.storage_dir))
+            qdrant_registry[storage_key] = self.qdrant
+
         self.genai_client: genai.Client = get_genai_client()
-        self._sparse_model: Optional[SparseTextEmbedding] = None
+        self._sparse_model: Optional[SparseTextEmbedding] = getattr(
+            sys, "_aihoreca_sparse_model", None
+        )
 
     @property
     def sparse_model(self) -> SparseTextEmbedding:
-        """Inicializa perezosamente en CPU el modelo léxico BM25 de FastEmbed."""
+        """Inicializa perezosamente en CPU el modelo léxico BM25 de FastEmbed y lo conserva en `sys`."""
         if self._sparse_model is None:
-            logger.info("Cargando modelo disperso FastEmbed 'Qdrant/bm25' en CPU...")
-            self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+            cached = getattr(sys, "_aihoreca_sparse_model", None)
+            if cached is not None:
+                self._sparse_model = cached
+            else:
+                logger.info("Cargando modelo disperso FastEmbed 'Qdrant/bm25' en CPU...")
+                self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+                setattr(sys, "_aihoreca_sparse_model", self._sparse_model)
         return self._sparse_model
 
     def ensure_collection(self, recreate: bool = False) -> None:
@@ -235,7 +255,10 @@ class AiHorecaVectorStore:
         return final_count
 
     def close(self) -> None:
-        """Cierra limpiamente el cliente local de Qdrant evitando warnings al finalizar el intérprete."""
+        """Cierra limpiamente el cliente local de Qdrant y limpia el registro de proceso."""
+        qdrant_registry: dict[str, QdrantClient] = getattr(sys, "_aihoreca_qdrant_clients", {})
+        storage_key = str(self.storage_dir.resolve())
+        qdrant_registry.pop(storage_key, None)
         try:
             self.qdrant.close()
         except Exception:
