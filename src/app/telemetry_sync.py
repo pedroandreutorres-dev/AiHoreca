@@ -12,10 +12,13 @@ Resuelve dos problemas de ingeniería en despliegues sobre contenedores efímero
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 from typing import Optional
@@ -52,10 +55,10 @@ class HuggingFaceTelemetrySync:
         """Si la base SQLite local no tiene turnos y existe backup en HF Dataset, lo restaura al arrancar."""
         token, repo_id = get_hf_telemetry_config()
 
-        # Verificar cuántos turnos tiene la base SQLite local actual
+        # Verificar cuántos turnos tiene la base SQLite local actual (cerrando explícitamente la conexión)
         local_turn_count = 0
         try:
-            with sqlite3.connect(str(memory_store.db_path), timeout=10.0) as conn:
+            with closing(sqlite3.connect(str(memory_store.db_path), timeout=10.0)) as conn:
                 row = conn.execute("SELECT COUNT(*) FROM session_turns").fetchone()
                 local_turn_count = int(row[0]) if row else 0
         except Exception:
@@ -74,7 +77,21 @@ class HuggingFaceTelemetrySync:
                 )
                 if downloaded_db and Path(downloaded_db).exists():
                     memory_store.db_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(downloaded_db, memory_store.db_path)
+                    # Limpiar posibles archivos WAL/SHM previos antes de restaurar el archivo SQLite
+                    for suffix in ("-wal", "-shm"):
+                        wal_file = Path(f"{memory_store.db_path}{suffix}")
+                        if wal_file.exists():
+                            try:
+                                wal_file.unlink()
+                            except Exception:
+                                pass
+                    # CRÍTICO: Usar copyfile (no copy2) porque los blobs de la caché de Hugging Face Hub
+                    # tienen permisos 0444 (solo lectura) en Linux, y copy2 copiaba ese bit readonly a SQLite.
+                    shutil.copyfile(downloaded_db, memory_store.db_path)
+                    os.chmod(
+                        memory_store.db_path,
+                        stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH,
+                    )
                     memory_store._init_schema()
                     restored = True
                     self.last_sync_status = f"RESTORED_FROM_HF ({repo_id})"

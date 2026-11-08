@@ -14,15 +14,17 @@ Principios de ingeniería:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import csv
 import json
 import os
 import re
 import sqlite3
+import stat
+from typing import Any, Iterator, Optional
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
 from src.config import CONVERSATIONS_TXT_PATH, LOGS_DIR, SESSIONS_DB_PATH, TURNS_CSV_PATH
 from src.graph.state import LegalGraphState, SessionContextSlots, SessionTurnRecord
@@ -36,12 +38,25 @@ class SessionMemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        if self.db_path.exists() and not os.access(self.db_path, os.W_OK):
+            try:
+                os.chmod(
+                    self.db_path,
+                    stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH,
+                )
+            except Exception:
+                pass
         conn = sqlite3.connect(str(self.db_path), timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
