@@ -1,0 +1,44 @@
+{
+  "aleh_vi_estatal.pdf": {
+    "doc_type": "aleh_estatal",
+    "territorio": "estatal",
+    "start_page": 1,
+    "end_page": 16,
+    "justificacion": "El documento contiene íntegramente la modificación del VI Acuerdo Laboral Estatal de Hostelería (ALEH). Comienza en la página 1 con el título del acuerdo tras la resolución de la Dirección General de Trabajo y finaliza en la página 16 al término del Protocolo de actuación frente a catástrofes y fenómenos meteorológicos adversos."
+  },
+  "convenio_catalunya_bcn.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "catalunya",
+    "start_page": 2,
+    "end_page": 85,
+    "justificacion": "El texto articulado del convenio comienza en la página 2 con el Artículo 1, saltando la resolución administrativa de la página 1. El convenio se extiende hasta la página 85, incluyendo todas las tablas salariales por provincias y años, así como los anexos de definiciones de establecimientos turísticos."
+  },
+  "convenio_catalunya_bcn_correccion_erratas.pdf": {
+    "doc_type": "correccion_erratas",
+    "territorio": "catalunya",
+    "start_page": 1,
+    "end_page": 2,
+    "justificacion": "El documento contiene íntegramente la corrección de erratas de la Resolución EMT/774/2026 relativa al Convenio colectivo interprovincial de hostelería de Cataluña, comenzando con el título en la página 1 y finalizando con la firma de la autoridad laboral en la página 2."
+  },
+  "convenio_leon_texto.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "leon",
+    "start_page": 42,
+    "end_page": 76,
+    "justificacion": "El texto articulado del convenio comienza en la página 42 con el Artículo 1, tras la resolución administrativa y el índice de artículos. El documento finaliza en la página 76 al concluir las tablas salariales del año 2025, justo antes de un anuncio del Ministerio de Transportes."
+  },
+  "convenio_madrid.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "madrid",
+    "start_page": 2,
+    "end_page": 57,
+    "justificacion": "El texto articulado del convenio comienza en la página 2 con el Título I y el Artículo 1, saltando la resolución administrativa de la página 1. El convenio se extiende hasta la página 57, donde finalizan las tablas salariales del Anexo III para el año 2025."
+  },
+  "estatuto_trabajadores_consolidado.pdf": {
+    "doc_type": "estatuto_trabajadores",
+    "territorio": "estatal",
+    "start_page": 9,
+    "end_page": 97,
+    "justificacion": "El texto articulado del Estatuto de los Trabajadores (Artículo 1) comienza en la página 9, tras el índice de contenidos (págs. 1-7) y el preámbulo del Real Decreto Legislativo (pág. 8). El documento finaliza en la página 97, que incluye el cierre de las disposiciones transitorias y la nota de exención de valor jurídico."
+  }
+}
