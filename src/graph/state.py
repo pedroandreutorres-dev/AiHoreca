@@ -88,12 +88,11 @@ class QueryAnalysisSchema(BaseModel):
         default=None,
         description=(
             "Provincia o comunidad autónoma española donde se ubica físicamente el centro de trabajo mencionado en el MENSAJE ACTUAL, "
-            "normalizada en minúsculas y sin tildes (ej. 'madrid', 'barcelona', 'girona', 'tarragona', 'lleida', 'catalunya', 'leon', 'sevilla', 'valencia'). "
-            "Si el usuario menciona un municipio o localidad (incluso con erratas tipográficas, ej. 'Ponferrada' o 'Ponferada' -> 'leon', 'Móstoles' -> 'madrid', 'Sitges' -> 'barcelona'), "
-            "devuelve su provincia oficial. "
-            "REGLA CRÍTICA DE DESAMBIGUACIÓN: Ignora topónimos que formen parte del nombre comercial del establecimiento o de una calle "
-            "(ej. en 'trabaja en el Café Madrid de Ponferrada', 'Café Madrid' es el nombre del local y la provincia real es 'leon'). "
-            "Si tienes dudas de si un nombre es el local o la ubicación geográfica, o si el mensaje actual no menciona ubicación, devuelve null."
+            "normalizada en minúsculas y sin tildes. "
+            "Si el usuario menciona un municipio, localidad o comarca (incluso con errores tipográficos), resuelve y devuelve su provincia administrativa oficial. "
+            "REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN: Distingue siempre el lugar geográfico real donde radica el centro de trabajo frente a topónimos "
+            "que formen parte de la denominación comercial del negocio, marca o dirección postal. "
+            "Si existe ambigüedad sobre cuál es la ubicación geográfica real o si el mensaje actual no menciona ubicación, devuelve null."
         ),
     )
     cambio_de_puesto_en_turno_actual: bool = Field(
@@ -141,12 +140,11 @@ class QueryAnalysisSchema(BaseModel):
     consulta_autocontenida_resuelta: str = Field(
         description=(
             "Reescritura autocontenida del MENSAJE ACTUAL en lenguaje natural resolviendo pronombres, elipsis o referencias implícitas "
-            "con la sesión activa (territorio, puesto(s) o condiciones mencionadas en el diálogo). "
-            "REGLA CRÍTICA DE PROGRESIÓN: (A) Si existía `pending_clarification_query` (consulta previa detenida esperando provincia) y el usuario aporta la provincia, "
-            "fusiona aquella pregunta pendiente con la provincia. (B) Si NO había consulta bloqueada y el usuario hace una repregunta o nueva duda en la conversación "
-            "(ej. '¿Y cómo sé a qué clase corresponde?', '¿Y cuántos días tengo por mudanza?'), reescribe ÚNICAMENTE la nueva duda de este turno "
-            "contextualizada con los datos del caso (ej. 'Para una camarera con contrato de 30 horas en un bar de Ponferrada (León), ¿cómo puedo saber a qué categoría o clase de establecimiento corresponde el bar?'), "
-            "PROHIBIDO volver a meter en la reescritura preguntas ya respondidas en turnos anteriores (como '¿cuál es su sueldo base?')."
+            "con la sesión activa (territorio, puesto(s) o condiciones contractuales mencionadas en el diálogo). "
+            "REGLA CRÍTICA DE PROGRESIÓN: (A) Si existía `pending_clarification_query` (consulta previa detenida esperando provincia o puesto) y el usuario aporta el dato faltante, "
+            "fusiona aquella pregunta pendiente con el nuevo dato. (B) Si NO había consulta bloqueada y el usuario formula una repregunta o nueva duda en la conversación, "
+            "reescribe ÚNICAMENTE la nueva duda de este turno contextualizada con el perfil activo de la sesión, "
+            "PROHIBIDO volver a incluir en la reescritura preguntas que ya fueron respondidas en turnos anteriores."
         )
     )
     query_busqueda_hibrida: str = Field(
@@ -176,23 +174,20 @@ class LegalCitation(BaseModel):
 
 
 class DerivedCalculation(BaseModel):
-    """Cálculo aritmético trazable (prorrateo de jornada parcial, cálculo de hora extra, salario anual/mensual) a partir de cifras literales."""
+    """Cálculo aritmético trazable (prorrateo de jornada parcial, prorrateo de pagas extras, cálculo de hora extra) a partir de cifras literales."""
 
     concepto: str = Field(
-        description=(
-            "Concepto calculado (ej. 'Salario Base Mensual 30h/40h (2025 - Lujo y 1ª)', "
-            "'Precio Hora Extra 2025 (Segunda clase)', 'Salario Bruto Anual Proporcional 30h')."
-        )
+        description="Nombre descriptivo del concepto retributivo o laboral calculado."
     )
     formula_aplicada: str = Field(
-        description="Expresión aritmética explícita utilizando únicamente cifras de los fragmentos o de la consulta (ej. '1.458,20 * (30 / 40)')."
+        description="Expresión aritmética explícita utilizando únicamente cifras literales de los fragmentos recuperados o de la consulta."
     )
     operandos_base_del_corpus: list[str] = Field(
         default_factory=list,
-        description="Cifras literales extraídas de los fragmentos normativos que intervienen en la fórmula (ej. ['1.458,20', '1790', '62']).",
+        description="Cifras literales extraídas de los fragmentos normativos que intervienen como operandos en la fórmula.",
     )
     resultado_formateado: str = Field(
-        description="Resultado numérico final formateado en español (ej. '1.093,65 €', '18,32 €')."
+        description="Resultado numérico final formateado en español con su unidad correspondiente."
     )
 
 
@@ -221,9 +216,9 @@ class LegalSynthesisSchema(BaseModel):
     calculos_derivados: list[DerivedCalculation] = Field(
         default_factory=list,
         description=(
-            "Cálculos aritméticos aplicados al caso concreto del usuario (ej. prorrateo por contrato a tiempo parcial "
-            "como 30h/40h, o cálculo del importe en €/hora de las horas extraordinarias aplicando la fórmula del convenio "
-            "sobre el salario base vigente). Cada cálculo debe declarar su fórmula y sus operandos literales del corpus."
+            "Cálculos aritméticos aplicados al caso del usuario (prorrateo por jornada parcial, "
+            "prorrateo de pagas extraordinarias o cálculo del valor en €/hora de horas extraordinarias/pluses aplicando la fórmula del convenio "
+            "sobre los importes vigentes de las tablas). Cada cálculo debe declarar su fórmula y sus operandos literales del corpus."
         ),
     )
     respuesta_final_markdown: str = Field(

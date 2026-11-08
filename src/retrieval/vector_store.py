@@ -411,11 +411,16 @@ class AiHorecaVectorStore:
         final_top_k: int = RETRIEVAL_FINAL_TOP_K,
         use_cohere_rerank: bool = True,
         rerank_query: Optional[str] = None,
+        role_context: Optional[str] = None,
     ) -> list[RetrievedDocument]:
         """Recupera en paralelo de las 3 capas normativas (ET + ALEH + Convenio Provincial estratificado) y reordena con Cohere."""
+        # Si hay contexto de puesto/categoría activo en la sesión y no figura ya en la query de este turno,
+        # lo integramos en la consulta vectorial/léxica para que las tablas salariales se recuperen con el perfil completo.
+        search_query = f"{query} ({role_context})" if role_context and role_context.lower() not in query.lower() else query
+
         # Calculamos el vector de consulta una sola vez (1 llamada API densa + 1 cálculo BM25 en CPU)
-        d_vec = self._embed_dense_batch([query], task_type="RETRIEVAL_QUERY")[0]
-        s_vec = self._embed_sparse_batch([query])[0]
+        d_vec = self._embed_dense_batch([search_query], task_type="RETRIEVAL_QUERY")[0]
+        s_vec = self._embed_sparse_batch([search_query])[0]
 
         # Detectar si el usuario solicitó explícitamente un año histórico concreto en la consulta
         explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", query)]
@@ -438,7 +443,7 @@ class AiHorecaVectorStore:
         # Capa 1: Estatuto de los Trabajadores (Mínimo legal estatal)
         _append_unique(
             self.hybrid_search(
-                query=query,
+                query=search_query,
                 capa_normativa="estatuto_trabajadores",
                 top_k=top_k_per_layer,
                 dense_query_vec=d_vec,
@@ -449,7 +454,7 @@ class AiHorecaVectorStore:
         # Capa 2: VI Acuerdo Laboral Estatal de Hostelería (ALEH)
         _append_unique(
             self.hybrid_search(
-                query=query,
+                query=search_query,
                 capa_normativa="aleh_estatal",
                 top_k=top_k_per_layer,
                 dense_query_vec=d_vec,
@@ -462,7 +467,7 @@ class AiHorecaVectorStore:
         if provincia:
             _append_unique(
                 self.hybrid_search(
-                    query=query,
+                    query=search_query,
                     capa_normativa="convenio_provincial",
                     provincia=provincia,
                     tipo_contenido="articulo",
@@ -475,11 +480,11 @@ class AiHorecaVectorStore:
                 # Búsqueda léxica local en CPU (0 llamadas API) para asegurar que tanto el artículo de Gratificaciones Extraordinarias / Pagas Extras
                 # como los artículos de Horas Extraordinarias / Nocturnidad / Jornada estén siempre entre los candidatos antes del Rerank
                 pay_sparse_vec = self._embed_sparse_batch(
-                    [f"{query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"]
+                    [f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"]
                 )[0]
                 _append_unique(
                     self.hybrid_search(
-                        query=query,
+                        query=search_query,
                         capa_normativa="convenio_provincial",
                         provincia=provincia,
                         tipo_contenido="articulo",
@@ -489,17 +494,16 @@ class AiHorecaVectorStore:
                     )
                 )
             raw_tables = self.hybrid_search(
-                query=query,
+                query=search_query,
                 capa_normativa="convenio_provincial",
                 provincia=provincia,
                 tipo_contenido="tabla_salarial",
-                top_k=max(top_k_per_layer * 3, 12),
+                top_k=max(top_k_per_layer * 4, 20),
                 dense_query_vec=d_vec,
                 sparse_query_vec=s_vec,
             )
             # Si es un convenio multiprovincial (ej. Cataluña: barcelona, girona, tarragona, lleida),
-            # descartamos tablas salariales exclusivas de otra provincia hermana para asegurar que entren
-            # tanto la tabla de niveles como la tabla de importes en € de la provincia consultada.
+            # descartamos tablas salariales exclusivas de otra provincia hermana.
             norm_p = provincia.lower().strip()
             sibling_provs = {"barcelona", "girona", "tarragona", "lleida"}
             other_siblings = sibling_provs - {norm_p} if norm_p in sibling_provs else set()
@@ -515,10 +519,8 @@ class AiHorecaVectorStore:
                     or "a) barcelona" not in f"{t.titulo_o_capitulo} {t.articulo}".lower()
                 )
             ]
-            # En el DOGC del Convenio de Cataluña existe una errata tipográfica oficial ("A) Girona" en lugar de "C) Girona"
-            # para la tabla salarial de 2025). Como no contiene ningún nombre de otra provincia hermana, pasa el filtro anterior.
             # Prioridad Temporal General: si el usuario NO pide un año concreto, priorizamos las tablas con el año vigente más reciente
-            # (ej. 2025/2026 sobre 2023/2024) manteniendo su orden de relevancia semántica dentro del mismo año.
+            # manteniendo intacto su orden de relevancia híbrida (Dense + BM25) dentro de ese año.
             euro_tables = [t for t in filtered_tables if "€" in t.text or "euros" in t.text.lower()]
             level_tables = [t for t in filtered_tables if t not in euro_tables]
             if not explicit_years and euro_tables:
@@ -529,11 +531,11 @@ class AiHorecaVectorStore:
                     euro_tables = latest_euro + older_euro
 
             balanced_tables: list[RetrievedDocument] = []
-            for seq in (euro_tables[:3], level_tables[:2], filtered_tables):
+            for seq in (euro_tables[:6], level_tables[:2], filtered_tables):
                 for item in seq:
                     if item not in balanced_tables:
                         balanced_tables.append(item)
-            _append_unique((balanced_tables or raw_tables)[: top_k_per_layer + 2])
+            _append_unique((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
             _append_unique(
                 self.hybrid_search(
                     query=query,
@@ -622,8 +624,8 @@ class AiHorecaVectorStore:
             lambda d: d.capa_normativa == "convenio_provincial" and d.tipo_contenido == "articulo",
             max(0, QUOTA_PROVINCIAL_ARTICLES - sum(1 for s in selected if s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "articulo")),
         )
-        # En tablas salariales: si el usuario no pidió un año histórico específico, garantizamos primero 1 tabla en €
-        # del año vigente más reciente disponible en los candidatos (ej. 2025/2026) y 1 segunda tabla complementaria
+        # En tablas salariales: si el usuario no pidió un año histórico específico, garantizamos primero la tabla en €
+        # del año vigente más reciente con mayor relevancia en Cohere Rerank / Hybrid Search, y después la tabla complementaria
         prov_euro_tables = [
             d
             for d in candidates
@@ -640,12 +642,28 @@ class AiHorecaVectorStore:
                 and self._extract_chunk_year(d) == max_cand_year,
                 1,
             )
+        else:
+            _pick(
+                lambda d: d.capa_normativa == "convenio_provincial"
+                and d.tipo_contenido == "tabla_salarial"
+                and ("€" in d.text or "euros" in d.text.lower()),
+                1,
+            )
+
+        # Si el convenio separa tabla de niveles salariales (sin €) y tabla de importes (con €), aseguramos la tabla de niveles
         _pick(
             lambda d: d.capa_normativa == "convenio_provincial"
             and d.tipo_contenido == "tabla_salarial"
-            and ("€" in d.text or "euros" in d.text.lower()),
-            1,
+            and not ("€" in d.text or "euros" in d.text.lower()),
+            max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
         )
+        if not explicit_years and max_cand_year > 0:
+            _pick(
+                lambda d: d.capa_normativa == "convenio_provincial"
+                and d.tipo_contenido == "tabla_salarial"
+                and self._extract_chunk_year(d) == max_cand_year,
+                max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
+            )
         _pick(
             lambda d: d.capa_normativa == "convenio_provincial" and d.tipo_contenido == "tabla_salarial",
             max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),

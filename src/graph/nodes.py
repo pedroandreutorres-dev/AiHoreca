@@ -219,9 +219,8 @@ class AiHorecaGraphNodes:
             "detenida esperando provincia, puesto de trabajo o ambos) y el mensaje actual del usuario aporta el dato que faltaba (ej. 'Trabajo en Madrid', 'Es camarera', 'De cocinero en León'), "
             "clasifica como 'HOSPITALITY_CORE' (o 'UNSUPPORTED_PROVINCE' si la provincia no está soportada) y fusiona la pregunta pendiente "
             "con los datos conocidos de la sesión y el nuevo dato aportado en `consulta_autocontenida_resuelta`.\n"
-            "   - CASO B (Repregunta o seguimiento en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta o seguimiento "
-            "(ej. '¿Y cómo sé a qué clase corresponde?', '¿Cómo puedo saber la categoría del bar?', '¿Y cuántos días le tocan por mudanza?'), "
-            "hereda de `SLOTS ACTIVOS DE LA SESIÓN` y de `VENTANA COMPACTA DE TURNOS RECIENTES` el territorio, puesto(s) y condiciones del caso (como horas de contrato o varios trabajadores), "
+            "   - CASO B (Repregunta o seguimiento en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta o seguimiento, "
+            "hereda de `SLOTS ACTIVOS DE LA SESIÓN` y de `VENTANA COMPACTA DE TURNOS RECIENTES` el territorio, puesto(s) y condiciones contractuales ya aportadas en la sesión, "
             "PERO centra `consulta_autocontenida_resuelta` y `query_busqueda_hibrida` EXCLUSIVAMENTE en responder la nueva duda planteada en el `MENSAJE ACTUAL`. "
             "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores.\n\n"
             "2. GUARDRAIL DE DOMINIO:\n"
@@ -229,11 +228,11 @@ class AiHorecaGraphNodes:
             "(ej. accidentes de tráfico, herencias, divorcios, convenios del metal/construcción/comercio general, programación, medicina, etc.).\n"
             f"   - Clasifica como 'UNSUPPORTED_PROVINCE' si la consulta es de hostelería pero el territorio aplicable es una provincia española "
             f"NO incluida en los territorios indexados actuales ({indexed_list_str}).\n"
-            "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida (incluyendo respuestas breves que indican un puesto como 'Es camarera' o una provincia cuando había una consulta pendiente).\n\n"
+            "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida (incluyendo respuestas breves que aportan un puesto o una provincia cuando había una consulta pendiente).\n\n"
             "3. GATEKEEPER CONTEXTUAL GENERALISTA (PROVINCIA Y PUESTO/CATEGORÍA):\n"
-            "   - `provincia_detectada_en_turno_actual`: Identifica por contexto semántico la **provincia española donde se ubica físicamente el centro de trabajo** mencionado en el `MENSAJE ACTUAL`, en minúsculas y sin tildes (ej. 'madrid', 'leon', 'barcelona', 'girona', 'tarragona', 'lleida', 'catalunya', 'sevilla', 'valencia').\n"
-            "     * Si el usuario menciona un municipio, ciudad o comarca (incluso con erratas tipográficas, ej. 'Ponferrada' o 'Ponferada' -> 'leon', 'Móstoles' -> 'madrid', 'Sitges' -> 'barcelona'), devuelve su provincia oficial.\n"
-            "     * **REGLA CRÍTICA DE DESAMBIGUACIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de bares, hoteles o calles que contengan topónimos (ej. en 'trabaja en el Café Madrid de Ponferrada', 'Café Madrid' es el nombre comercial del bar y la provincia real es 'leon'). Si tienes dudas de si un nombre propio es el local o la ciudad, o si no menciona ubicación en este turno, devuelve null.\n"
+            "   - `provincia_detectada_en_turno_actual`: Identifica por contexto semántico la **provincia española donde se ubica físicamente el centro de trabajo** mencionado en el `MENSAJE ACTUAL`, en minúsculas y sin tildes.\n"
+            "     * Si el usuario menciona un municipio, localidad o comarca (incluso con errores tipográficos), resuelve y devuelve su provincia administrativa oficial.\n"
+            "     * **REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de negocios, marcas, cadenas o calles que contengan topónimos. Si existe ambigüedad sobre cuál es la ubicación geográfica real o si no se menciona ubicación en este turno, devuelve null.\n"
             "   - `requiere_convenio_provincial`: Marca `True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
             "nocturnidad, horas extra, vacaciones, jornada anual, descansos, licencias/permisos retribuidos, bajas médicas (complemento IT), "
             "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo.\n"
@@ -483,10 +482,15 @@ class AiHorecaGraphNodes:
         effective_query = state.get("effective_query") or state.get("query", "")
         enriched_query = state.get("query_busqueda_hibrida") or effective_query
         provincia = state.get("territorio_normalizado")
+        oficio = state.get("oficio_coloquial_detectado")
         cat_aleh = state.get("categoria_profesional_aleh")
+        area_aleh = state.get("area_funcional_aleh")
+
+        role_parts = [p for p in (oficio, cat_aleh, area_aleh) if p]
+        role_context = " | ".join(role_parts) if role_parts else None
 
         rerank_query = (
-            f"{effective_query} ({cat_aleh})" if cat_aleh else effective_query
+            f"{effective_query} ({role_context})" if role_context else effective_query
         )
 
         # Recuperación jerárquica paralela estratificada (1 sola llamada API de embedding + BM25 CPU + Cohere Rerank)
@@ -497,6 +501,7 @@ class AiHorecaGraphNodes:
             final_top_k=RETRIEVAL_FINAL_TOP_K,
             use_cohere_rerank=True,
             rerank_query=rerank_query,
+            role_context=role_context,
         )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -544,22 +549,26 @@ class AiHorecaGraphNodes:
             "REGLAS INQUEBRANTABLES DE INGENIERÍA JURÍDICA Y CONVERSACIONAL:\n"
             "1. CONTINUIDAD CONVERSACIONAL, COHERENCIA TERRITORIAL Y PROHIBICIÓN DE REPETICIÓN ENTRE TURNOS:\n"
             "   - **PROHIBICIÓN ABSOLUTA DE SUSTITUCIÓN JURISDICCIONAL**: Está terminantemente prohibido aplicar tablas salariales, número de pagas o artículos de un convenio provincial/autonómico distinto al `TERRITORIO APLICABLE` del trabajador. Jamás utilices el convenio de otra provincia 'por analogía' ni ocultes a qué provincia pertenece el convenio citado.\n"
-            "   - Revisa `HISTORIAL RECIENTE DE LA CONVERSACIÓN` para mantener todos los detalles del caso ya aportados por el usuario (ej. si tiene contrato de 30 horas, si ha preguntado por uno o varios puestos, localidad, etc.) sin olvidarlos.\n"
-            "   - **PROHIBIDO REPETIR EXPLICACIONES O TABLAS DE TURNOS ANTERIORES**: Si en un turno previo ya desglosaste el sueldo base o las horas extras y en el `MENSAJE ACTUAL` el usuario hace una repregunta o duda de seguimiento (ej. '¿Y cómo sé a qué clase corresponde?', '¿Y cuántos días le tocan por mudanza?'), **responde directa y exclusivamente a la nueva pregunta del turno actual**, sin volver a volcar la tabla salarial ni repetir el discurso del turno anterior salvo que el usuario pida recalcularlo.\n"
+            "   - Revisa `HISTORIAL RECIENTE DE LA CONVERSACIÓN` para mantener todos los parámetros del caso ya aportados por el usuario en la sesión (jornada parcial o completa, puesto, modalidad, etc.) sin olvidarlos.\n"
+            "   - **PROHIBIDO REPETIR EXPLICACIONES O TABLAS DE TURNOS ANTERIORES**: Si en un turno previo ya desglosaste una tabla o cálculo y en el `MENSAJE ACTUAL` el usuario plantea una repregunta o nueva duda, **responde directa y exclusivamente a la nueva pregunta del turno actual**, sin volver a volcar las tablas ni repetir el discurso del turno anterior salvo que el usuario pida recalcularlo.\n"
             "2. ADECUACIÓN DE LA ESTRUCTURA A LA INTENCIÓN DEL TURNO:\n"
             "   - Si la pregunta del turno actual es conceptual, clasificatoria, de permisos, vacaciones, jornada o aclaratoria sobre un requisito del convenio, responde de forma directa, natural y fundamentada en los fragmentos recuperados (integrando cuando proceda Convenio Provincial/Autonómico, VI ALEH y Estatuto de los Trabajadores), **sin forzar tablas salariales que no vienen al caso**.\n"
-            "   - Si el convenio hace depender una condición de un dato del centro de trabajo o del contrato que no consta en los fragmentos (como la categoría o clasificación turística oficial del establecimiento, su licencia o el grupo en nómina), indícale con naturalidad qué establece el convenio en los fragmentos recuperados y dónde puede verificar ese dato en la práctica (contrato de trabajo, encabezado de la nómina o clasificación oficial del establecimiento).\n"
+            "   - Si el convenio hace depender una condición de un parámetro del centro de trabajo o del contrato que el usuario no ha precisado (como la categoría o clasificación turística del establecimiento, su nivel o modalidad), expón las opciones previstas en los fragmentos recuperados e indícale dónde puede verificar ese dato en la práctica (contrato de trabajo, encabezado de la nómina o clasificación oficial del establecimiento).\n"
             "3. REGLAS PARA CONSULTAS SALARIALES / RETRIBUTIVAS (CUANDO EL TURNO ACTUAL PIDA SUELDOS O CÁLCULOS):\n"
-            "   - **Año más reciente**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos (ej. 2025 o 2026 frente a 2023 o 2024).\n"
-            "   - **Sueldo mensual Sin Prorratear vs. Con Pagas Extras Prorrateadas**: Identifica cuántas **Gratificaciones Extraordinarias (pagas extras)** fija el convenio aplicable (citando su artículo, ej. 2 pagas extras = 14 pagas anuales, o 3 pagas extras = 15 pagas anuales) y presenta una **Tabla Markdown comparativa clara** en **`€ / mes`** mostrando:\n"
+            "   - **Año más reciente**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos.\n"
+            "   - **Sueldo mensual Sin Prorratear vs. Con Pagas Extras Prorrateadas**: Identifica cuántas **Gratificaciones Extraordinarias (pagas extras)** fija el convenio aplicable (citando su artículo) y presenta una **Tabla Markdown comparativa clara** en **`€ / mes`** mostrando:\n"
             "     * **Sueldo Base Mensual a Jornada Completa (40h)**.\n"
             "     * **Sueldo Base Mensual para su Jornada Contratada (SIN prorratear pagas extras)**: `Salario_40h * (Horas_Contrato / 40)` (cobrando las pagas extras aparte en sus meses de devengo).\n"
             "     * **Sueldo Base Mensual para su Jornada Contratada (CON pagas extras prorrateadas en 12 meses)**: `Sueldo_Mensual_Sin_Prorratear * (Total_Pagas_Anuales / 12)` (calcula y escribe siempre el importe numérico final en `€/mes`).\n"
-            "     * Si existe un **Salario Bruto Mínimo Anual Garantizado** aplicable, indica su equivalencia anual y mensual para la jornada del trabajador.\n"
+            "     * Si la tabla del convenio distingue varios niveles o categorías de establecimiento para ese puesto y el usuario no ha especificado cuál es el suyo, desglosa una fila por cada opción de la tabla (e incluye el Salario Mínimo Anual Garantizado del convenio si existe).\n"
             "4. CÁLCULO COMPLETO EN `€/HORA` DE HORAS EXTRAORDINARIAS O PLUSES (CUANDO SE SOLICITE):\n"
-            "   - Cuando el turno actual pregunte por horas extraordinarias o pluses, muestra la fórmula oficial citando su artículo y **calcula el importe numérico final en `€ / hora extra`** sustituyendo el Salario Base vigente de la tabla.\n"
-            "   - Si la fórmula incluye pluses variables/personales (*ad personam*, *asistencia*, *manutención*), calcula el **importe mínimo garantizado en `€/hora extra`** sobre el Salario Base y aclara que dichos pluses elevarían el valor si se perciben en nómina.\n"
-            "   - Registra todas las operaciones aritméticas realizadas en `calculos_derivados` con su fórmula y operandos base para su verificación por el Nodo 5."
+            "   - **PROHIBIDO DEJAR FÓRMULAS SIN RESOLVER NUMÉRICAMENTE**: Jamás te limites a mostrar la fórmula teórica de la hora extraordinaria o plus sin dar el resultado numérico en **`€ / hora`**. Siempre debes sustituir los valores numéricos de las tablas salariales vigentes y calcular el importe final en `€ / hora` (bruto).\n"
+            "   - Si en el convenio aplicable el Salario Base del puesto varía según la categoría, clase o nivel del establecimiento y el usuario no lo ha especificado, **presenta una Tabla Markdown comparativa con el importe exacto en `€ / hora` (bruto) para cada una de las opciones de la tabla**.\n"
+            "   - Si la fórmula del convenio incluye complementos o pluses (*antigüedad/ad personam*, *asistencia*, *manutención*, etc.), calcula en la tabla el **importe mínimo garantizado en `€ / hora` sobre el Salario Base** (y opcionalmente otra columna incluyendo los pluses fijos del convenio cuyos importes consten en los fragmentos), aclarando cómo influyen.\n"
+            "   - Registra todas las operaciones aritméticas realizadas en `calculos_derivados` con su fórmula y operandos base para su verificación por el Nodo 5.\n"
+            "5. CRITERIO ESTRICTO SOBRE IMPORTES NETOS, IRPF Y COTIZACIONES (ALCANCE EXCLUSIVAMENTE BRUTO Y CARÁCTER ORIENTATIVO):\n"
+            "   - Los convenios colectivos y las tablas salariales regulan **exclusivamente importes BRUTOS** (conforme al Art. 26.4 del Estatuto de los Trabajadores, las cargas fiscales y de Seguridad Social corren a cargo de la persona trabajadora).\n"
+            "   - Siempre que el usuario pregunte por un **importe neto (sueldo neto, hora extra neta, nómina neta) o descuento de impuestos (IRPF / Seguridad Social)**, **es obligatorio advertir de forma destacada que cualquier cálculo neto es ESTRICTAMENTE ORIENTATIVO y aproximado**, ya que el sistema no realiza liquidaciones fiscales de IRPF (el porcentaje de retención depende de las circunstancias personales y familiares del Modelo 145, modalidad contractual y rendimientos anuales totales). Si muestras una simulación o ejemplo en neto, etiquétalo siempre expresamente como **«Neto Orientativo (aprox.)»**."
         )
 
         prompt = (
@@ -631,11 +640,9 @@ class AiHorecaGraphNodes:
             cls._normalize_number_token(m.group(0))
             for m in re.finditer(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b|\b\d+(?:\.\d+)?\b", user_query)
         }
-        # Constantes laborales estándar permitidas como divisores/factores en fórmulas (12 meses, 14/15 pagas, 40h semanales, 100%)
-        standard_constants = {"12", "14", "15", "11", "30", "40", "100", "1.62", "1.25", "1.01", "0.75"}
+        # Constantes universales de calendario/jornada (12 meses, 11 meses laborables, 14/15 pagas, 30 días, 40h semanales, base 1 y 100%)
+        standard_constants = {"1", "11", "12", "14", "15", "30", "40", "100"}
 
-        # Pre-calcular productos/cocientes aritméticos comunes a partir de los números literales del corpus
-        # (ej. prorrateos parciales * 0.75 o * (horas/40), o fórmula de hora extra [(S*15)/1790]*1.62)
         corpus_floats: list[float] = []
         for n_str in norm_corpus_numbers:
             try:
@@ -645,35 +652,45 @@ class AiHorecaGraphNodes:
             except ValueError:
                 pass
 
+        # Cualquier porcentaje P presente en los fragmentos recuperados habilita su factor decimal (P/100) y su multiplicador de recargo (1 + P/100)
+        surcharge_multipliers: set[float] = {1.0}
+        for c_val in corpus_floats:
+            if 1.0 <= c_val <= 100.0:
+                dec_factor = round(c_val / 100.0, 4)
+                mult_factor = round(1.0 + (c_val / 100.0), 4)
+                standard_constants.add(f"{dec_factor:g}")
+                standard_constants.add(f"{mult_factor:g}")
+                surcharge_multipliers.add(mult_factor)
+                surcharge_multipliers.add(dec_factor)
+
         query_floats: list[float] = []
         for q_str in norm_query_numbers:
             try:
                 q_val = float(q_str)
                 if 1.0 <= q_val <= 40.0:
                     query_floats.append(q_val)
+                    standard_constants.add(f"{round(q_val / 40.0, 4):g}")
             except ValueError:
                 pass
 
         auto_derived_floats: set[float] = set()
         ratios_jornada = [1.0] + [h_val / 40.0 for h_val in query_floats]
+        annual_hours_in_corpus = [v for v in corpus_floats if 1500.0 <= v <= 2000.0]
         for c_val in corpus_floats:
             if c_val >= 500.0:
                 for r_jor in ratios_jornada:
                     scaled_val = c_val * r_jor
                     auto_derived_floats.add(round(scaled_val, 2))
-                    # Divisiones de salario anual entre 12, 14 o 15 pagas y prorrateos mensuales (* 14/12, * 15/12, * 14, * 15)
                     for pagas in (12.0, 14.0, 15.0):
                         auto_derived_floats.add(round(scaled_val / pagas, 2))
                         auto_derived_floats.add(round(scaled_val * pagas, 2))
                         auto_derived_floats.add(round(scaled_val * (pagas / 12.0), 2))
-                # Horas extras con divisores anuales del corpus (ej. 1790, 1792, 1800) y recargos (1.62, 1.25, 1.5, 1.75)
-                for div_val in corpus_floats:
-                    if 1700.0 <= div_val <= 1850.0:
-                        for pagas in (12.0, 14.0, 15.0):
-                            base_hour = (c_val * pagas) / div_val
-                            auto_derived_floats.add(round(base_hour, 2))
-                            for rec in (1.62, 1.25, 1.50, 1.75):
-                                auto_derived_floats.add(round(base_hour * rec, 2))
+                for div_val in annual_hours_in_corpus:
+                    for pagas in (12.0, 14.0, 15.0):
+                        base_hour = (c_val * pagas) / div_val
+                        auto_derived_floats.add(round(base_hour, 2))
+                        for rec in surcharge_multipliers:
+                            auto_derived_floats.add(round(base_hour * rec, 2))
 
         # Validar cálculos derivados declarados cuyos operandos base existan en el corpus o en la consulta del usuario
         verified_derived_norms: set[str] = {f"{v:.2f}" for v in auto_derived_floats}
