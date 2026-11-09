@@ -280,8 +280,9 @@ class AiHorecaVectorStore:
                 )
             )
         if provincia:
-            norm_prov = (
-                provincia.lower()
+            prov_tokens = [p.strip() for p in re.split(r"[,/|]|\s+y\s+", provincia.replace("_", " ")) if p.strip()]
+            norm_provincias = [
+                tok.lower()
                 .strip()
                 .replace("á", "a")
                 .replace("é", "e")
@@ -289,13 +290,23 @@ class AiHorecaVectorStore:
                 .replace("ó", "o")
                 .replace("ú", "u")
                 .replace("ñ", "n")
-            )
-            must_conditions.append(
-                models.FieldCondition(
-                    key="provincias_aplicables",
-                    match=models.MatchValue(value=norm_prov),
+                for tok in prov_tokens
+                if tok.strip()
+            ]
+            if len(norm_provincias) == 1:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key="provincias_aplicables",
+                        match=models.MatchValue(value=norm_provincias[0]),
+                    )
                 )
-            )
+            elif len(norm_provincias) > 1:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key="provincias_aplicables",
+                        match=models.MatchAny(any=norm_provincias),
+                    )
+                )
         if tipo_contenido:
             must_conditions.append(
                 models.FieldCondition(

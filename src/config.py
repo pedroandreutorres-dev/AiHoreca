@@ -21,6 +21,8 @@ CONVERSATIONS_TXT_PATH = LOGS_DIR / "conversaciones.txt"
 TURNS_CSV_PATH = LOGS_DIR / "turnos_metricas.csv"
 BOUNDARIES_CACHE_PATH = PROCESSED_DATA_DIR / "boundaries_cache.json"
 EVALUATION_RESULTS_PATH = PROCESSED_DATA_DIR / "evaluation_results.json"
+GOLDEN_PRODUCCION_PATH = PROCESSED_DATA_DIR / "golden_set_produccion.jsonl"
+EVALUATION_BASELINE_PATH = PROCESSED_DATA_DIR / "evaluation_baseline.json"
 
 # Parámetros de Sincronización Remota de Telemetría (Opcional via variables de entorno)
 HF_SYNC_DEBOUNCE_SECONDS = float(os.getenv("HF_SYNC_DEBOUNCE_SECONDS", "15.0"))

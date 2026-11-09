@@ -284,8 +284,15 @@ class AiHorecaGraphNodes:
                     intent = "HOSPITALITY_CORE"
                     territorio_norm = raw_prov
                 else:
-                    intent = "UNSUPPORTED_PROVINCE"
-                    territorio_norm = raw_prov
+                    # Comprobar si es una consulta multi-provincia donde todas las mencionadas están indexadas
+                    raw_tokens = [t.strip() for t in re.split(r"[,/|]|\s+y\s+", raw_prov.replace("_", " ")) if t.strip()]
+                    canonical_tokens = [_canonicalize_llm_province(tok) for tok in raw_tokens if tok.strip()]
+                    if canonical_tokens and all(c in self.indexed_territories for c in canonical_tokens):
+                        intent = "HOSPITALITY_CORE"
+                        territorio_norm = raw_prov
+                    else:
+                        intent = "UNSUPPORTED_PROVINCE"
+                        territorio_norm = raw_prov
 
         # 2. Resolución de Categoría Profesional ALEH (Turno actual vs Herencia de Slots)
         if analysis.cambio_de_puesto_en_turno_actual or not slots.active_categoria_aleh:

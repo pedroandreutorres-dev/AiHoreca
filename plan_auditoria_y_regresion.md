@@ -51,15 +51,18 @@
 
 **Flujo:** informe diario → revisión humana (¿fallo real?) → caso reformulado sin datos personales + respuesta correcta → golden set → regresión → push solo si no empeora.
 
-- [ ] Nuevo fichero `data/processed/golden_set_produccion.jsonl` validado con `GoldenTestCase` (añadir campos de trazabilidad: `origen`, `fecha`, `tipo_fallo`).
-- [ ] `get_golden_dataset()` carga los 12 casos actuales + los del fichero.
-- [ ] Guardar línea base: `data/processed/evaluation_baseline.json`.
-- [ ] Comando `python -m src.evaluation.regression`:
-  - **Bloquea** si un caso que pasaba ahora falla en checks deterministas (intención, ruta, territorio, cifras, citas).
-  - **Avisa** si la media del juez RAGAS cae > 0,05 (faithfulness, answer correctness, context recall).
-  - `--update-baseline` para fijar nueva línea base tras un cambio aceptado.
-- [ ] Cuándo ejecutar: antes de push de cambios en prompts, retrieval, modelos o auditor numérico (no en cada commit, por coste de tokens).
-- [ ] Opcional: hook `pre-push` que lo lance solo si cambian `src/graph/` o `src/retrieval/`.
+- [x] Nuevo fichero `data/processed/golden_set_produccion.jsonl` validado con `GoldenTestCase` (añadidos campos de trazabilidad: `origen`, `fecha`, `tipo_fallo`).
+- [x] Incorporados los dos primeros casos reales auditados de producción:
+  - `GD_13_DESAMBIGUACION_LOCAL_PONFERRADA`: desambiguación geográfica (Café Madrid en Ponferrada -> León).
+  - `GD_14_COMPARATIVA_MADRID_LEON`: consulta multi-provincia soportada (Colmenar Viejo vs Camponaraya -> Madrid y León).
+- [x] Corregido el enrutador (`src/graph/nodes.py`) y el filtro vectorial (`src/retrieval/vector_store.py`) con soporte nativo de multi-provincia (`MatchAny`).
+- [x] `get_golden_dataset()` carga los 12 casos base + los casos de producción (14 casos en total).
+- [x] Guardada línea base oficial: `data/processed/evaluation_baseline.json`.
+- [x] Implementada la suite de regresión (`python -m src.evaluation.regression`):
+  - Modo `--quick` determinista (0 tokens de juez).
+  - Modo `--full` con Juez Semántico RAGAS single-pass.
+  - Bloqueo por regresión determinista y alerta por caída semántica.
+  - `--update-baseline` para fijar nuevas líneas base tras cambios validados.
 
 ---
 

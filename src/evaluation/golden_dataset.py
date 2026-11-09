@@ -8,10 +8,13 @@ Cubre 12 escenarios representativos divididos en 3 bloques:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from src.config import GOLDEN_PRODUCCION_PATH
 from src.graph.state import IntentCategory, RouteDecision
 
 EvalCategory = Literal[
@@ -53,11 +56,46 @@ class GoldenTestCase(BaseModel):
     ground_truth_reference: str = Field(
         description="Respuesta experta de referencia (Ground Truth) para cálculo de métricas RAGAS."
     )
+    origen: str = Field(
+        default="curated",
+        description="Origen del caso de prueba ('curated' o 'produccion_auditoria').",
+    )
+    fecha: Optional[str] = Field(
+        default=None,
+        description="Fecha de incorporación al dataset en formato ISO (YYYY-MM-DD).",
+    )
+    tipo_fallo: Optional[str] = Field(
+        default=None,
+        description="Tipología o categoría de fallo que motivó la inclusión del caso.",
+    )
 
 
-def get_golden_dataset() -> list[GoldenTestCase]:
-    """Devuelve los 12 casos verificados del Golden Dataset de AiHoreca."""
-    return [
+def append_production_case(case: GoldenTestCase, target_path: Path = GOLDEN_PRODUCCION_PATH) -> bool:
+    """Añade un nuevo caso auditado a `golden_set_produccion.jsonl` evitando duplicados por `case_id`."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_ids: set[str] = set()
+    if target_path.exists():
+        for line in target_path.read_text(encoding="utf-8").splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                data = json.loads(line_str)
+                existing_ids.add(data.get("case_id", ""))
+            except Exception:
+                continue
+
+    if case.case_id in existing_ids:
+        return False
+
+    with target_path.open("a", encoding="utf-8") as f:
+        f.write(case.model_dump_json() + "\n")
+    return True
+
+
+def get_golden_dataset(include_production: bool = True) -> list[GoldenTestCase]:
+    """Devuelve los casos verificados del Golden Dataset de AiHoreca (curados + producción)."""
+    dataset: list[GoldenTestCase] = [
         # =========================================================================
         # BLOQUE 1: GUARDARRAÍLES DE ENTRADA Y ENRUTAMIENTO DETERMINISTA (4 CASOS)
         # =========================================================================
@@ -291,3 +329,16 @@ def get_golden_dataset() -> list[GoldenTestCase]:
             ),
         ),
     ]
+
+    if include_production and GOLDEN_PRODUCCION_PATH.exists():
+        for line in GOLDEN_PRODUCCION_PATH.read_text(encoding="utf-8").splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                prod_case = GoldenTestCase.model_validate_json(line_str)
+                dataset.append(prod_case)
+            except Exception:
+                continue
+
+    return dataset

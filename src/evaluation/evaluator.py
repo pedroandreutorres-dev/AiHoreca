@@ -232,12 +232,14 @@ def _evaluate_ragas_single_pass(
 def evaluate_golden_dataset(
     force_recompute: bool = False,
     output_path: Optional[Path] = None,
+    cases: Optional[list[GoldenTestCase]] = None,
+    skip_semantic_judge: bool = False,
 ) -> EvaluationSummaryReport:
-    """Ejecuta el benchmark completo sobre los 12 casos del Golden Dataset con caché incremental en disco."""
+    """Ejecuta el benchmark completo sobre los casos del Golden Dataset con caché incremental en disco."""
     cache_file = Path(output_path or EVALUATION_RESULTS_PATH)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-    dataset = get_golden_dataset()
+    dataset = cases if cases is not None else get_golden_dataset()
     cached_cases: dict[str, EvaluationCaseResult] = {}
 
     if not force_recompute and cache_file.exists():
@@ -246,9 +248,9 @@ def evaluate_golden_dataset(
             for item in raw_data.get("cases", []):
                 res = EvaluationCaseResult.model_validate(item)
                 cached_cases[res.case_id] = res
-            if len(cached_cases) == len(dataset):
-                logger.info("Cargando evaluación completa (%d casos) desde caché: %s", len(dataset), cache_file)
-                return _build_summary_report(list(cached_cases.values()))
+            if all(tc.case_id in cached_cases for tc in dataset):
+                logger.info("Reutilizando evaluación de %d casos desde caché: %s", len(dataset), cache_file)
+                return _build_summary_report([cached_cases[tc.case_id] for tc in dataset])
         except Exception as exc:
             logger.warning("No se pudo reutilizar caché previa de evaluación (%s). Recomputando...", exc)
 
@@ -330,7 +332,20 @@ def evaluate_golden_dataset(
             zero_hallucination = len(unverified_nums) == 0
 
             # Evaluación Semántica RAGAS (Single-Pass Judge para casos generativos, determinista para cortocircuitos)
-            if pred_route == "parallel_retrieve" and docs:
+            if skip_semantic_judge:
+                passed_det = intent_match and route_match and terr_match and zero_hallucination
+                score_val = 1.0 if passed_det else 0.0
+                faithfulness = score_val
+                answer_rel = score_val
+                ctx_recall_sem = score_val
+                hier_score = score_val
+                critique = (
+                    "Evaluación rápida en modo determinista (0 tokens de Juez Semántico)."
+                    if passed_det
+                    else "Discrepancia en comprobaciones deterministas (enrutamiento o auditoría numérica)."
+                )
+                judge_model = "deterministic-quick-check"
+            elif pred_route == "parallel_retrieve" and docs:
                 ctx_str = "\n\n".join(
                     f"[{d.norma_titulo} | {d.capa_normativa} | {d.articulo}]\n{d.text}" for d in docs
                 )
@@ -398,9 +413,11 @@ def evaluate_golden_dataset(
                 final_response=final_resp,
             )
             results.append(case_result)
+            cached_cases[case_result.case_id] = case_result
 
-            # Guardar progreso incremental en disco
-            partial_summary = _build_summary_report(results)
+            # Guardar progreso incremental en disco fusionando con casos previos en caché
+            merged_cases = list(cached_cases.values())
+            partial_summary = _build_summary_report(merged_cases)
             cache_file.write_text(
                 json.dumps(partial_summary.model_dump(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -408,11 +425,8 @@ def evaluate_golden_dataset(
     finally:
         vstore.close()
 
+    # Si se evaluó un subconjunto, devolvemos el informe del subconjunto solicitado
     final_summary = _build_summary_report(results)
-    cache_file.write_text(
-        json.dumps(final_summary.model_dump(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     return final_summary
 
 
