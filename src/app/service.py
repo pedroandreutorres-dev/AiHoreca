@@ -11,6 +11,7 @@ import importlib
 import json
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -25,7 +26,12 @@ import src.graph.state
 import src.graph.workflow
 import src.retrieval.vector_store
 from src.app.telemetry_sync import HuggingFaceTelemetrySync
-from src.config import BOUNDARIES_CACHE_PATH, EVALUATION_RESULTS_PATH, PROJECT_ROOT
+from src.config import (
+    BOUNDARIES_CACHE_PATH,
+    EVALUATION_RESULTS_PATH,
+    PROJECT_ROOT,
+    SESSION_RETENTION_DAYS,
+)
 from src.evaluation.evaluator import audit_corpus_and_index_stats
 from src.graph.memory import SessionMemoryStore
 from src.graph.nodes import get_indexed_territories
@@ -91,8 +97,25 @@ class AiHorecaEngineService:
         self.memory_store = SessionMemoryStore()
         self.telemetry_sync = HuggingFaceTelemetrySync()
         self.telemetry_sync.restore_from_hf_if_needed(self.memory_store)
+        self._last_retention_check: float = 0.0
+        self._apply_retention_policy_if_due(force=True)
         self.compiled_graph = build_aihoreca_graph(vector_store=self.vector_store)
         self._corpus_stats_cache: Optional[dict[str, Any]] = None
+
+    def _apply_retention_policy_if_due(self, force: bool = False) -> int:
+        """Aplica la caducidad de sesiones en origen (SESSION_RETENTION_DAYS) como máximo una vez cada 12 horas."""
+        now = time.monotonic()
+        if not force and now - self._last_retention_check < 12 * 3600:
+            return 0
+        self._last_retention_check = now
+        try:
+            purged = self.memory_store.purge_inactive_sessions(SESSION_RETENTION_DAYS)
+        except Exception:
+            return 0
+        if purged:
+            self.memory_store.export_flat_logs()
+            self.telemetry_sync.trigger_async_sync()
+        return purged
 
     @staticmethod
     def compute_code_version() -> str:
@@ -203,6 +226,8 @@ class AiHorecaEngineService:
 
         # Disparar sincronización asíncrona con debounce hacia Hugging Face Dataset (sin bloquear UI)
         self.telemetry_sync.trigger_async_sync()
+        with self._exec_lock:
+            self._apply_retention_policy_if_due()
 
         timings = state_out.get("node_timings_ms") or {}
         total_ms = round(sum(float(v) for v in timings.values()), 1)

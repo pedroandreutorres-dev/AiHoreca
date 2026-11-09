@@ -581,3 +581,26 @@ class SessionMemoryStore:
         """Elimina una sesión y todos sus turnos asociados."""
         with self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+    def purge_inactive_sessions(self, retention_days: int) -> int:
+        """Elimina en origen las sesiones (y sus turnos) sin actividad durante más de `retention_days` días.
+
+        Política de limitación del plazo de conservación (RGPD art. 5.1.e). Devuelve el número de sesiones eliminadas.
+        """
+        if retention_days <= 0:
+            return 0
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            stale = [
+                r["session_id"]
+                for r in conn.execute(
+                    "SELECT session_id FROM sessions WHERE updated_at < ?",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            for sid in stale:
+                conn.execute("DELETE FROM session_turns WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        return len(stale)

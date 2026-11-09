@@ -25,6 +25,15 @@ EVALUATION_RESULTS_PATH = PROCESSED_DATA_DIR / "evaluation_results.json"
 # Parámetros de Sincronización Remota de Telemetría (Opcional via variables de entorno)
 HF_SYNC_DEBOUNCE_SECONDS = float(os.getenv("HF_SYNC_DEBOUNCE_SECONDS", "15.0"))
 
+# Política de retención en producción (RGPD art. 5.1.e): sesiones sin actividad durante más de N días se eliminan en origen
+SESSION_RETENTION_DAYS = int(os.getenv("SESSION_RETENTION_DAYS", "90"))
+
+# Auditoría local de logs (carpetas ignoradas por Git dentro de data/logs/)
+SESSION_ARCHIVE_DIR = LOGS_DIR / "sesiones"
+AUDIT_REPORTS_DIR = LOGS_DIR / "auditorias"
+AUDIT_CURSOR_PATH = LOGS_DIR / ".sync_cursor.json"
+HF_SQUASH_INTERVAL_DAYS = int(os.getenv("HF_SQUASH_INTERVAL_DAYS", "30"))
+
 GEMINI_LITE_MODEL = "gemini-3.1-flash-lite"
 GEMINI_FAST_MODEL = "gemini-3.5-flash"
 GEMINI_REASONING_MODEL = "gemini-3.5-flash"

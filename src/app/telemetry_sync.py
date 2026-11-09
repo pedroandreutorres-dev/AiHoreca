@@ -204,3 +204,126 @@ class HuggingFaceTelemetrySync:
                 self.trigger_async_sync()
 
         return success
+
+    def pull_latest_from_hf(self, force: bool = False) -> dict[str, object]:
+        """Descarga la versión más reciente de los logs y base de sesiones desde Hugging Face Dataset hacia `data/`.
+
+        Si `force=False`, comprueba primero el SHA del último commit en Hugging Face Hub contra el archivo
+        local `data/logs/.last_hf_sha` para evitar descargas redundantes si no ha habido actividad en la web.
+        """
+        token, repo_id = get_hf_telemetry_config()
+        if not token or not repo_id:
+            return {
+                "updated": False,
+                "reason": "HF_LOG_TOKEN o HF_LOG_DATASET_REPO no configurados en el entorno (.env).",
+            }
+
+        from huggingface_hub import HfApi, hf_hub_download
+
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        SESSIONS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        sha_marker = LOGS_DIR / ".last_hf_sha"
+
+        api = HfApi(token=token)
+        info = api.dataset_info(repo_id=repo_id)
+        remote_sha = str(getattr(info, "sha", "") or "")
+        local_sha = sha_marker.read_text(encoding="utf-8").strip() if sha_marker.exists() else ""
+
+        if not force and remote_sha and remote_sha == local_sha and CONVERSATIONS_TXT_PATH.exists():
+            return {
+                "updated": False,
+                "repo_id": repo_id,
+                "sha": remote_sha,
+                "reason": "Sin cambios remotos desde la última sincronización.",
+            }
+
+        downloaded_files: list[str] = []
+        targets = (
+            ("conversaciones.txt", CONVERSATIONS_TXT_PATH),
+            ("turnos_metricas.csv", TURNS_CSV_PATH),
+            ("aihoreca_sessions.db", SESSIONS_DB_PATH),
+        )
+        for remote_name, dest_path in targets:
+            try:
+                cached_file = hf_hub_download(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    filename=remote_name,
+                    token=token,
+                    force_download=True,
+                )
+                if cached_file and Path(cached_file).exists():
+                    if remote_name == "aihoreca_sessions.db":
+                        for suffix in ("-wal", "-shm"):
+                            wal_p = Path(f"{dest_path}{suffix}")
+                            if wal_p.exists():
+                                try:
+                                    wal_p.unlink()
+                                except Exception:
+                                    pass
+                    shutil.copyfile(cached_file, dest_path)
+                    os.chmod(
+                        dest_path,
+                        stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH,
+                    )
+                    downloaded_files.append(str(dest_path))
+            except Exception:
+                continue
+
+        if remote_sha and downloaded_files:
+            sha_marker.write_text(remote_sha, encoding="utf-8")
+
+        return {
+            "updated": bool(downloaded_files),
+            "repo_id": repo_id,
+            "sha": remote_sha,
+            "files": downloaded_files,
+            "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        }
+
+
+def _cli() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Sincronizador local de logs de telemetría desde Hugging Face Dataset."
+    )
+    parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Descarga los últimos logs de Hugging Face si hay un nuevo commit remoto.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Fuerza la descarga aunque el SHA remoto coincida con el último descargado.",
+    )
+    parser.add_argument(
+        "--watch",
+        type=int,
+        default=0,
+        metavar="SEGUNDOS",
+        help="Modo demonio: comprueba y descarga cambios cada N segundos (ej. --watch 60).",
+    )
+    args = parser.parse_args()
+    syncer = HuggingFaceTelemetrySync()
+
+    if args.watch > 0:
+        interval = max(15, args.watch)
+        print(f"[AiHoreca Telemetry Watcher] Escuchando cambios cada {interval}s... (Ctrl+C para detener)")
+        try:
+            while True:
+                res = syncer.pull_latest_from_hf(force=args.force)
+                if res.get("updated"):
+                    print(json.dumps(res, ensure_ascii=False))
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\n[AiHoreca Telemetry Watcher] Detenido.")
+    else:
+        res = syncer.pull_latest_from_hf(force=args.force)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    _cli()
