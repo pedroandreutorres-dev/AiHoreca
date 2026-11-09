@@ -15,12 +15,14 @@
 
 **Objetivo:** que Streamlit Cloud aplique realmente la política de conservación (RGPD art. 5.1.e).
 
-- [ ] Revisar diff: `src/config.py`, `src/graph/memory.py`, `src/app/service.py`, `src/app/telemetry_sync.py`, `src/app/audit_runner.py` (nuevo).
-- [ ] Verificar que `data/logs/`, `data/sessions/` y `.env` siguen excluidos por `.gitignore`.
-- [ ] Comprobación sintáctica/import de los módulos modificados.
-- [ ] Commit: `feat: 90-day session retention at source + local daily audit pipeline`.
-- [ ] `git push` → redepliegue automático en Streamlit Cloud.
-- [ ] Verificación post-deploy: lanzar 1 consulta en la web y confirmar commit nuevo en `Andregon79/aihoreca-logs`.
+- [x] Revisar diff: `src/config.py`, `src/graph/memory.py`, `src/app/service.py`, `src/app/telemetry_sync.py`, `src/app/audit_runner.py` (nuevo).
+- [x] Verificar que `data/logs/`, `data/sessions/` y `.env` siguen excluidos por `.gitignore`.
+- [x] Comprobación sintáctica/import de los módulos modificados.
+  - Corregido antes del commit: faltaban `import time` (habría tumbado la app al arrancar) y la importación de `SESSION_RETENTION_DAYS` (la purga habría fallado en silencio).
+  - Test de purga en BD temporal: sesión de 2020 eliminada, sesión reciente conservada.
+- [x] Commit `9d14c81`: `feat: 90-day session retention at source + local daily audit pipeline`.
+- [x] `git push` → redepliegue automático en Streamlit Cloud.
+- [x] Verificación post-deploy: lanzar 1 consulta en la web y confirmar commit nuevo en `Andregon79/aihoreca-logs`.
 
 **Funcionamiento:**
 - `SessionMemoryStore.purge_inactive_sessions(90)` borra sesiones con `updated_at` > 90 días y sus turnos.
@@ -31,15 +33,17 @@
 
 ## Paso 2 — Correcciones de `audit_runner.py`
 
-- [ ] **Bug etiquetas de feedback:** usar `OK` / `KO` (valores reales de la app) en lugar de `ME_GUSTA` / `NO_ME_GUSTA`. Afecta a recuentos 👍/👎 y a la detección de turnos con voto negativo.
-- [ ] **Votos tardíos:** guardar `last_feedback_at` en `.sync_cursor.json` e incluir turnos ya auditados que reciben voto después, en sección propia del informe.
-- [ ] **Zona horaria:** nombre y fechas del informe en Europe/Madrid.
-- [ ] **No sobrescribir:** si hay varias ejecuciones con turnos nuevos el mismo día, añadir al informe existente con cabecera de hora.
-- [ ] **Retención local 90 días:**
+- [x] **Bug etiquetas de feedback:** usar `OK` / `KO` (valores reales de la app) en lugar de `ME_GUSTA` / `NO_ME_GUSTA`. Afecta a recuentos 👍/👎 y a la detección de turnos con voto negativo.
+- [x] **Votos tardíos:** guardar `last_feedback_at` en `.sync_cursor.json` e incluir turnos ya auditados que reciben voto después, en sección propia del informe.
+- [x] **Zona horaria:** nombre y fechas del informe en Europe/Madrid.
+- [x] **No sobrescribir:** si hay varias ejecuciones con turnos nuevos el mismo día, añadir al informe existente con cabecera de hora.
+- [x] **Retención local 90 días:**
   - Borrar `data/logs/sesiones/*.txt` cuya sesión lleve > 90 días sin actividad (o ya no exista en la BD purgada).
-  - Antes de borrar informes `data/logs/auditorias/*.md` de > 90 días, volcar sus métricas a `data/logs/historico_metricas.csv` (sin texto libre, conservación indefinida).
-- [ ] **`--export-candidates`:** volcar turnos marcados (KO o cifras no verificadas) a `data/logs/candidatos_golden.jsonl` con motivo y tipo de fallo.
-- [ ] Regenerar línea base con `--force-audit-all` tras las correcciones.
+  - Las métricas de cada ejecución se escriben en `data/logs/historico_metricas.csv` en el momento (sin texto libre, conservación indefinida), así borrar informes de > 90 días no pierde información.
+- [x] **Candidatos al golden set:** activado por defecto (`--no-export-candidates` para desactivar); vuelca turnos marcados (KO, cifras no verificadas, auditoría fallida, votos tardíos KO) a `data/logs/candidatos_golden.jsonl`, sin duplicados, con caducidad de 90 días.
+- [x] Línea base regenerada con `--force-audit-all` (09/11/2026): 51 turnos, 👍 4 / 👎 3, 7 turnos marcados, 7 candidatos.
+- [x] Salida de consola en UTF-8 (tildes y emojis correctos en Windows).
+- [x] Prompt de la automatización diaria actualizado a las nuevas secciones del informe.
 
 ---
 
