@@ -44,9 +44,15 @@ Thumbs.db
 data/sessions/
 data/logs/
 data/qdrant_storage/.lock
+data/processed/evaluation_results.json
 
 # ==============================================================================
 # 5. Boletines Oficiales Crudos en PDF (Ya procesados en data/processed/*.md
 #    e indexados en data/qdrant_storage/ para despliegue directo en Streamlit)
 # ==============================================================================
 data/raw/*.pdf
+
+# ==============================================================================
+# 6. Documentación Interna, Borradores de Diseño y Hojas de Trabajo Local
+# ==============================================================================
+docs/

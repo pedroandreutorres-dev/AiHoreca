@@ -188,10 +188,6 @@ AiHoreca/
 ├── .env.example                              # Plantilla de variables de entorno
 ├── .gitignore                                # Reglas de exclusión para control de versiones
 ├── Iniciar_AiHoreca.bat                      # Lanzador rápido opcional para entornos Windows
-├── comandos_control_calidad.md               # Guía rápida de comandos de terminal para tests y regresión
-├── plan_auditoria_y_regresion.md             # Plan de diseño y trazabilidad de arquitectura de auditoría
-├── arquitectura_rag_hosteleria.md            # Especificación detallada de diseño de arquitectura
-├── despliegue_web_y_telemetria_hf.md         # Guía de publicación web y telemetría remota en HF Hub
 ├── requirements.txt                          # Dependencias del proyecto
 └── README.md
 ```
@@ -243,7 +239,19 @@ python -m src.evaluation.regression --force
 python -m src.evaluation.regression --quick --update-baseline
 ```
 
-Para una referencia exhaustiva de parámetros y códigos de salida, consulta [`comandos_control_calidad.md`](file:///d:/Proyectos/AiHoreca/comandos_control_calidad.md).
+#### Opciones de la CLI de Regresión (`src.evaluation.regression`)
+
+| Parámetro | Tipo | Descripción |
+| :--- | :--- | :--- |
+| `--quick` | Flag | Modo rápido determinista en CPU (0 tokens de juez, ~5s). Evalúa enrutamiento, provincias y 0 alucinaciones. |
+| `--force` | Flag | Fuerza la reejecución completa del grafo ignorando la caché local de turnos. |
+| `--case-id <ID>` | String | Filtra la ejecución a un único caso de prueba específico (ej. `GD_14_COMPARATIVA_MADRID_LEON`). |
+| `--update-baseline` | Flag | Sobrescribe la línea base oficial (`evaluation_baseline.json`) con las métricas de la corrida actual. |
+| `--json` | Flag | Emite el reporte de regresión en formato JSON para integración con pipelines CI/CD. |
+
+**Códigos de Salida (Exit Codes para CI/CD):**
+- `0`: Todos los casos de prueba pasan satisfactoriamente sin regresión respecto a la línea base oficial.
+- `1`: Se detecta al menos una regresión (un caso que previamente pasaba ahora falla).
 
 ---
 
