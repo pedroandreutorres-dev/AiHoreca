@@ -219,9 +219,10 @@ class AiHorecaGraphNodes:
             "detenida esperando provincia, puesto de trabajo o ambos) y el mensaje actual del usuario aporta el dato que faltaba (ej. 'Trabajo en Madrid', 'Es camarera', 'De cocinero en León'), "
             "clasifica como 'HOSPITALITY_CORE' (o 'UNSUPPORTED_PROVINCE' si la provincia no está soportada) y fusiona la pregunta pendiente "
             "con los datos conocidos de la sesión y el nuevo dato aportado en `consulta_autocontenida_resuelta`.\n"
-            "   - CASO B (Repregunta o seguimiento en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta o seguimiento, "
-            "hereda de `SLOTS ACTIVOS DE LA SESIÓN` y de `VENTANA COMPACTA DE TURNOS RECIENTES` el territorio, puesto(s) y condiciones contractuales ya aportadas en la sesión, "
-            "PERO centra `consulta_autocontenida_resuelta` y `query_busqueda_hibrida` EXCLUSIVAMENTE en responder la nueva duda planteada en el `MENSAJE ACTUAL`. "
+            "   - CASO B (Repregunta, seguimiento o cambio de ámbito en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta, "
+            "seguimiento o cambio de ámbito geográfico, el `MENSAJE ACTUAL` prevalece sobre los slots previos. Si el usuario menciona una nueva provincia o solicita comparar "
+            "varias provincias (ej. '¿y en Madrid?', 'compara con Barcelona'), identifica y devuelve las provincias del turno actual en `provincia_detectada_en_turno_actual` "
+            "para actualizar el ámbito de la sesión, heredando de los slots activos únicamente los datos no modificados (puesto, jornada, etc.). "
             "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores.\n\n"
             "2. GUARDRAIL DE DOMINIO:\n"
             "   - Clasifica como 'OUT_OF_SCOPE' cualquier consulta ajena al derecho laboral de hostelería/restauración/alojamiento/turismo "
@@ -555,7 +556,7 @@ class AiHorecaGraphNodes:
             "Debes responder la consulta del usuario basándote en los FRAGMENTOS NORMATIVOS proporcionados, citando siempre de qué artículo, disposición o anexo/tabla sale cada dato.\n\n"
             "REGLAS INQUEBRANTABLES DE INGENIERÍA JURÍDICA Y CONVERSACIONAL:\n"
             "1. CONTINUIDAD CONVERSACIONAL, COHERENCIA TERRITORIAL Y PROHIBICIÓN DE REPETICIÓN ENTRE TURNOS:\n"
-            "   - **PROHIBICIÓN ABSOLUTA DE SUSTITUCIÓN JURISDICCIONAL**: Está terminantemente prohibido aplicar tablas salariales, número de pagas o artículos de un convenio provincial/autonómico distinto al `TERRITORIO APLICABLE` del trabajador. Jamás utilices el convenio de otra provincia 'por analogía' ni ocultes a qué provincia pertenece el convenio citado.\n"
+            "   - **PRINCIPIO DE ATRIBUCIÓN JURISDICCIONAL ESTRICTA**: Responde a la consulta basándote estricta y exclusivamente en los FRAGMENTOS NORMATIVOS recuperados. Cita siempre con precisión la norma, el artículo o anexo y el territorio al que pertenece cada dato. No inventes condiciones de provincias que no consten en los fragmentos ni traslades condiciones de un convenio a otro salvo que la consulta solicite expresamente contrastarlos.\n"
             "   - Revisa `HISTORIAL RECIENTE DE LA CONVERSACIÓN` para mantener todos los parámetros del caso ya aportados por el usuario en la sesión (jornada parcial o completa, puesto, modalidad, etc.) sin olvidarlos.\n"
             "   - **PROHIBIDO REPETIR EXPLICACIONES O TABLAS DE TURNOS ANTERIORES**: Si en un turno previo ya desglosaste una tabla o cálculo y en el `MENSAJE ACTUAL` el usuario plantea una repregunta o nueva duda, **responde directa y exclusivamente a la nueva pregunta del turno actual**, sin volver a volcar las tablas ni repetir el discurso del turno anterior salvo que el usuario pida recalcularlo.\n"
             "2. ADECUACIÓN DE LA ESTRUCTURA A LA INTENCIÓN DEL TURNO:\n"
@@ -575,14 +576,14 @@ class AiHorecaGraphNodes:
             "   - Registra todas las operaciones aritméticas realizadas en `calculos_derivados` con su fórmula y operandos base para su verificación por el Nodo 5.\n"
             "5. CRITERIO ESTRICTO SOBRE IMPORTES NETOS, IRPF Y COTIZACIONES (ALCANCE EXCLUSIVAMENTE BRUTO Y CARÁCTER ORIENTATIVO):\n"
             "   - Los convenios colectivos y las tablas salariales regulan **exclusivamente importes BRUTOS** (conforme al Art. 26.4 del Estatuto de los Trabajadores, las cargas fiscales y de Seguridad Social corren a cargo de la persona trabajadora).\n"
-            "   - Siempre que el usuario pregunte por un **importe neto (sueldo neto, hora extra neta, nómina neta) o descuento de impuestos (IRPF / Seguridad Social)**, **es obligatorio advertir de forma destacada que cualquier cálculo neto es ESTRICTAMENTE ORIENTATIVO y aproximado**, ya que el sistema no realiza liquidaciones fiscales de IRPF (el porcentaje de retención depende de las circunstancias personales y familiares del Modelo 145, modalidad contractual y rendimientos anuales totales). Si muestras una simulación o ejemplo en neto, etiquétalo siempre expresamente como **«Neto Orientativo (aprox.)»**."
+            "   - Siempre que el usuario pregunte por un **importe neto (sueldo neto, hora extra neta, nómina neta) o descuento de impuestos (IRPF / Seguridad Social)**, **es obligatorio advertir de forma destacada que cualquier cálculo neto es ESTRICTAMENTE ORIENTATIVO y aproximado**, ya que el sistema no realiza liquidaciones fiscales de IRPF (el porcentaje de retención depende de las circunstancias personales y familiares del Modelo 145, modalidad contractual y rendimientos anuales totales), **sin inventar ni estimar porcentajes específicos de memoria si no constan en los fragmentos recuperados**. Si muestras una simulación o ejemplo en neto, etiquétalo siempre expresamente como **«Neto Orientativo (aprox.)»**."
         )
 
         prompt = (
             f"HISTORIAL RECIENTE DE LA CONVERSACIÓN (TURNOS PREVIOS DE ESTA SESIÓN): {json.dumps(history, ensure_ascii=False)}\n"
             f"MENSAJE ACTUAL DEL USUARIO: {raw_query}\n"
             f"CONSULTA AUTOCONTENIDA RESUELTA (OBJETIVO DE ESTE TURNO): {effective_query}\n"
-            f"TERRITORIO APLICABLE: {provincia or 'Estatal'}\n"
+            f"ÁMBITO TERRITORIAL RECUPERADO: {provincia or 'Estatal'}\n"
             f"TRADUCCIÓN TÉCNICA VI ALEH: Categoría={cat_aleh or 'N/A'} | Área Funcional={area_aleh or 'N/A'}\n\n"
             f"FRAGMENTOS NORMATIVOS RECUPERADOS DE QDRANT + COHERE RERANK:\n"
             f"{full_context_str}"
@@ -699,6 +700,17 @@ class AiHorecaGraphNodes:
                         for rec in surcharge_multipliers:
                             auto_derived_floats.add(round(base_hour * rec, 2))
 
+        # Sumas multiconcepto generales (Salario Base o Prorrateado + subconjuntos de complementos verificados del corpus)
+        import itertools
+        candidate_bases = [v for v in auto_derived_floats if 400.0 <= v <= 4500.0] + [
+            v for v in corpus_floats if 400.0 <= v <= 4500.0
+        ]
+        candidate_pluses = sorted({v for v in corpus_floats if 5.0 <= v <= 500.0})[:12]
+        for base_val in candidate_bases:
+            for k_terms in range(1, min(len(candidate_pluses) + 1, 5)):
+                for comb in itertools.combinations(candidate_pluses, k_terms):
+                    auto_derived_floats.add(round(base_val + sum(comb), 2))
+
         # Validar cálculos derivados declarados cuyos operandos base existan en el corpus o en la consulta del usuario
         verified_derived_norms: set[str] = {f"{v:.2f}" for v in auto_derived_floats}
         derived_display_list: list[str] = []
@@ -768,11 +780,17 @@ class AiHorecaGraphNodes:
         warnings: list[str] = []
         territory_consistent = True
         if expected_territorio:
-            valid_terrs = {expected_territorio}
-            for comm, provs in AUTONOMOUS_COMMUNITY_EXPANSION.items():
-                if expected_territorio in provs:
-                    valid_terrs.add(comm)
-                    valid_terrs.update(provs)
+            raw_exp_tokens = [
+                _canonicalize_llm_province(t)
+                for t in re.split(r"[,/|]|\s+y\s+", expected_territorio.replace("_", " "))
+                if t.strip()
+            ]
+            valid_terrs = {t for t in raw_exp_tokens if t}
+            for t in list(valid_terrs):
+                for comm, provs in AUTONOMOUS_COMMUNITY_EXPANSION.items():
+                    if t in provs or t == comm:
+                        valid_terrs.add(comm)
+                        valid_terrs.update(provs)
             mismatched_terrs = {
                 d.territorio
                 for d in docs
