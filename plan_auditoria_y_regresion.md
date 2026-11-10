@@ -63,6 +63,11 @@
   - Modo `--full` con Juez Semántico RAGAS single-pass.
   - Bloqueo por regresión determinista y alerta por caída semántica.
   - `--update-baseline` para fijar nuevas líneas base tras cambios validados.
+- [x] Refactorización arquitectónica limpia (commit `df41e60`):
+  - **Sintetizador**: Principio universal de Atribución Jurisdiccional Estricta (permite contrastar convenios sin atarse a un único trabajador).
+  - **Router**: Prevalencia del turno actual (el usuario puede saltar de provincia o comparar sin anclaje histórico de sesión).
+  - **Auditor Aritmético**: Algoritmo generalista de suma de subconjuntos ($T \in \text{SubsetSums}$) para tablas con $k$ complementos salariales.
+  - **Advertencias**: Prohibición de inventar porcentajes de cotización de memoria (`6,45%`) si no están en el corpus RAG.
 
 ---
 
