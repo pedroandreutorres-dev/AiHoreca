@@ -28,6 +28,7 @@ from src.config import (
     RETRIEVAL_FINAL_TOP_K,
     RETRIEVAL_TOP_K_PER_LAYER,
     get_genai_client,
+    get_qdrant_config,
     load_environment,
 )
 from src.retrieval.chunker import chunk_all_processed_documents
@@ -42,28 +43,43 @@ DENSE_DIMENSION = 3072
 
 
 class AiHorecaVectorStore:
-    """Gestiona la indexación y búsqueda híbrida jerárquica en Qdrant local (100% CPU)."""
+    """Gestiona la indexación y búsqueda híbrida jerárquica en Qdrant (Local CPU o Qdrant Cloud)."""
 
     def __init__(
         self,
         storage_dir: Path = QDRANT_STORAGE_DIR,
-        collection_name: str = COLLECTION_NAME,
+        collection_name: Optional[str] = None,
+        force_local: bool = False,
     ) -> None:
         load_environment()
+        qdrant_url, qdrant_api_key, default_collection = get_qdrant_config()
         self.storage_dir = storage_dir
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.collection_name = collection_name
+        self.collection_name = collection_name or default_collection
+        self.is_cloud = bool(qdrant_url and not force_local)
 
-        # Registro global a nivel de proceso (`sys`) para reutilizar la instancia de QdrantLocal
+        # Registro global a nivel de proceso (`sys`) para reutilizar la instancia de Qdrant
         # ante recargas en caliente de Streamlit (@st.cache_resource / importlib.reload) sin colisión de portalocker.
         qdrant_registry: dict[str, QdrantClient] = getattr(sys, "_aihoreca_qdrant_clients", {})
         setattr(sys, "_aihoreca_qdrant_clients", qdrant_registry)
-        storage_key = str(self.storage_dir.resolve())
+
+        if self.is_cloud:
+            storage_key = f"cloud::{qdrant_url}::{self.collection_name}"
+        else:
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
+            storage_key = str(self.storage_dir.resolve())
 
         if storage_key in qdrant_registry and qdrant_registry[storage_key] is not None:
             self.qdrant = qdrant_registry[storage_key]
         else:
-            self.qdrant = QdrantClient(path=str(self.storage_dir))
+            if self.is_cloud:
+                logger.info("Conectando a Qdrant Cloud (%s)...", qdrant_url)
+                self.qdrant = QdrantClient(
+                    url=qdrant_url,
+                    api_key=qdrant_api_key,
+                    timeout=60,
+                )
+            else:
+                self.qdrant = QdrantClient(path=str(self.storage_dir))
             qdrant_registry[storage_key] = self.qdrant
 
         self.genai_client: genai.Client = get_genai_client()
@@ -83,6 +99,24 @@ class AiHorecaVectorStore:
                 self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
                 setattr(sys, "_aihoreca_sparse_model", self._sparse_model)
         return self._sparse_model
+
+    def _ensure_payload_indexes(self) -> None:
+        """Crea índices de payload (KEYWORD) necesarios en Qdrant Cloud para filtros eficientes."""
+        for field_name in (
+            "capa_normativa",
+            "provincias_aplicables",
+            "tipo_contenido",
+            "source_file",
+            "territorio",
+        ):
+            try:
+                self.qdrant.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except Exception as exc:
+                logger.debug("Índice de payload '%s' omitido/existente: %s", field_name, exc)
 
     def ensure_collection(self, recreate: bool = False) -> None:
         """Crea o verifica la colección híbrida (Dense 3072 + Sparse BM25 IDF) e índices de payload."""
@@ -112,6 +146,25 @@ class AiHorecaVectorStore:
                     )
                 },
             )
+        self._ensure_payload_indexes()
+
+    def _get_all_existing_ids(self) -> set[str]:
+        """Recupera todos los IDs de la colección mediante scroll paginado (sin límite de 10k)."""
+        existing_ids: set[str] = set()
+        next_offset = None
+        while True:
+            points, next_offset = self.qdrant.scroll(
+                collection_name=self.collection_name,
+                limit=1000,
+                offset=next_offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            for pt in points:
+                existing_ids.add(str(pt.id))
+            if next_offset is None or not points:
+                break
+        return existing_ids
 
     def _embed_dense_batch(
         self,
@@ -162,19 +215,35 @@ class AiHorecaVectorStore:
         chunks: list[LegalChunk],
         batch_size: int = 96,
         recreate: bool = False,
+        replace_source_files: Optional[list[str]] = None,
     ) -> int:
-        """Indexa de forma incremental todos los LegalChunk en Qdrant combinando Dense (gemini-embedding-001) y BM25 en CPU."""
+        """Indexa de forma incremental los LegalChunk en Qdrant (permite actualizar solo documentos específicos)."""
         self.ensure_collection(recreate=recreate)
 
-        existing_points, _ = self.qdrant.scroll(
-            collection_name=self.collection_name,
-            limit=10000,
-            with_payload=False,
-            with_vectors=False,
-        )
-        existing_ids = {str(pt.id) for pt in existing_points}
+        target_chunks = chunks
+        if replace_source_files and not recreate:
+            logger.info(
+                "Actualización incremental: eliminando puntos previos de %s...",
+                replace_source_files,
+            )
+            self.qdrant.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="source_file",
+                                match=models.MatchAny(any=replace_source_files),
+                            )
+                        ]
+                    )
+                ),
+            )
+            target_set = set(replace_source_files)
+            target_chunks = [c for c in chunks if c.source_file in target_set]
 
-        pending_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
+        existing_ids = self._get_all_existing_ids()
+        pending_chunks = [c for c in target_chunks if c.chunk_id not in existing_ids]
         if not pending_chunks:
             logger.info(
                 "La colección '%s' ya contiene los %d chunks indexados.",
@@ -750,9 +819,100 @@ class AiHorecaVectorStore:
         return selected
 
 
-def build_and_index_corpus(recreate: bool = False) -> tuple[AiHorecaVectorStore, list[LegalChunk]]:
-    """Función principal para fragmentar los 5 Markdowns e indexarlos en Qdrant local."""
+def build_and_index_corpus(
+    recreate: bool = False,
+    source_files: Optional[list[str]] = None,
+) -> tuple[AiHorecaVectorStore, list[LegalChunk]]:
+    """Fragmenta los documentos procesados y los indexa (completa o incrementalmente) en Qdrant."""
     chunks = chunk_all_processed_documents()
     store = AiHorecaVectorStore()
-    store.index_chunks(chunks, recreate=recreate)
+    store.index_chunks(chunks, recreate=recreate, replace_source_files=source_files)
     return store, chunks
+
+
+def migrate_local_to_cloud(
+    local_dir: Path = QDRANT_STORAGE_DIR,
+    batch_size: int = 64,
+    recreate: bool = False,
+) -> int:
+    """Copia vectores y payloads pre-calculados de Qdrant local hacia Qdrant Cloud sin gastar tokens de embedding."""
+    qdrant_url, _, _ = get_qdrant_config()
+    if not qdrant_url:
+        raise ValueError(
+            "QDRANT_URL no está configurado en el entorno. Configura QDRANT_URL y QDRANT_API_KEY antes de migrar."
+        )
+
+    local_store = AiHorecaVectorStore(storage_dir=local_dir, force_local=True)
+    cloud_store = AiHorecaVectorStore(force_local=False)
+    cloud_store.ensure_collection(recreate=recreate)
+
+    total_migrated = 0
+    next_offset = None
+    while True:
+        points, next_offset = local_store.qdrant.scroll(
+            collection_name=local_store.collection_name,
+            limit=batch_size,
+            offset=next_offset,
+            with_payload=True,
+            with_vectors=True,
+        )
+        if not points:
+            break
+
+        batch_structs = [
+            models.PointStruct(
+                id=pt.id,
+                vector=pt.vector,
+                payload=pt.payload or {},
+            )
+            for pt in points
+        ]
+        cloud_store.qdrant.upsert(
+            collection_name=cloud_store.collection_name,
+            points=batch_structs,
+        )
+        total_migrated += len(batch_structs)
+        logger.info("Migrados %d puntos a Qdrant Cloud...", total_migrated)
+        if next_offset is None:
+            break
+
+    final_count = cloud_store.qdrant.count(collection_name=cloud_store.collection_name).count
+    logger.info("Migración a Qdrant Cloud completada: %d puntos en '%s'.", final_count, cloud_store.collection_name)
+    return final_count
+
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    parser = argparse.ArgumentParser(description="Gestor de indexación vectorial híbrida de AiHoreca (Local / Cloud).")
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Elimina y recrea la colección completa desde cero.",
+    )
+    parser.add_argument(
+        "--source-file",
+        action="append",
+        dest="source_files",
+        help="Reindexa incrementalmente solo el/los archivo(s) Markdown indicado(s) (ej. --source-file convenio_baleares.md).",
+    )
+    parser.add_argument(
+        "--sync-to-cloud",
+        action="store_true",
+        help="Migra los puntos ya calculados en local hacia Qdrant Cloud sin llamadas a Gemini Embeddings.",
+    )
+    args = parser.parse_args()
+
+    if args.sync_to_cloud:
+        count = migrate_local_to_cloud(recreate=args.recreate)
+        print(f"Qdrant Cloud sincronizado: {count} puntos disponibles.")
+    else:
+        store, _chunks = build_and_index_corpus(recreate=args.recreate, source_files=args.source_files)
+        total = store.qdrant.count(collection_name=store.collection_name).count
+        target_label = "Qdrant Cloud" if store.is_cloud else "Qdrant Local"
+        print(f"{target_label} actualizado ({store.collection_name}): {total} puntos totales.")
+
+
+if __name__ == "__main__":
+    _cli()

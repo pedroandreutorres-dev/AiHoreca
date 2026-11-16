@@ -73,11 +73,30 @@ def load_environment() -> None:
                 "HF_LOG_TOKEN",
                 "HF_TOKEN",
                 "HF_LOG_DATASET_REPO",
+                "QDRANT_URL",
+                "QDRANT_API_KEY",
+                "QDRANT_COLLECTION_NAME",
             ):
                 if k in st.secrets and not os.getenv(k):
                     os.environ[k] = str(st.secrets[k])
     except Exception:
         pass
+
+
+def get_qdrant_config() -> tuple[Optional[str], Optional[str], str]:
+    """Devuelve (url, api_key, collection_name) para Qdrant Cloud si está configurado; si no, url=None (modo local)."""
+    load_environment()
+    url = (os.getenv("QDRANT_URL") or "").strip()
+    api_key = (os.getenv("QDRANT_API_KEY") or "").strip()
+    collection_name = (os.getenv("QDRANT_COLLECTION_NAME") or "aihoreca_legal_corpus").strip()
+    if (
+        not url
+        or "tu-cluster" in url
+        or url.endswith("...")
+        or (api_key == "...")
+    ):
+        return None, None, collection_name
+    return url, (api_key or None), collection_name
 
 
 def get_hf_telemetry_config() -> tuple[Optional[str], Optional[str]]:
