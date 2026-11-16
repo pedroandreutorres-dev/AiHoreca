@@ -102,8 +102,8 @@ class QueryAnalysisSchema(BaseModel):
     requiere_convenio_provincial: bool = Field(
         description=(
             "True si la respuesta exacta depende del Convenio Colectivo Provincial/Autonómico "
-            "(ej. tablas salariales, sueldo base, pluses, nocturnidad, vacaciones concretas, jornada anual, descansos, licencias retribuidas, bajas/IT, faltas/sanciones específicas). "
-            "False SOLO si la consulta se refiere exclusivamente a la estructura general estatal del ALEH VI o del Estatuto de los Trabajadores sin depender de condiciones provinciales."
+            "(ej. tablas salariales, sueldo base, pluses, nocturnidad, vacaciones concretas, jornada anual, descansos, licencias retribuidas, bajas/IT). "
+            "False cuando la consulta se refiera exclusivamente a normativa estatal general (VI ALEH o Estatuto de los Trabajadores) sin depender de condiciones provinciales (ej. áreas funcionales, clasificación de grupos, régimen disciplinario general o prescripción de faltas)."
         )
     )
     requiere_puesto_o_categoria: bool = Field(
@@ -111,7 +111,8 @@ class QueryAnalysisSchema(BaseModel):
         description=(
             "True si para responder con exactitud la pregunta del usuario es imprescindible conocer el puesto de trabajo o categoría profesional del trabajador "
             "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extraordinaria, conocer su nivel retributivo, funciones de su puesto o periodo de prueba por grupo). "
-            "False si la consulta es general del convenio o estatuto y aplica por igual sin importar el puesto (ej. cuántos días de vacaciones anuales hay, cuántas pagas extras tiene el convenio, cuál es la jornada máxima anual o días de permiso por mudanza/matrimonio)."
+            "Si el usuario formula varias sub-preguntas y al menos una depende del puesto (ej. pregunta por el sueldo Y cuántas pagas extras tiene), DEBE ser True. "
+            "False únicamente si TODA la consulta es general del convenio o estatuto y aplica por igual sin importar el puesto (ej. cuántos días de vacaciones anuales hay, cuántas pagas extras tiene el convenio, cuál es la jornada máxima anual o días de permiso por mudanza/matrimonio)."
         ),
     )
     oficio_coloquial_detectado: Optional[str] = Field(

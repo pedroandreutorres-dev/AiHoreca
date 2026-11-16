@@ -236,10 +236,12 @@ class AiHorecaGraphNodes:
             "     * **REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de negocios, marcas, cadenas o calles que contengan topónimos. Si existe ambigüedad sobre cuál es la ubicación geográfica real o si no se menciona ubicación en este turno, devuelve null.\n"
             "   - `requiere_convenio_provincial`: Marca `True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
             "nocturnidad, horas extra, vacaciones, jornada anual, descansos, licencias/permisos retribuidos, bajas médicas (complemento IT), "
-            "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo.\n"
+            "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo. "
+            "Marca `False` cuando la consulta verse exclusivamente sobre normativa estatal general (Estatuto de los Trabajadores o VI ALEH) sin depender de cuantías o reglas provinciales (ej. áreas funcionales, clasificación de grupos, régimen disciplinario/faltas/sanciones, prescripción de faltas o mínimos generales estatales).\n"
             "   - `requiere_puesto_o_categoria`: Marca `True` cuando para responder la pregunta con exactitud sea imprescindible saber el puesto o categoría profesional del trabajador "
             "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extra, nivel salarial o periodo de prueba según grupo profesional). "
-            "Marca `False` cuando la pregunta sea general del convenio o estatuto y aplique igual a todos los puestos (ej. cuántos días de vacaciones anuales corresponden, cuántas pagas extras hay al año, jornada máxima anual o días de permiso por mudanza/matrimonio).\n\n"
+            "Si la consulta incluye varias preguntas y al menos una de ellas depende del puesto (ej. pregunta por el sueldo Y por las pagas extras), marca `True`. "
+            "Marca `False` únicamente cuando TODA la consulta sea general del convenio o estatuto y aplique igual a todos los puestos (ej. cuántos días de vacaciones anuales corresponden, cuántas pagas extras hay al año, jornada máxima anual o días de permiso por mudanza/matrimonio).\n\n"
             "4. TRADUCTOR DE OFICIOS COLOQUIALES AL VI ALEH (PROHIBIDO ADIVINAR EL PUESTO POR EL TIPO DE NEGOCIO):\n"
             "   - **REGLA ESTRICTA**: Si el usuario solo menciona el tipo de establecimiento ('trabaja en un bar', 'en un restaurante', 'en un hotel', 'en una cafetería') pero **NO especifica qué puesto u oficio desempeña** (ni consta en `SLOTS ACTIVOS DE LA SESIÓN`), DEBES dejar `oficio_coloquial_detectado = null` y `categoria_profesional_aleh = null`. Jamás des por hecho ni inventes un puesto.\n"
             "   - Cuando el usuario SÍ indique un puesto u oficio (en el turno actual o heredado de los slots de la sesión), mapéalo a su denominación técnica en el VI ALEH:\n"
@@ -687,6 +689,9 @@ class AiHorecaGraphNodes:
         ratios_jornada = [1.0] + [h_val / 40.0 for h_val in query_floats]
         annual_hours_in_corpus = [v for v in corpus_floats if 1500.0 <= v <= 2000.0]
         for c_val in corpus_floats:
+            if 0.5 <= c_val < 500.0:
+                for mult in (11.0, 12.0, 20.0, 21.0, 22.0, 30.0):
+                    auto_derived_floats.add(round(c_val * mult, 2))
             if c_val >= 500.0:
                 for r_jor in ratios_jornada:
                     scaled_val = c_val * r_jor
@@ -702,12 +707,22 @@ class AiHorecaGraphNodes:
                         for rec in surcharge_multipliers:
                             auto_derived_floats.add(round(base_hour * rec, 2))
 
-        # Sumas multiconcepto generales (Salario Base o Prorrateado + subconjuntos de complementos verificados del corpus)
+        # Sumas multiconcepto generales (Salario Base o Prorrateado + subconjuntos de complementos monetarios del corpus)
         import itertools
+        euro_corpus_floats: set[float] = set()
+        for em in re.finditer(r"\b(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:[.,]\d+)?)\s*(?:€|euros?)", combined_corpus, flags=re.IGNORECASE):
+            try:
+                euro_corpus_floats.add(float(cls._normalize_number_token(em.group(1))))
+            except ValueError:
+                pass
         candidate_bases = [v for v in auto_derived_floats if 400.0 <= v <= 4500.0] + [
             v for v in corpus_floats if 400.0 <= v <= 4500.0
         ]
-        candidate_pluses = sorted({v for v in corpus_floats if 5.0 <= v <= 500.0})[:12]
+        monetary_pluses = (
+            {v for v in euro_corpus_floats if 1.0 <= v <= 500.0}
+            | {v for v in corpus_floats if 1.0 <= v <= 500.0 and abs(v - round(v)) > 1e-6}
+        )
+        candidate_pluses = sorted(monetary_pluses)[:15]
         for base_val in candidate_bases:
             for k_terms in range(1, min(len(candidate_pluses) + 1, 5)):
                 for comb in itertools.combinations(candidate_pluses, k_terms):
