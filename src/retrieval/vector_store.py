@@ -414,6 +414,45 @@ class AiHorecaVectorStore:
             years.append(2000 + int(m.group(1)))
         return years[-1] if years else 0
 
+    @staticmethod
+    def _extract_aleh_area_pattern(role_context: Optional[str]) -> Optional[re.Pattern]:
+        """Extrae un patrón regex general para el Área Funcional oficial del VI ALEH (1ª a 6ª) si consta en role_context."""
+        if not role_context:
+            return None
+        area_map = {
+            "1": r"1\.?[ªa]?|primera",
+            "primera": r"1\.?[ªa]?|primera",
+            "2": r"2\.?[ªa]?|segunda",
+            "segunda": r"2\.?[ªa]?|segunda",
+            "3": r"3\.?[ªa]?|tercera",
+            "tercera": r"3\.?[ªa]?|tercera",
+            "4": r"4\.?[ªa]?|cuarta",
+            "cuarta": r"4\.?[ªa]?|cuarta",
+            "5": r"5\.?[ªa]?|quinta",
+            "quinta": r"5\.?[ªa]?|quinta",
+            "6": r"6\.?[ªa]?|sexta",
+            "sexta": r"6\.?[ªa]?|sexta",
+        }
+        m = re.search(
+            r"(?i)(?:[áa]rea\s+funcional\s+|(?:\b|^))([1-6])(?:\.?[ªa]|\b)|(?:\b)(primera|segunda|tercera|cuarta|quinta|sexta)(?:\b)",
+            role_context,
+        )
+        if not m:
+            return None
+        key = (m.group(1) or m.group(2) or "").lower()
+        if key not in area_map:
+            return None
+        return re.compile(rf"(?i)[áa]rea\s+funcional\s+(?:{area_map[key]})\b")
+
+    @staticmethod
+    def _doc_matches_area(doc: RetrievedDocument, area_pattern: Optional[re.Pattern]) -> bool:
+        """Comprueba si el encabezado o referencia propia del chunk pertenece al Área Funcional buscada."""
+        if not area_pattern:
+            return False
+        body_head = doc.text.split("\n\n", 1)[-1][:250]
+        surface = f"{doc.articulo} | {body_head}"
+        return bool(area_pattern.search(surface))
+
     def parallel_hierarchical_retrieve(
         self,
         query: str,
@@ -645,21 +684,44 @@ class AiHorecaVectorStore:
             and ("€" in d.text or "euros" in d.text.lower())
         ]
         max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
-        if not explicit_years and max_cand_year > 0:
-            _pick(
-                lambda d: d.capa_normativa == "convenio_provincial"
-                and d.tipo_contenido == "tabla_salarial"
-                and ("€" in d.text or "euros" in d.text.lower())
-                and self._extract_chunk_year(d) == max_cand_year,
-                1,
-            )
-        else:
-            _pick(
-                lambda d: d.capa_normativa == "convenio_provincial"
-                and d.tipo_contenido == "tabla_salarial"
-                and ("€" in d.text or "euros" in d.text.lower()),
-                1,
-            )
+        area_pattern = self._extract_aleh_area_pattern(role_context)
+
+        # Priorizar primero la tabla salarial en € del Área Funcional ALEH exacta (si el convenio segmenta tablas por áreas)
+        if area_pattern:
+            if not explicit_years and max_cand_year > 0:
+                _pick(
+                    lambda d: d.capa_normativa == "convenio_provincial"
+                    and d.tipo_contenido == "tabla_salarial"
+                    and ("€" in d.text or "euros" in d.text.lower())
+                    and self._extract_chunk_year(d) == max_cand_year
+                    and self._doc_matches_area(d, area_pattern),
+                    1,
+                )
+            else:
+                _pick(
+                    lambda d: d.capa_normativa == "convenio_provincial"
+                    and d.tipo_contenido == "tabla_salarial"
+                    and ("€" in d.text or "euros" in d.text.lower())
+                    and self._doc_matches_area(d, area_pattern),
+                    1,
+                )
+
+        if not any(s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "tabla_salarial" for s in selected):
+            if not explicit_years and max_cand_year > 0:
+                _pick(
+                    lambda d: d.capa_normativa == "convenio_provincial"
+                    and d.tipo_contenido == "tabla_salarial"
+                    and ("€" in d.text or "euros" in d.text.lower())
+                    and self._extract_chunk_year(d) == max_cand_year,
+                    1,
+                )
+            else:
+                _pick(
+                    lambda d: d.capa_normativa == "convenio_provincial"
+                    and d.tipo_contenido == "tabla_salarial"
+                    and ("€" in d.text or "euros" in d.text.lower()),
+                    1,
+                )
 
         # Si el convenio separa tabla de niveles salariales (sin €) y tabla de importes (con €), aseguramos la tabla de niveles
         _pick(
