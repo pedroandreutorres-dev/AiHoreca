@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -61,6 +62,57 @@ _DISPOSITION_START_RE = re.compile(
 _MARKDOWN_SUBHEADING_RE = re.compile(r"^#{2,4}\s+(.+)$")
 
 
+AUTONOMOUS_COMMUNITY_EXPANSION: dict[str, list[str]] = {
+    "catalunya": ["barcelona", "girona", "tarragona", "lleida", "catalunya"],
+}
+
+_CANONICAL_TERRITORY_MAP: dict[str, str] = {
+    "la coruna": "a_coruna",
+    "a coruna": "a_coruna",
+    "coruna": "a_coruna",
+    "araba": "alava",
+    "alacant": "alicante",
+    "illes balears": "baleares",
+    "islas baleares": "baleares",
+    "balears": "baleares",
+    "mallorca": "baleares",
+    "menorca": "baleares",
+    "ibiza": "baleares",
+    "eivissa": "baleares",
+    "formentera": "baleares",
+    "bcn": "barcelona",
+    "catalunya bcn": "catalunya",
+    "castello": "castellon",
+    "ciudad real": "ciudad_real",
+    "gerona": "girona",
+    "gipuzkoa": "guipuzcoa",
+    "la rioja": "la_rioja",
+    "las palmas": "las_palmas",
+    "gran canaria": "las_palmas",
+    "lerida": "lleida",
+    "comunidad de madrid": "madrid",
+    "principado de asturias": "asturias",
+    "region de murcia": "murcia",
+    "nafarroa": "navarra",
+    "comunidad foral de navarra": "navarra",
+    "orense": "ourense",
+    "santa cruz de tenerife": "santa_cruz_tenerife",
+    "tenerife": "santa_cruz_tenerife",
+    "bizkaia": "vizcaya",
+    "cataluna": "catalunya",
+}
+
+
+def _canonicalize_territory(raw_terr: str) -> str:
+    """Normaliza cualquier nombre territorial al identificador canónico usado en Qdrant y el router."""
+    nfkd = unicodedata.normalize("NFKD", raw_terr.lower().replace("_", " "))
+    cleaned = "".join(c for c in nfkd if not unicodedata.combining(c)).strip()
+    cleaned = re.sub(r"^(?:provincia\s+de\s+|comunidad\s+de\s+)", "", cleaned).strip()
+    if cleaned in _CANONICAL_TERRITORY_MAP:
+        return _CANONICAL_TERRITORY_MAP[cleaned]
+    return cleaned.replace(" ", "_")
+
+
 def _infer_document_metadata(
     md_path: Path,
     boundaries_cache: dict[str, dict],
@@ -98,6 +150,9 @@ def _infer_document_metadata(
             ["estatal"],
         )
 
+    if territorio and territorio != "estatal":
+        territorio = _canonicalize_territory(territorio)
+
     # Convenio provincial o autonómico multiprovincial
     if territorio in {"catalunya", "cataluna", "barcelona", "catalunya_bcn"}:
         return (
@@ -122,11 +177,12 @@ def _infer_document_metadata(
         )
 
     pretty_terr = territorio.replace("_", " ").title()
+    provincias_aplicables = list(AUTONOMOUS_COMMUNITY_EXPANSION.get(territorio, [territorio]))
     return (
         f"Convenio Colectivo de Hostelería de {pretty_terr}",
         "convenio_provincial",
         territorio,
-        [territorio],
+        provincias_aplicables,
     )
 
 

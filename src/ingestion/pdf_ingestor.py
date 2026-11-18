@@ -461,6 +461,7 @@ def run_ingestion_pipeline(
     errata_files: list[tuple[Path, DocumentBoundary]] = []
     saved_by_territory: dict[str, Path] = {}
     saved_files: list[Path] = []
+    freshly_extracted_paths: set[Path] = set()
 
     # Etapa 1: Clasificación y detección de límites [start_page, end_page] (con caché en disco)
     for pdf_path in sorted(raw_dir.glob("*.pdf")):
@@ -514,6 +515,7 @@ def run_ingestion_pipeline(
             )
             md_text = extract_hybrid_markdown(pdf_path, boundary, client=client)
             output_path.write_text(md_text, encoding="utf-8")
+            freshly_extracted_paths.add(output_path)
             logger.info(
                 "[Etapa 2] Guardado %s (%d caracteres).",
                 output_path.name,
@@ -525,6 +527,12 @@ def run_ingestion_pipeline(
 
     # Etapa 3: Auto-Errata Patcher sobre los convenios correspondientes
     for errata_path, errata_boundary in errata_files:
+        if skip_existing and not freshly_extracted_paths:
+            logger.info(
+                "[Etapa 3] Sin convenios nuevos extraídos en esta ejecución; omitiendo re-evaluación de erratas (%s).",
+                errata_path.name,
+            )
+            continue
         patch_list = extract_errata_patches(errata_path, client=client)
         target_territory = patch_list.territorio or errata_boundary.territorio
         target_md_path = saved_by_territory.get(target_territory)

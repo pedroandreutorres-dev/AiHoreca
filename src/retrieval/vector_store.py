@@ -844,41 +844,45 @@ def migrate_local_to_cloud(
 
     local_store = AiHorecaVectorStore(storage_dir=local_dir, force_local=True)
     cloud_store = AiHorecaVectorStore(force_local=False)
-    cloud_store.ensure_collection(recreate=recreate)
+    try:
+        cloud_store.ensure_collection(recreate=recreate)
 
-    total_migrated = 0
-    next_offset = None
-    while True:
-        points, next_offset = local_store.qdrant.scroll(
-            collection_name=local_store.collection_name,
-            limit=batch_size,
-            offset=next_offset,
-            with_payload=True,
-            with_vectors=True,
-        )
-        if not points:
-            break
-
-        batch_structs = [
-            models.PointStruct(
-                id=pt.id,
-                vector=pt.vector,
-                payload=pt.payload or {},
+        total_migrated = 0
+        next_offset = None
+        while True:
+            points, next_offset = local_store.qdrant.scroll(
+                collection_name=local_store.collection_name,
+                limit=batch_size,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=True,
             )
-            for pt in points
-        ]
-        cloud_store.qdrant.upsert(
-            collection_name=cloud_store.collection_name,
-            points=batch_structs,
-        )
-        total_migrated += len(batch_structs)
-        logger.info("Migrados %d puntos a Qdrant Cloud...", total_migrated)
-        if next_offset is None:
-            break
+            if not points:
+                break
 
-    final_count = cloud_store.qdrant.count(collection_name=cloud_store.collection_name).count
-    logger.info("Migración a Qdrant Cloud completada: %d puntos en '%s'.", final_count, cloud_store.collection_name)
-    return final_count
+            batch_structs = [
+                models.PointStruct(
+                    id=pt.id,
+                    vector=pt.vector,
+                    payload=pt.payload or {},
+                )
+                for pt in points
+            ]
+            cloud_store.qdrant.upsert(
+                collection_name=cloud_store.collection_name,
+                points=batch_structs,
+            )
+            total_migrated += len(batch_structs)
+            logger.info("Migrados %d puntos a Qdrant Cloud...", total_migrated)
+            if next_offset is None:
+                break
+
+        final_count = cloud_store.qdrant.count(collection_name=cloud_store.collection_name).count
+        logger.info("Migración a Qdrant Cloud completada: %d puntos en '%s'.", final_count, cloud_store.collection_name)
+        return final_count
+    finally:
+        local_store.close()
+        cloud_store.close()
 
 
 def _cli() -> None:
@@ -909,9 +913,12 @@ def _cli() -> None:
         print(f"Qdrant Cloud sincronizado: {count} puntos disponibles.")
     else:
         store, _chunks = build_and_index_corpus(recreate=args.recreate, source_files=args.source_files)
-        total = store.qdrant.count(collection_name=store.collection_name).count
-        target_label = "Qdrant Cloud" if store.is_cloud else "Qdrant Local"
-        print(f"{target_label} actualizado ({store.collection_name}): {total} puntos totales.")
+        try:
+            total = store.qdrant.count(collection_name=store.collection_name).count
+            target_label = "Qdrant Cloud" if store.is_cloud else "Qdrant Local"
+            print(f"{target_label} actualizado ({store.collection_name}): {total} puntos totales.")
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":
