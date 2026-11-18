@@ -96,7 +96,6 @@ class QueryAnalysisSchema(BaseModel):
         ),
     )
     cambio_de_puesto_en_turno_actual: bool = Field(
-        default=False,
         description="True si el usuario menciona explícitamente un puesto u oficio nuevo o distinto en el mensaje actual.",
     )
     requiere_convenio_provincial: bool = Field(
@@ -107,7 +106,6 @@ class QueryAnalysisSchema(BaseModel):
         )
     )
     requiere_puesto_o_categoria: bool = Field(
-        default=False,
         description=(
             "True si para responder con exactitud la pregunta del usuario es imprescindible conocer el puesto de trabajo o categoría profesional del trabajador "
             "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extraordinaria, conocer su nivel retributivo, funciones de su puesto o periodo de prueba por grupo). "

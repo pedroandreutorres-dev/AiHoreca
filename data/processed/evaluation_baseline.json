@@ -7,16 +7,16 @@
   "territorio_accuracy": 1.0,
   "mean_layer_coverage": 1.0,
   "mean_citation_recall_at_k": 1.0,
-  "mean_ground_truth_number_hit": 0.8438,
+  "mean_ground_truth_number_hit": 0.8854,
   "zero_hallucination_rate": 1.0,
-  "mean_faithfulness": 1.0,
-  "mean_answer_relevancy": 1.0,
-  "mean_context_recall_semantic": 1.0,
-  "mean_hierarchy_application_score": 1.0,
-  "mean_routing_latency_ms": 3293.5,
-  "mean_retrieval_latency_ms": 1615.5,
-  "mean_synthesis_latency_ms": 6871.6,
-  "mean_total_latency_ms": 9466.0,
+  "mean_faithfulness": 0.9812,
+  "mean_answer_relevancy": 0.9938,
+  "mean_context_recall_semantic": 0.9656,
+  "mean_hierarchy_application_score": 0.9875,
+  "mean_routing_latency_ms": 2924.7,
+  "mean_retrieval_latency_ms": 1871.0,
+  "mean_synthesis_latency_ms": 11190.5,
+  "mean_total_latency_ms": 12423.9,
   "cases": [
     {
       "case_id": "GD_01_OOS_TRAFICO",
@@ -47,13 +47,13 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 2203.0,
+        "analyze_and_route": 3964.6,
         "block_out_of_scope": 0.0
       },
-      "total_latency_ms": 2203.0,
+      "total_latency_ms": 3964.6,
       "final_response": "### Consulta Fuera del Dominio de Especialización\n\nSoy **AiHoreca**, un asistente jurídico-laboral especializado exclusivamente en el **Sector de Hostelería y Turismo en España** (Estatuto de los Trabajadores, VI Acuerdo Laboral Estatal de Hostelería y Convenios Colectivos Provinciales/Autonómicos del sector).\n\n- **Motivo de bloqueo**: La consulta versa sobre indemnizaciones por accidentes de tráfico, lo cual es una materia ajena al derecho laboral del sector de hostelería y turismo.\n- No puedo asesorarte sobre otras ramas del Derecho (civil, penal, tráfico, mercantil) ni sobre convenios colectivos de otros sectores."
     },
     {
@@ -61,7 +61,7 @@
       "category": "guardrail_routing",
       "session_id": "eval-oos-02",
       "query": "Soy programador informático en una consultora tecnológica en Madrid, ¿qué trienios de antigüedad fija el convenio de consultoría?",
-      "effective_query": "El usuario pregunta por los trienios de antigüedad establecidos en el convenio colectivo de consultoría tecnológica para un programador informático en Madrid.",
+      "effective_query": "El usuario solicita información sobre los trienios de antigüedad establecidos en el convenio colectivo de consultoría informática para un puesto de programador en Madrid.",
       "expected_intent": "OUT_OF_SCOPE",
       "predicted_intent": "OUT_OF_SCOPE",
       "intent_match": true,
@@ -85,21 +85,21 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 2238.4,
+        "analyze_and_route": 2649.4,
         "block_out_of_scope": 0.0
       },
-      "total_latency_ms": 2238.4,
-      "final_response": "### Consulta Fuera del Dominio de Especialización\n\nSoy **AiHoreca**, un asistente jurídico-laboral especializado exclusivamente en el **Sector de Hostelería y Turismo en España** (Estatuto de los Trabajadores, VI Acuerdo Laboral Estatal de Hostelería y Convenios Colectivos Provinciales/Autonómicos del sector).\n\n- **Motivo de bloqueo**: El usuario consulta sobre el convenio de consultoría tecnológica, el cual es ajeno al sector de hostelería y turismo (VI ALEH).\n- No puedo asesorarte sobre otras ramas del Derecho (civil, penal, tráfico, mercantil) ni sobre convenios colectivos de otros sectores."
+      "total_latency_ms": 2649.4,
+      "final_response": "### Consulta Fuera del Dominio de Especialización\n\nSoy **AiHoreca**, un asistente jurídico-laboral especializado exclusivamente en el **Sector de Hostelería y Turismo en España** (Estatuto de los Trabajadores, VI Acuerdo Laboral Estatal de Hostelería y Convenios Colectivos Provinciales/Autonómicos del sector).\n\n- **Motivo de bloqueo**: El usuario consulta sobre el convenio de consultoría informática, el cual es ajeno al sector de hostelería, turismo y restauración (ALEH VI).\n- No puedo asesorarte sobre otras ramas del Derecho (civil, penal, tráfico, mercantil) ni sobre convenios colectivos de otros sectores."
     },
     {
       "case_id": "GD_03_UNSUPPORTED_SEVILLA",
       "category": "guardrail_routing",
       "session_id": "eval-unsupported-03",
       "query": "Trabajo de camarero de sala en un hotel de Sevilla, ¿cuál es mi salario base mensual según convenio?",
-      "effective_query": "¿Cuál es el salario base mensual de un camarero de sala en un hotel de Sevilla según el convenio colectivo de hostelería de dicha provincia?",
+      "effective_query": "¿Cuál es el salario base mensual para un camarero de sala en un hotel de Sevilla según el convenio colectivo de hostelería aplicable?",
       "expected_intent": "UNSUPPORTED_PROVINCE",
       "predicted_intent": "UNSUPPORTED_PROVINCE",
       "intent_match": true,
@@ -123,13 +123,13 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 2410.8,
-        "block_out_of_scope": 0.0
+        "analyze_and_route": 2832.0,
+        "block_out_of_scope": 0.01
       },
-      "total_latency_ms": 2410.8,
+      "total_latency_ms": 2832.0,
       "final_response": "### Aviso de Cobertura Territorial (MVP AiHoreca)\n\nHe detectado que tu consulta pertenece al ámbito laboral de **Hostelería**, pero hace referencia a la provincia de **Sevilla**.\n\n- **Estado actual del índice normativo**: En esta versión MVP están indexados y verificados los convenios colectivos de **Comunidad de Madrid**, **Cataluña (Barcelona, Girona, Tarragona y Lleida)** y **León**, además de las dos normas estatales (**Estatuto de los Trabajadores** y **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI**).\n- **Por rigor jurídico (Cero Alucinación)**: No puedo aplicarte tablas salariales ni condiciones de otra provincia ni responderte solo con el Estatuto de los Trabajadores ocultando las mejoras del Convenio Colectivo de Sevilla.\n\nSi deseas consultar únicamente la **clasificación profesional estatal (Áreas Funcionales del VI ALEH)** o los **mínimos generales del Estatuto de los Trabajadores**, indícalo expresamente o realiza tu consulta para **Madrid, Cataluña (Barcelona/Girona/Tarragona/Lleida) o León**."
     },
     {
@@ -147,7 +147,7 @@
       "expected_territorio": null,
       "predicted_territorio": null,
       "territorio_match": true,
-      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III)",
+      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)",
       "num_retrieved_docs": 0,
       "retrieved_layers": [],
       "retrieved_articles": [],
@@ -161,21 +161,21 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 3090.5,
-        "ask_clarification": 0.01
+        "analyze_and_route": 2455.3,
+        "ask_clarification": 0.0
       },
-      "total_latency_ms": 3090.5,
-      "final_response": "### Información Territorial Requerida (Gatekeeper Contextual)\n\nPara darte una respuesta jurídicamente exacta y sin inventar cifras, **necesito saber en qué provincia trabajas**.\n\nEn el sector de hostelería en España:\n1. El **Estatuto de los Trabajadores** fija únicamente los mínimos legales estatales.\n2. El **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** regula las Áreas Funcionales, Grupos Profesionales y el régimen disciplinario.\n3. Sin embargo, **las tablas salariales, pluses (nocturnidad, transporte, manutención), jornada anual, descansos y días de vacaciones/licencias** dependen directamente de tu **Convenio Colectivo Provincial o Autonómico**.\n\n> **Adelanto de encuadramiento estatal (VI ALEH)**: El puesto mencionado (*friegaplatos*) se encuadra a nivel estatal como **Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III)** dentro del **2ª Cocina y Economato**.\n\n**¿En cuál de las provincias o territorios soportados prestas servicios?**\n- **Madrid** (Comunidad de Madrid)\n- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n- **León** (Provincia de León)"
+      "total_latency_ms": 2455.3,
+      "final_response": "### Información Territorial Requerida (Gatekeeper Contextual)\n\nPara darte una respuesta jurídicamente exacta y sin inventar cifras, **necesito saber en qué provincia trabajas**.\n\nEn el sector de hostelería en España:\n1. El **Estatuto de los Trabajadores** fija únicamente los mínimos legales estatales.\n2. El **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** regula las Áreas Funcionales, Grupos Profesionales y el régimen disciplinario.\n3. Sin embargo, **las tablas salariales, pluses (nocturnidad, transporte, manutención), jornada anual, descansos y días de vacaciones/licencias** dependen directamente de tu **Convenio Colectivo Provincial o Autonómico**.\n\n> **Adelanto de encuadramiento estatal (VI ALEH)**: El puesto mencionado (*friegaplatos*) se encuadra a nivel estatal como **Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)** dentro del **2ª Cocina y Economato o 3ª Restauración**.\n\n**¿En cuál de las provincias o territorios soportados prestas servicios?**\n- **Madrid** (Comunidad de Madrid)\n- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n- **León** (Provincia de León)"
     },
     {
       "case_id": "GD_05_MADRID_HITL_RESOLUCION",
       "category": "multi_turn_memory",
       "session_id": "eval-ses-madrid",
       "query": "Trabajo en Madrid.",
-      "effective_query": "Soy friegaplatos a jornada completa en Madrid y necesito saber cuál es mi sueldo base y cuántos días de vacaciones me corresponden según el convenio de hostelería de Madrid.",
+      "effective_query": "Confirmo que mi centro de trabajo como friegaplatos se encuentra en la provincia de Madrid.",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -185,7 +185,7 @@
       "expected_territorio": "madrid",
       "predicted_territorio": "madrid",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III)",
+      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -193,48 +193,51 @@
         "estatuto_trabajadores"
       ],
       "retrieved_articles": [
-        "convenio_provincial:Art. 25.- Estructura salarial",
-        "convenio_provincial:Art. 18.- Vacaciones (Parte 1/2)",
-        "convenio_provincial:Art. 27.- Nocturnidad",
-        "convenio_provincial:E) Personal de varios",
+        "convenio_provincial:Art. 44.-Normas especiales",
         "convenio_provincial:Art. 29.- Plus Convenio (Extinto Plus Transporte)",
-        "convenio_provincial:b) TABLAS SALARIALES 1 de enero al 31 de diciembre de 2.024. Salarios Base Mensuales.",
-        "estatuto_trabajadores:Artículo 26.  Del salario.",
-        "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
-        "estatuto_trabajadores:Artículo 31.  Gratificaciones extraordinarias.",
+        "convenio_provincial:Art. 27.- Nocturnidad",
+        "convenio_provincial:c) TABLAS SALARIALES 1 de enero al 31 de diciembre de 2.025. Salarios Base Mensuales.",
+        "convenio_provincial:E) Personal de varios",
+        "convenio_provincial:C) Personal de cocina",
+        "estatuto_trabajadores:Artículo 39.  Movilidad funcional.",
+        "estatuto_trabajadores:artículo 35.3. (Parte 1/3)",
+        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 1/3)",
         "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
-      "ground_truth_number_hit": 0.6667,
+      "ground_truth_number_hit": 1.0,
       "zero_numerical_hallucination": true,
       "verified_numbers": [
-        "1.234,45",
-        "183,87",
-        "1.202,80",
-        "1.115,74"
+        "1.217,99",
+        "1.185,05",
+        "1.127,42",
+        "1.196,74",
+        "191,22",
+        "1",
+        "25"
       ],
       "unverified_numbers": [],
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, utilizando correctamente las tablas salariales vigentes de 2025 y aplicando la jerarquía normativa entre el Estatuto de los Trabajadores y el Convenio Colectivo de Hostelería de Madrid.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2508.0,
-        "parallel_retrieval": 3091.0,
-        "legal_synthesis_and_audit": 9560.2
+        "analyze_and_route": 2834.6,
+        "parallel_retrieval": 2441.0,
+        "legal_synthesis_and_audit": 8818.1
       },
-      "total_latency_ms": 15159.2,
-      "final_response": "Como friegaplatos (encuadrado en el Nivel III según el Convenio de Hostelería de Madrid), tu retribución mensual a jornada completa (40h) se compone del Salario Base y el Plus Convenio. \n\n### 1. Salario Base Mensual (2024)\nEl importe depende de la clasificación de tu empresa (A, B o C, según el Anexo I del Convenio):\n\n| Tipo de Empresa | Salario Base Mensual | Plus Convenio | Total Mensual (Base + Plus) |\n| :--- | :--- | :--- | :--- |\n| **Empresa A** | 1.234,45 € | 183,87 € | 1.418,32 € |\n| **Empresa B** | 1.202,80 € | 183,87 € | 1.386,67 € |\n| **Empresa C** | 1.115,74 € | 183,87 € | 1.299,61 € |\n\n*Nota: El Plus Convenio se abona durante 11 meses al año (Art. 29). Debes verificar en tu contrato o nómina la clasificación de tu empresa para identificar tu salario exacto.*\n\n### 2. Vacaciones\nSegún el **Artículo 18** del Convenio, tienes derecho a un mínimo de **30 días naturales de vacaciones al año**. Estas deben disfrutarse dentro del año natural y su inicio no puede coincidir con tu día de descanso semanal.\n\n### 3. Advertencia sobre importes netos\nLos importes indicados son **brutos**. Tu salario neto (lo que recibes en cuenta) dependerá de tu retención de IRPF (según tus circunstancias personales en el Modelo 145) y de tus cotizaciones a la Seguridad Social. Cualquier cálculo neto es **estrictamente orientativo**."
+      "total_latency_ms": 14093.7,
+      "final_response": "¡Perfecto! Una vez confirmado que tu centro de trabajo se encuentra en la **Comunidad de Madrid**, procedo a integrarlo con los datos ya avanzados sobre tu categoría profesional como **Fregador/a / Marmitón / Auxiliar de limpieza** (enmarcada en el Área Funcional 2ª Cocina o 3ª Restauración, Nivel Salarial IV del convenio autonómico).\n\nA continuación te resumo los aspectos clave de tus condiciones laborales y retributivas vigentes para **2025**:\n\n### 1. Vacaciones Anuales\nConforme al **Artículo 38.1 del Estatuto de los Trabajadores** y al **Artículo 18 del Convenio Colectivo de Hostelería y Actividades Turísticas de la Comunidad de Madrid**, te corresponden como mínimo **30 días naturales** ininterrumpidos de vacaciones al año (o la parte proporcional si tu contratación es inferior al año).\n\n### 2. Sueldo Base Mensual (Año 2025) a Jornada Completa (40h)\nDependiendo de la clasificación, categoría o tipo de establecimiento (A, B, C o empresas de Catering) en el que prestes tus servicios, el **Salario Base Mensual** fijado en el **Anexo I - Tablas Salariales 2025** del convenio de Madrid es el siguiente:\n\n* **Nivel IV - Tipo A:** 1.217,99 € / mes\n* **Nivel IV - Tipo B:** 1.185,05 € / mes\n* **Nivel IV - Tipo C:** 1.127,42 € / mes\n* **Nivel IV - Catering:** 1.196,74 € / mes\n\n*(Nota: A esta cantidad se le añade el **Plus Convenio** regulado en el **Artículo 29**, que asciende a **191,22 € mensuales** y se abona durante 11 meses al año).* Para verificar con exactitud si tu empresa corresponde al tipo A, B, C o Catering, puedes consultarlo en el encabezado de tu nómina o en tu contrato de trabajo.\n\n### 3. Plus de Nocturnidad\nTal como establece el **Artículo 27 del Convenio Colectivo de Madrid** (en concordancia con el **Artículo 36.2 del Estatuto de los Trabajadores**), las horas trabajadas en horario nocturno se retribuyen con un complemento específico sobre el salario base:\n* **De 22:00 h a 00:00 h:** Un recargo del **1%** sobre el salario base aplicando la fórmula `(Salario Base x 1%) / (4 x 40)`.\n* **De 00:00 h a 08:00 h:** Un recargo del **25%** sobre el salario base aplicando la fórmula `(Salario Base x 25%) / (4 x 40)`.\n* **Jornada totalmente nocturna:** Si realizas 5 o más horas de trabajo entre las 22:00 y las 08:00 horas, toda la jornada se considerará nocturna a efectos de percibir dicho complemento.\n\n*Advertencia sobre importes netos:* Los datos anteriores reflejan cantidades **íntegramente brutas**. Cualquier cálculo de sueldo neto o retención por IRPF y Seguridad Social es estrictamente orientativo y dependerá de tus circunstancias personales y familiares comunicadas a la empresa mediante el Modelo 145."
     },
     {
       "case_id": "GD_06_MADRID_SEGUIMIENTO_NOCTURNIDAD",
       "category": "multi_turn_memory",
       "session_id": "eval-ses-madrid",
       "query": "¿Y cómo se regula o cuánto se paga por nocturnidad en mi caso?",
-      "effective_query": "Como friegaplatos en Madrid, ¿cómo se regula y cuánto se paga por el plus de nocturnidad según el convenio de hostelería de Madrid?",
+      "effective_query": "Como friegaplatos en Madrid, ¿cómo se regula y cuánto se paga el plus de nocturnidad según el convenio colectivo provincial?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -244,7 +247,7 @@
       "expected_territorio": "madrid",
       "predicted_territorio": "madrid",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III)",
+      "categoria_aleh_detectada": "Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -254,10 +257,10 @@
       "retrieved_articles": [
         "convenio_provincial:Art. 27.- Nocturnidad",
         "convenio_provincial:Art. 29.- Plus Convenio (Extinto Plus Transporte)",
-        "convenio_provincial:Art. 31.- Plus Compensatorio de Formación (Parte 1/2)",
         "convenio_provincial:c) TABLAS SALARIALES 1 de enero al 31 de diciembre de 2.025. Salarios Base Mensuales.",
         "convenio_provincial:Art. 25.- Estructura salarial",
         "convenio_provincial:E) Personal de varios",
+        "convenio_provincial:C) Personal de cocina",
         "estatuto_trabajadores:Artículo 36.  Trabajo nocturno, trabajo a turnos y ritmo de trabajo. (Parte 1/2)",
         "estatuto_trabajadores:Artículo 11.  Contrato formativo. (Parte 3/5)",
         "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 2/2)",
@@ -269,29 +272,34 @@
       "zero_numerical_hallucination": true,
       "verified_numbers": [
         "1",
-        "25"
+        "25",
+        "1.217,99",
+        "1.185,05",
+        "1.127,42",
+        "1.196,74",
+        "7,48"
       ],
       "unverified_numbers": [],
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, aplicando correctamente la fórmula del convenio, identificando los niveles salariales vigentes para 2025 y respetando la jerarquía normativa al integrar el Estatuto de los Trabajadores con el Convenio Provincial.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2588.2,
-        "parallel_retrieval": 1452.7,
-        "legal_synthesis_and_audit": 4632.0
+        "analyze_and_route": 2793.3,
+        "parallel_retrieval": 1987.9,
+        "legal_synthesis_and_audit": 6606.3
       },
-      "total_latency_ms": 8672.9,
-      "final_response": "### Regulación de la Nocturnidad en Hostelería (Madrid)\n\nSegún el **Artículo 27 del Convenio Colectivo de Hostelería de Madrid**, el trabajo nocturno se retribuye mediante un porcentaje adicional sobre tu salario base, calculado sobre la base de una jornada de 160 horas mensuales (4 semanas x 40 horas). \n\n#### 1. Importes y Franjas Horarias\n- **De 22:00h a 00:00h**: Se aplica un **1%** sobre el salario base.\n- **De 00:00h a 08:00h**: Se aplica un **25%** sobre el salario base.\n\n#### 2. Regla de cómputo global\nSi realizas **5 o más horas** de trabajo dentro del periodo comprendido entre las 22:00h y las 08:00h, la totalidad de tu jornada se considerará nocturna a efectos de percibir este complemento.\n\n#### 3. Consideraciones importantes\n- **Vacaciones y bajas**: En periodos de vacaciones, IT o días de descanso, se abonará la media de lo percibido por nocturnidad en los últimos 3 meses, salvo que el trabajo nocturno sea esporádico (Art. 27.e).\n- **Naturaleza del puesto**: El convenio especifica que, salvo en sectores muy concretos (salas de baile, discotecas, etc.), el trabajo de noche no tiene un salario especial por naturaleza, por lo que se aplican estos complementos sobre tu salario base de Nivel III.\n- **Nota sobre importes netos**: Cualquier cálculo de nocturnidad en tu nómina será **bruto**. El importe neto final dependerá de tu retención de IRPF personal, la cual es **estrictamente orientativa** y varía según tus circunstancias personales (Modelo 145)."
+      "total_latency_ms": 11387.5,
+      "final_response": "### Regulación del Plus de Nocturnidad en Madrid\n\nConforme al **Artículo 27 del Convenio Colectivo de Hostelería y Actividades Turísticas de la Comunidad de Madrid**, el trabajo realizado en horario nocturno (definido legalmente por el Artículo 36 del Estatuto de los Trabajadores entre las 22:00 y las 06:00 horas) se retribuye mediante un complemento específico calculado sobre el salario base de las tablas salariales vigentes (año 2025):\n\n1. **Franja de 22:00 h a 00:00 h:** Se retribuye con un **1%** sobre el salario base aplicando la fórmula reglamentaria: `(Salario Base x 1%) / (4 x 40)`.\n2. **Franja de 00:00 h a 08:00 h:** Se retribuye con un **25%** sobre el salario base aplicando la fórmula reglamentaria: `(Salario Base x 25%) / (4 x 40)`.\n3. **Jornada totalmente nocturna:** Si prestas tus servicios **5 horas o más** en el período comprendido entre las 22:00 y las 08:00 horas del día siguiente, se considerará toda la jornada como nocturna a efectos de percibir el complemento completo del 25%.\n\n### Importes por Hora Nocturna (Principal Franja 00:00 h a 08:00 h - 25%)\n\nDado que el importe depende de la categoría o tipo de establecimiento en el que trabajes (Nivel IV para tu puesto de friegaplatos/fregador), los valores exactos en **brutos** son los siguientes:\n\n| Tipo de Establecimiento / Nivel IV | Salario Base Mensual (2025) | Incremento Hora Nocturna (00:00 a 08:00 h) |\n| :--- | :--- | :--- |\n| **Tipo A** | 1.217,99 € | **7,61 € / hora** |\n| **Tipo B** | 1.185,05 € | **7,41 € / hora** |\n| **Tipo C** | 1.127,42 € | **7,05 € / hora** |\n| **Catering** | 1.196,74 € | **7,48 € / hora** |\n\n*(Nota: Para la franja menor de 22:00 a 00:00 h con el recargo del 1%, el valor oscila de forma orientativa entre 0,28 y 0,30 €/hora según el tipo).* \n\n### Garantías y Vacaciones\nConforme al apartado e) del Art. 27 del convenio, durante los meses de vacaciones, días festivos abonables, IT y días de descanso, las empresas abonarán en concepto de nocturnidad la media de lo percibido por tal concepto en los últimos 3 meses trabajados (salvo carácter esporádico).\n\n*Advertencia legal:* Los importes expresados son **brutos**. Cualquier cálculo sobre importes netos o retenciones de IRPF y Seguridad Social tiene carácter estrictamente orientativo y dependerá de las circunstancias personales del trabajador."
     },
     {
       "case_id": "GD_07_LEON_PINCHE_SALARIO",
       "category": "provincial_rag",
       "session_id": "eval-ses-leon",
       "query": "Soy ayudante de cocina (pinche) en un restaurante en León. ¿En qué área funcional me encuadro y cuál es mi salario base según las tablas salariales?",
-      "effective_query": "Soy ayudante de cocina en un restaurante en León. ¿En qué área funcional me encuadro y cuál es mi salario base según las tablas salariales del convenio de hostelería de León?",
+      "effective_query": "Soy ayudante de cocina en un restaurante en León. ¿En qué área funcional del VI ALEH me encuadro y cuál es mi salario base según las tablas salariales del convenio de hostelería de León?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -310,14 +318,14 @@
       ],
       "retrieved_articles": [
         "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 1/3)",
-        "convenio_provincial:Artículo 15.º.–Garantías personales:",
         "aleh_estatal:Artículo 15. Ocupaciones y puestos de trabajo de las áreas funcionales.",
         "convenio_provincial:Área funcional tercera: Restaurante, Sala, Bar y Similares, Colectividades y Pista para catering",
+        "convenio_provincial:Artículo 15.º.–Garantías personales:",
         "convenio_provincial:Área funcional segunda: Cocina y Economato",
         "convenio_provincial:Artículo 10.º.–Plus de asistencia.–",
+        "convenio_provincial:Artículo 8.º.–Acceso y mantenimiento del puesto de trabajo.",
         "estatuto_trabajadores:Artículo 26.  Del salario.",
         "convenio_provincial:Artículo 11.º.–Gratificaciones extraordinarias.",
-        "convenio_provincial:Artículo 9.º.–Incremento y revisión salarial",
         "estatuto_trabajadores:Artículo 31.  Gratificaciones extraordinarias."
       ],
       "layer_coverage_score": 1.0,
@@ -326,31 +334,31 @@
       "zero_numerical_hallucination": true,
       "verified_numbers": [
         "1.266,42",
+        "17.808,00",
         "1.226,80",
-        "1.187,22",
-        "4,97"
+        "1.187,22"
       ],
       "unverified_numbers": [],
-      "faithfulness": 1.0,
+      "faithfulness": 0.95,
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente precisa y utiliza correctamente la jerarquía normativa. Solo se penaliza ligeramente la fidelidad al mencionar pagas extraordinarias (Art. 11) que no estaban explícitamente en los fragmentos recuperados, aunque el resto de los datos salariales y de encuadre son exactos.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 1926.1,
-        "parallel_retrieval": 2317.4,
-        "legal_synthesis_and_audit": 7417.2
+        "analyze_and_route": 2722.5,
+        "parallel_retrieval": 1863.5,
+        "legal_synthesis_and_audit": 4508.5
       },
-      "total_latency_ms": 11660.7,
-      "final_response": "Como ayudante de cocina (categoría 'Pinche') en un restaurante en León, te encuadras en el **Área Funcional segunda: Cocina y Economato**, según el Artículo 15 del VI ALEH y el Anexo I del Convenio de Hostelería de León. \n\nEl salario base depende de la clasificación de tu establecimiento. A continuación, detallo los importes brutos mensuales vigentes (jornada completa de 40h): \n\n| Clasificación Establecimiento | Salario Base Mensual (sin extras) | Salario Mensual (con 3 pagas prorrateadas) |\n| :--- | :--- | :--- |\n| Lujo y 1.ª clase | 1.266,42 € | 1.583,03 € |\n| Segunda clase | 1.226,80 € | 1.533,50 € |\n| Tercera y sucesivas | 1.187,22 € | 1.484,03 € |\n\n**Notas importantes:**\n1. **Pagas Extraordinarias:** El Artículo 11 del convenio establece tres pagas (Navidad, Julio y Septiembre), cada una equivalente a 30 días de salario base. Los cálculos anteriores incluyen el prorrateo de estas tres pagas en 12 mensualidades.\n2. **Plus de Asistencia:** Adicionalmente, el Artículo 10 del convenio contempla un plus de asistencia de 4,97 € por día de trabajo efectivo (año 2025).\n3. **Verificación:** Para confirmar qué salario te corresponde, verifica la categoría y clasificación de tu centro de trabajo en tu contrato o en el encabezado de tu nómina.\n4. **Advertencia:** Estos importes son **brutos**. Cualquier cálculo de salario neto es **estrictamente orientativo**, ya que dependerá de tus circunstancias personales (IRPF) y cotizaciones a la Seguridad Social (Art. 26.4 del Estatuto de los Trabajadores)."
+      "total_latency_ms": 9094.5,
+      "final_response": "Como **ayudante de cocina (pinche)** en un restaurante en León, tu encuadre normativo y retributivo según los fragmentos aplicables es el siguiente:\n\n### 1. Encuadre Funcional (VI ALEH y Convenio de León)\n- **Área Funcional:** Te encuadras en el **Área Funcional Segunda: Cocina y Economato**, de acuerdo con el **Artículo 15 y 17 del VI ALEH** y las tablas del **Convenio Colectivo Provincial de Hostelería y Turismo de León**.\n- **Grupo Profesional:** Corresponde al **Grupo Profesional 3.º** (categoría de Pinche / Auxiliar cocina/economato).\n\n### 2. Salario Base Mensual (Tablas Salariales Vigentes - Año 2025)\nEl Convenio Colectivo de León establece el salario base mensual en función de la categoría turística del establecimiento (Lujo y 1.ª clase, Segunda clase, o Tercera y sucesivas). A continuación se detallan los importes brutos mensuales a jornada completa (40 horas semanales), cobrando las **tres pagas extraordinarias** (Navidad, Julio y Septiembre, reguladas en el **Artículo 11.º**) de forma independiente en sus meses de devengo:\n\n| Categoría del Establecimiento | Salario Base Mensual Bruto (Sin prorratear) | Salario Base Anual Garantizado (Art. 15.º Convenio León) |\n| :--- | :--- | :--- |\n| **Lujo y 1.ª clase** | 1.266,42 € / mes | 17.808,00 € |\n| **Segunda clase** | 1.226,80 € / mes | 17.808,00 € |\n| **Tercera y sucesivas** | 1.187,22 € / mes | 17.808,00 € |\n\n*Nota práctica:* Para comprobar con exactitud si tu restaurante pertenece a la 1.ª, 2.ª o 3.ª clase, puedes revisar la clasificación oficial del establecimiento reflejada en tu contrato de trabajo o en el encabezado de tu nómina.\n\n*Advertencia legal:* Conforme al **Artículo 26.4 del Estatuto de los Trabajadores**, las cantidades expuestas son estrictamente **brutas**. Cualquier cálculo de ret NETO o aplicación de IRPF y cotizaciones a la Seguridad Social tendrá un carácter meramente orientativo y dependerá de las circunstancias personales y familiares de cada trabajador (Modelo 145)."
     },
     {
       "case_id": "GD_08_LEON_SWITCH_VALENCIA_ANTI_POISONING",
       "category": "multi_turn_memory",
       "session_id": "eval-ses-leon",
       "query": "¿Y si me ofrecen irme de cocinero a un hotel en Valencia, cuánto cobraría allí?",
-      "effective_query": "¿Cuál sería el salario base para un cocinero en un hotel en Valencia?",
+      "effective_query": "¿Cuál sería el salario base de un cocinero en un hotel en Valencia según las tablas salariales del convenio de hostelería de dicha provincia?",
       "expected_intent": "UNSUPPORTED_PROVINCE",
       "predicted_intent": "UNSUPPORTED_PROVINCE",
       "intent_match": true,
@@ -360,7 +368,7 @@
       "expected_territorio": "valencia",
       "predicted_territorio": "valencia",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Jefe/a de cocina, Segundo/a Jefe/a de cocina, Jefe/a de partida o Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupos Profesionales I y II)",
+      "categoria_aleh_detectada": "Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
       "num_retrieved_docs": 0,
       "retrieved_layers": [],
       "retrieved_articles": [],
@@ -374,13 +382,13 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 3871.5,
-        "block_out_of_scope": 0.0
+        "analyze_and_route": 3080.1,
+        "block_out_of_scope": 0.01
       },
-      "total_latency_ms": 3871.5,
+      "total_latency_ms": 3080.1,
       "final_response": "### Aviso de Cobertura Territorial (MVP AiHoreca)\n\nHe detectado que tu consulta pertenece al ámbito laboral de **Hostelería**, pero hace referencia a la provincia de **Valencia**.\n\n- **Estado actual del índice normativo**: En esta versión MVP están indexados y verificados los convenios colectivos de **Comunidad de Madrid**, **Cataluña (Barcelona, Girona, Tarragona y Lleida)** y **León**, además de las dos normas estatales (**Estatuto de los Trabajadores** y **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI**).\n- **Por rigor jurídico (Cero Alucinación)**: No puedo aplicarte tablas salariales ni condiciones de otra provincia ni responderte solo con el Estatuto de los Trabajadores ocultando las mejoras del Convenio Colectivo de Valencia.\n\nSi deseas consultar únicamente la **clasificación profesional estatal (Áreas Funcionales del VI ALEH)** o los **mínimos generales del Estatuto de los Trabajadores**, indícalo expresamente o realiza tu consulta para **Madrid, Cataluña (Barcelona/Girona/Tarragona/Lleida) o León**."
     },
     {
@@ -388,7 +396,7 @@
       "category": "multi_turn_memory",
       "session_id": "eval-ses-leon",
       "query": "Vale, quedándome aquí en mi restaurante actual, ¿cuántos días de vacaciones anuales y permisos retribuidos por matrimonio o fallecimiento tengo?",
-      "effective_query": "¿Cuántos días de vacaciones anuales y permisos retribuidos por matrimonio o fallecimiento me corresponden según el convenio de hostelería de León?",
+      "effective_query": "¿Cuántos días de vacaciones anuales y permisos retribuidos por matrimonio o fallecimiento corresponden según el convenio de hostelería de León para mi puesto de ayudante de cocina?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -409,13 +417,13 @@
         "convenio_provincial:Artículo 23.º.–Permisos retribuidos: (Parte 1/7)",
         "convenio_provincial:Artículo 24.º.–Vacaciones:",
         "convenio_provincial:Artículo 23.º.–Permisos retribuidos: (Parte 6/7)",
-        "convenio_provincial:Artículo 23.º.–Permisos retribuidos: (Parte 2/7)",
+        "convenio_provincial:Artículo 5.–Modalidades de contratación. (Parte 2/6)",
         "estatuto_trabajadores:Artículo 37.  Descanso semanal, fiestas y permisos. (Parte 2/7)",
         "estatuto_trabajadores:Artículo 37.  Descanso semanal, fiestas y permisos. (Parte 1/7)",
-        "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
-        "convenio_provincial:TABLAS SALARIALES AÑO 2025: Área Funcional Primera",
+        "convenio_provincial:Artículo 42.º.–Comisión paritaria. (Parte 3/3)",
         "convenio_provincial:Área funcional segunda: Cocina y Economato",
-        "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
+        "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
+        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 3/3)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
@@ -427,22 +435,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, citando con precisión los artículos 23 y 24 del Convenio de Hostelería de León y aplicando correctamente la jerarquía normativa al priorizar el convenio sobre el Estatuto de los Trabajadores.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 3918.9,
-        "parallel_retrieval": 1369.4,
-        "legal_synthesis_and_audit": 4533.3
+        "analyze_and_route": 3643.6,
+        "parallel_retrieval": 1826.4,
+        "legal_synthesis_and_audit": 3751.9
       },
-      "total_latency_ms": 9821.6,
-      "final_response": "### Vacaciones y Permisos Retribuidos (Hostelería de León)\n\nComo trabajador/a del sector de hostelería en León, tus derechos en materia de tiempo de trabajo se rigen por el **Convenio Colectivo Provincial de Hostelería y Turismo de León**:\n\n#### 1. Vacaciones Anuales\nSegún el **Artículo 24.º** del convenio, tienes derecho a **31 días naturales de vacaciones retribuidas al año**. El calendario de disfrute debe fijarse de común acuerdo con la empresa, debiendo conocer las fechas con al menos dos meses de antelación al inicio del disfrute.\n\n#### 2. Permisos Retribuidos (Artículo 23.º)\n*   **Matrimonio o registro de pareja de hecho:** 15 días naturales.\n*   **Fallecimiento de cónyuge, pareja de hecho o parientes hasta el 2.º grado (consanguinidad o afinidad):** 3 días. Este plazo se **amplía en 2 días adicionales** si el motivo requiere un desplazamiento.\n\n**Nota importante sobre incrementos:** El convenio establece en su **Artículo 23.º (Parte 6/7)** que, para los permisos por fallecimiento (b bis), estos se incrementan si el hecho ocurre fuera de la localidad:\n*   **+1 día:** Fuera de la localidad pero dentro de la provincia.\n*   **+2 días:** En provincias limítrofes.\n*   **+3 días:** En el resto de España.\n\n*Recuerda que para disfrutar de estos permisos debes avisar con la mayor antelación posible y aportar la justificación documental adecuada.*"
+      "total_latency_ms": 9221.9,
+      "final_response": "Para tu puesto de ayudante de cocina en un restaurante en León, el **Convenio Colectivo Provincial de Hostelería y Turismo de León** establece las siguientes condiciones en materia de tiempo de trabajo:\n\n### 1. Vacaciones Anuales\nConforme al **Artículo 24.º (Vacaciones)**, tienes derecho a **31 días naturales de vacaciones retribuidas al año**. El periodo de disfrute se fija de común acuerdo entre la empresa y el trabajador, debiendo conocer las fechas correspondientes con al menos dos meses de antelación al inicio de su disfrute. Si dentro de los 31 días de vacaciones coincide algún día festivo, este se computará aparte.\n\n### 2. Permisos Retribuidos\nSegún el **Artículo 23.º (Permisos retribuidos)**, previo aviso y justificación adecuada, dispones de los siguientes permisos:\n- **Matrimonio o registro de pareja de hecho (Apartado a):** **15 días naturales**. \n- **Fallecimiento de familiares (Apartado b bis):** **3 días** por el fallecimiento del cónyuge, pareja de hecho o parientes hasta el segundo grado de consanguinidad o afinidad. Este plazo se **ampliará en 2 días adicionales** cuando la persona trabajadora necesite realizar un desplazamiento al efecto."
     },
     {
       "case_id": "GD_10_BARCELONA_RIDER_Y_FALTA_MUY_GRAVE",
       "category": "provincial_rag",
       "session_id": "eval-ses-bcn",
       "query": "Trabajo de rider repartiendo comida a domicilio para un restaurante en Barcelona. ¿Cómo se regula mi puesto y retribución en el convenio y qué consecuencias tiene cometer una falta muy grave?",
-      "effective_query": "Como rider repartidor de comida a domicilio en Barcelona, ¿cómo se regula mi puesto y retribución en el convenio colectivo y cuáles son las consecuencias de cometer una falta muy grave?",
+      "effective_query": "Trabajando como repartidor de comida a domicilio (rider) en Barcelona, ¿cómo se regula mi puesto y retribución en el convenio colectivo y cuáles son las consecuencias de cometer una falta muy grave?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -452,7 +460,7 @@
       "expected_territorio": "barcelona",
       "predicted_territorio": "barcelona",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Repartidor/a de comida a domicilio (Disposición Adicional ALEH)",
+      "categoria_aleh_detectada": "Repartidor/a de comida a domicilio (Área Funcional 3ª Restauración / Disposición Adicional ALEH y Convenio Provincial)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -461,42 +469,44 @@
       ],
       "retrieved_articles": [
         "convenio_provincial:Artículo 2. Ámbito funcional (Parte 1/2)",
-        "convenio_provincial:Artículo 22. Contratación de primer empleo en el sector",
-        "convenio_provincial:Artículo 21. Comisión de formación",
-        "convenio_provincial:Artículo 34. Horas extraordinarias",
+        "convenio_provincial:Artículo 35. Retribución",
+        "convenio_provincial:Artículo 14. Clasificación en grupos profesionales",
         "aleh_estatal:Artículo 39. Faltas graves.",
-        "aleh_estatal:Artículo 40. Faltas muy graves.",
         "convenio_provincial:A.10 Servicios extraordinarios Maresme 2028",
-        "estatuto_trabajadores:Artículo 58.  Faltas y sanciones de los trabajadores.",
-        "convenio_provincial:A.9 Baremos Maresme 2028",
-        "estatuto_trabajadores:Artículo 54.  Despido disciplinario."
+        "convenio_provincial:Artículo 11. Comisión paritaria y conflictos colectivos (Parte 1/2)",
+        "estatuto_trabajadores:Artículo 68.  Garantías.",
+        "aleh_estatal:Artículo 40. Faltas muy graves.",
+        "estatuto_trabajadores:Artículo 54.  Despido disciplinario.",
+        "convenio_provincial:Artículo 17. Períodos de prueba (Parte 1/2)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
-      "ground_truth_number_hit": 0.0,
+      "ground_truth_number_hit": 0.3333,
       "zero_numerical_hallucination": true,
-      "verified_numbers": [],
+      "verified_numbers": [
+        "4,00"
+      ],
       "unverified_numbers": [],
       "faithfulness": 1.0,
-      "answer_relevancy": 1.0,
-      "context_recall_semantic": 1.0,
-      "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "answer_relevancy": 0.9,
+      "context_recall_semantic": 0.75,
+      "hierarchy_application_score": 0.85,
+      "judge_critique": "La respuesta es altamente fiel al contexto proporcionado y aplica correctamente la jerarquía normativa. Sin embargo, el recall semántico es parcial al omitir las cifras salariales específicas y los pluses presentes en el ground truth, aunque la omisión es comprensible dado que dichos datos no estaban en los fragmentos recuperados.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 3083.5,
-        "parallel_retrieval": 1442.9,
-        "legal_synthesis_and_audit": 4111.2
+        "analyze_and_route": 2435.5,
+        "parallel_retrieval": 1824.9,
+        "legal_synthesis_and_audit": 4111.0
       },
-      "total_latency_ms": 8637.6,
-      "final_response": "### Regulación de tu puesto como Rider en Barcelona\n\nTu actividad está expresamente reconocida en el **Artículo 2 del Convenio Colectivo Interprovincial de Hostelería y Turismo de Cataluña**. Como repartidor (Rider) en Barcelona, te encuentras encuadrado en el **Grupo V** a efectos retributivos. Es fundamental que verifiques en tu contrato de trabajo o en el encabezado de tu nómina el nivel salarial exacto asignado, ya que este determina tu salario base mensual.\n\n### Faltas muy graves y consecuencias\n\nEl régimen disciplinario se rige por el **ALEH VI** y el **Estatuto de los Trabajadores**. Cometer una falta muy grave conlleva consecuencias severas:\n\n1. **Procedimiento**: Según el **Art. 58.2 del Estatuto de los Trabajadores**, cualquier sanción por falta muy grave debe ser comunicada por escrito, detallando los hechos y la fecha.\n2. **Conductas típicas**: El **Art. 40 del ALEH VI** tipifica como faltas muy graves, entre otras, la difamación de la marca de la empresa en redes sociales o la acumulación de cinco o más incumplimientos en el registro de jornada.\n3. **Consecuencias**: El **Art. 54 del Estatuto de los Trabajadores** faculta a la empresa para proceder al **despido disciplinario** ante incumplimientos graves y culpables. \n\n**Nota importante**: La valoración de la gravedad de los hechos y la proporcionalidad de la sanción impuesta por la empresa son siempre revisables ante la jurisdicción social (Art. 58.2 ET). Si recibes una comunicación de sanción, te recomiendo encarecidamente que consultes con un representante legal o sindicato para analizar la procedencia de la misma."
+      "total_latency_ms": 8371.4,
+      "final_response": "### Regulación del puesto de Repartidor (Rider) en Barcelona\n\nConforme al **Convenio Colectivo Interprovincial de Hostelería y Turismo de Cataluña** (**Artículo 2.2.c**), las empresas dedicadas al reparto de comida y bebida fuera del establecimiento a través de plataformas o restaurantes quedan expresamente integradas dentro del ámbito funcional de la restauración. En el ámbito territorial de **Barcelona**, la actividad profesional de **Repartidor (Rider)** queda clasificada y retribuida en el **Grupo V**.\n\nPor su parte, el **Artículo 35** del mismo convenio establece que la retribución se rige por los niveles salariales correspondientes, aplicando incrementos porcentuales anuales del **4,00% para el año 2025** y del **4,00% para el año 2026** sobre las tablas vigentes.\n\n### Consecuencias de cometer una falta muy gravedad\n\nEn cuanto al régimen disciplinario, el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** detalla en su **Artículo 40** aquellas conductas consideradas faltas muy graves en el sector (como por ejemplo, acumular 5 o más incumplimientos o mala praxis en los sistemas de control y registro de jornada —*artículo 40.14*— o difamar a la empresa o marca en redes sociales —*artículo 40.15*—).\n\nConforme al **Artículo 54 del Estatuto de los Trabajadores**, la comisión de una falta muy grave calificada como un incumplimiento grave y culpable por parte de la persona trabajadora puede acarrear la **extinción del contrato de trabajo mediante despido disciplinario**, sin derecho a indemnización ni a salarios de tramitación."
     },
     {
       "case_id": "GD_11_GIRONA_CAMARERA_PISOS",
       "category": "provincial_rag",
       "session_id": "eval-ses-girona",
       "query": "Soy camarera de pisos en un hotel en Girona. ¿En qué área funcional del ALEH estoy encuadrada y qué tablas salariales del convenio me aplican?",
-      "effective_query": "¿En qué área funcional del VI ALEH se encuadra el puesto de camarera de pisos y cuáles son las tablas salariales, salario base y gratificaciones extraordinarias aplicables según el convenio de hostelería de Girona?",
+      "effective_query": "Soy camarera de pisos en un hotel en Girona. ¿En qué área funcional del ALEH estoy encuadrada y qué tablas salariales del convenio de hostelería de Girona me aplican?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -506,7 +516,7 @@
       "expected_territorio": "girona",
       "predicted_territorio": "girona",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Camarero/a de pisos / Gobernante/a / Auxiliar de pisos y limpieza (Área Funcional 4ª Pisos y Limpieza, Grupos Profesionales I/II/III)",
+      "categoria_aleh_detectada": "Camarero/a de pisos / Auxiliar de pisos y limpieza (Área Funcional 4ª Pisos y Limpieza, Grupos Profesionales II y III)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -514,46 +524,42 @@
         "estatuto_trabajadores"
       ],
       "retrieved_articles": [
-        "aleh_estatal:Artículo 15. Ocupaciones y puestos de trabajo de las áreas funcionales.",
-        "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 2/2)",
-        "convenio_provincial:C) Girona",
         "convenio_provincial:Artículo 14. Clasificación en grupos profesionales",
-        "convenio_provincial:Artículo 28. Jornada de trabajo (Parte 2/3)",
-        "convenio_provincial:C) Girona (Parte 3/4)",
+        "convenio_provincial:C) Girona (Parte 4/4)",
         "convenio_provincial:Artículo 13. Movilidad funcional",
-        "convenio_provincial:Artículo 35. Retribución",
-        "estatuto_trabajadores:Artículo 27.  Salario mínimo interprofesional.",
-        "estatuto_trabajadores:Disposición adicional quinta.  Personal de alta dirección."
+        "convenio_provincial:Artículo 15. Adaptación de los grupos profesionales",
+        "convenio_provincial:Artículo 21. Comisión de formación",
+        "aleh_estatal:Artículo 15. Ocupaciones y puestos de trabajo de las áreas funcionales.",
+        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 1/3)",
+        "estatuto_trabajadores:Artículo 31.  Gratificaciones extraordinarias.",
+        "estatuto_trabajadores:Disposición adicional quinta.  Personal de alta dirección.",
+        "convenio_provincial:C) Girona"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
       "ground_truth_number_hit": 0.5,
       "zero_numerical_hallucination": true,
       "verified_numbers": [
-        "1.782,45",
-        "1.712,23",
-        "1.671,93",
-        "1.589,97",
-        "1.578,36",
-        "1.665,81",
-        "1.636,50",
-        "1.607,11",
-        "1.537,60"
+        "1.462,85",
+        "53,39",
+        "25,11",
+        "15,40",
+        "16,49"
       ],
       "unverified_numbers": [],
-      "faithfulness": 1.0,
+      "faithfulness": 0.85,
       "answer_relevancy": 1.0,
-      "context_recall_semantic": 1.0,
-      "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "context_recall_semantic": 0.9,
+      "hierarchy_application_score": 0.95,
+      "judge_critique": "La respuesta identifica correctamente el área funcional y el nivel salarial según el convenio. Sin embargo, incluye complementos salariales (manutención, transporte, etc.) que no estaban presentes en los fragmentos recuperados, lo que reduce ligeramente la fidelidad técnica al contexto proporcionado.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2614.1,
-        "parallel_retrieval": 1549.8,
-        "legal_synthesis_and_audit": 4940.9
+        "analyze_and_route": 2811.6,
+        "parallel_retrieval": 1982.9,
+        "legal_synthesis_and_audit": 5951.7
       },
-      "total_latency_ms": 9104.8,
-      "final_response": "### Clasificación Profesional\nComo camarera de pisos, te encuentras encuadrada en el **Área Funcional 4ª: Servicio de pisos y limpieza**, según el **Artículo 15 del VI ALEH**. En el ámbito del Convenio de Hostelería de Girona, tu puesto se asocia a las funciones de limpieza y mantenimiento de habitaciones.\n\n### Tablas Salariales (Girona 2028)\nEl salario base mensual depende del **nivel** asignado a tu categoría y de la **categoría del establecimiento** (clasificada de Ai a E). Debes verificar esta categoría en tu contrato de trabajo o en el encabezado de tu nómina, tal como exige el **Artículo 35 del Convenio de Hostelería de Cataluña**.\n\nA continuación, se detallan los salarios base mensuales (brutos) vigentes para 2028 según la tabla del **Anexo II (C.2.2)**:\n\n| Nivel | Ai | A | B | C | D | E |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n| IV | 1.782,45€ | 1.712,23€ | 1.671,93€ | 1.589,97€ | 1.578,36€ | 1.665,81€ |\n| V | 1.636,50€ | 1.607,11€ | 1.537,60€ | 1.537,60€ | 1.537,60€ | 1.537,60€ |\n\n*Nota: Los importes reflejados son salarios base mensuales brutos. Cualquier cálculo de salario neto es **estrictamente orientativo**, ya que depende de tus circunstancias personales (IRPF) y cotizaciones a la Seguridad Social.* \n\n### Gratificaciones Extraordinarias\nEl convenio no especifica un número único de pagas en los fragmentos recuperados, pero el **Artículo 35** remite a los anexos para la estructura retributiva. Si deseas realizar un cálculo de prorrateo de pagas extras, por favor indícame cuántas pagas extraordinarias tiene pactadas tu empresa (habitualmente 2 o prorrateadas en 12 mensualidades) y tu jornada laboral (si es inferior a 40h semanales) para proceder con el cálculo exacto."
+      "total_latency_ms": 10746.2,
+      "final_response": "Como **camarera de pisos** en un hotel en **Girona**, tu encuadramiento profesional y salarial se rige por la normativa estatal del sector y el convenio aplicable en Cataluña:\n\n### 1. Área Funcional en el VI ALEH\nConforme al **Artículo 15 y el Artículo 17 del VI Acuerdo Laboral Estatal de Hostelería (VI ALEH)**, estás encuadrada en la **Área Funcional 4ª: Servicio de pisos y limpieza**, bajo la ocupación específica de **Camarera/o de pisos**.\n\n### 2. Nivel Salarial y Tablas del Convenio en Girona\nSegún el **Artículo 14 del Convenio Colectivo Interprovincial de Hostelería y Turismo de Cataluña** y su **Anexo II (Sección C - Girona)**, la categoría de **Camarero/a de pisos** está clasificada en el **Nivel 7**.\n\nDado que el salario base mensual depende de la categoría, clase o tipología del establecimiento hotelero (representadas en las columnas Ai, A, B, C, D y E de las tablas del convenio), los importes mensuales vigentes (según la tabla salarial más reciente disponible para **2028**) a jornada completa (40 horas semanales) son los siguientes:\n\n| Nivel y Puesto | Columna Ai | Columna A | Columna B | Columna C | Columna D | Columna E |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n| **Nivel 7 - Camarero/a de pisos** | 1.462,85 € | 1.462,85 € | 1.462,85 € | 1.462,85 € | 1.462,85 € | 1.462,85 € |\n\n*(Nota práctica: Para saber exactamente qué columna (Ai a E) le corresponde a tu hotel, puedes consultar la categoría oficial del establecimiento que figura en el encabezado de tu nómina o en tu contrato de trabajo).* \n\nAsimismo, el convenio contempla los siguientes complementos salariales mensuales aplicables según corresponda:\n- **Manutención (Art. 38):** 53,39 € mensuales.\n- **Alojamiento (Art. 39):** 25,11 € mensuales.\n- **Plus de transporte (Art. 40):** 15,40 € mensuales.\n- **Ropa de trabajo (Art. 41):** 16,49 € mensuales.\n\n*Advertencia sobre importes netos:* Los importes reflejados corresponden exclusivamente a salarios **brutos** (conforme al Art. 26.4 del Estatuto de los Trabajadores). Cualquier cálculo o deducción en neto por IRPF o Seguridad Social es estrictamente orientativo y dependerá de las circunstancias personales y fiscales recogidas en tu modelo 145."
     },
     {
       "case_id": "GD_12_ESTATAL_ALEH_AREAS_FUNCIONALES",
@@ -598,22 +604,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta identifica correctamente las 6 áreas funcionales basándose estrictamente en el Artículo 15 del VI ALEH, cumpliendo con la jerarquía normativa y la precisión técnica requerida.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2273.2,
-        "parallel_retrieval": 991.0,
-        "legal_synthesis_and_audit": 3542.3
+        "analyze_and_route": 3278.0,
+        "parallel_retrieval": 1490.9,
+        "legal_synthesis_and_audit": 5979.6
       },
-      "total_latency_ms": 6806.5,
-      "final_response": "De acuerdo con el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)**, específicamente en su **Artículo 15**, la clasificación profesional se organiza en seis áreas funcionales que agrupan las distintas ocupaciones y puestos de trabajo del sector:\n\n1. **Área funcional primera**: Recepción-Conserjería, Relaciones Públicas, Administración y Gestión.\n2. **Área funcional segunda**: Cocina y Economato.\n3. **Área funcional tercera**: Restaurante, sala, bar y similares; Colectividades y pista para catering.\n4. **Área funcional cuarta**: Servicio de pisos y limpieza.\n5. **Área funcional quinta**: Servicio de Mantenimiento y Servicios Auxiliares.\n6. **Área funcional sexta**: Servicios Complementarios (incluye perfiles como socorristas, animadores turísticos, monitores deportivos, masajistas, esteticistas, entre otros).\n\nEsta estructura permite definir los grupos profesionales y las funciones básicas de la prestación laboral, conforme a lo previsto en el **Artículo 22 del Estatuto de los Trabajadores**, garantizando la correcta asignación de tareas y responsabilidades según la especialidad profesional."
+      "total_latency_ms": 10748.5,
+      "final_response": "De acuerdo con el **Artículo 15 del VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)**, la clasificación profesional a nivel estatal se estructura en las siguientes 6 áreas funcionales:\n\n1. **Área funcional primera**: Recepción-Conserjería, Relaciones Públicas, Administración y Gestión.\n2. **Área funcional segunda**: Cocina y Economato.\n3. **Área funcional tercera**: Restaurante, sala, bar y similares; Colectividades y pista para catering.\n4. **Área funcional cuarta**: Servicio de pisos y limpieza.\n5. **Área funcional quinta**: Servicio de Mantenimiento y Servicios Auxiliares.\n6. **Área funcional sexta**: Servicios Complementarios.\n\nCada una de estas áreas agrupa las ocupaciones y puestos de trabajo específicos del sector, los cuales se asignan a su vez a los distintos grupos profesionales definidos en el convenio (según se detalla en los artículos 16 y 17 del mismo texto)."
     },
     {
       "case_id": "GD_13_DESAMBIGUACION_LOCAL_PONFERRADA",
       "category": "guardrail_routing",
       "session_id": "eval-ses-ponferrada-cafe-madrid",
       "query": "Mi mujer trabaja en un bar, el Cafe Madrid, de Ponferada. Contrato de 30 horas. Cual sería su sueldo? Las pagas las tiene prorrateadas. Y cuantas pagas extras serían?",
-      "effective_query": "Mi mujer trabaja en un bar en Ponferrada (León) con un contrato de 30 horas semanales. ¿Cuál sería su sueldo base y cuántas pagas extras corresponden según el convenio de hostelería de León, considerando que las tiene prorrateadas?",
+      "effective_query": "Mi mujer trabaja en un bar en Ponferrada (León) con un contrato de 30 horas semanales. ¿Cuál sería su sueldo base según convenio y cuántas pagas extras corresponden al año, considerando que actualmente las tiene prorrateadas?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -637,13 +643,13 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "Cortocircuito determinista (Guardrail / Gatekeeper HITL) ejecutado con precisión exacta (0 tokens de síntesis).",
+      "judge_model_used": "deterministic-guardrail-verifier",
       "node_timings_ms": {
-        "analyze_and_route": 2432.1,
+        "analyze_and_route": 2459.6,
         "ask_clarification": 0.01
       },
-      "total_latency_ms": 2432.1,
+      "total_latency_ms": 2459.6,
       "final_response": "### Puesto de Trabajo Requerido (Convenio de Hostelería — Leon)\n\nHe registrado que el centro de trabajo se encuentra en la provincia/territorio de **Leon**.\n\nSin embargo, para calcular el **sueldo exacto o las condiciones retributivas** sin adivinar datos, **necesito saber qué puesto u oficio desempeña** dentro del establecimiento.\n\nEn un establecimiento de hostelería coexisten distintos Grupos Profesionales y niveles salariales según la función:\n- **Sala / Barra:** Camarero/a (Grupo II), Ayudante de camarero/a (Grupo III), Barman/Sumiller.\n- **Cocina:** Jefe/a de cocina (Grupo I), Cocinero/a (Grupo II), Ayudante de cocina / Pinche (Grupo III).\n- **Limpieza / Servicios auxiliares:** Auxiliar de limpieza / Friegaplatos (Grupo III), Camarero/a de pisos.\n\n**¿Cuál es su puesto o categoría profesional?** *(Respóndeme directamente con el puesto y calcularé al instante su tabla salarial aplicable en Leon).*"
     },
     {
@@ -651,7 +657,7 @@
       "category": "provincial_rag",
       "session_id": "eval-ses-comparativa-colmenar-camponaraya",
       "query": "Comparame el salario bruto de un camarero en Colmenar Viejo con otro de Camponaraya+",
-      "effective_query": "Comparar el salario bruto de un camarero en Colmenar Viejo (Madrid) con el salario bruto de un camarero en Camponaraya (León).",
+      "effective_query": "Comparar el salario bruto de un camarero en Colmenar Viejo (Madrid) frente a un camarero en Camponaraya (León).",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -671,11 +677,11 @@
       "retrieved_articles": [
         "convenio_provincial:Artículo 15.º.–Garantías personales:",
         "convenio_provincial:TABLAS SALARIALES 2.023",
+        "convenio_provincial:TABLAS SALARIALES 2.025",
         "convenio_provincial:Art. 24.- Ascensos (Parte 2/3)",
-        "convenio_provincial:Art. 27.- Nocturnidad",
         "convenio_provincial:Área funcional tercera: Restaurante, Sala, Bar y Similares, Colectividades y Pista para catering",
-        "estatuto_trabajadores:Artículo 26.  Del salario.",
         "convenio_provincial:Art. 25.- Estructura salarial",
+        "estatuto_trabajadores:Artículo 26.  Del salario.",
         "estatuto_trabajadores:Artículo 11.  Contrato formativo. (Parte 3/5)",
         "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
         "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
@@ -685,31 +691,30 @@
       "ground_truth_number_hit": 1.0,
       "zero_numerical_hallucination": true,
       "verified_numbers": [
-        "1.144,24",
+        "1.249,51",
         "1.458,20",
-        "1.091,76",
+        "1.160,86",
         "1.381,47",
-        "1.063,06",
+        "1.083,88",
         "1.304,77",
-        "992,56",
-        "52,95",
-        "175,11",
-        "17.205,80"
+        "57,82",
+        "191,22",
+        "17.808,00"
       ],
       "unverified_numbers": [],
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es excelente, precisa y utiliza correctamente los datos de los convenios provinciales de Madrid y León, respetando la jerarquía normativa y diferenciando adecuadamente las estructuras salariales de cada convenio.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 3403.8,
-        "parallel_retrieval": 1450.2,
-        "legal_synthesis_and_audit": 6193.3
+        "analyze_and_route": 2393.7,
+        "parallel_retrieval": 2130.9,
+        "legal_synthesis_and_audit": 4766.5
       },
-      "total_latency_ms": 11047.3,
-      "final_response": "Para comparar el salario bruto de un camarero en Colmenar Viejo (Madrid) y Camponaraya (León), debemos remitirnos a los convenios provinciales vigentes. Es fundamental advertir que cualquier cálculo de salario neto es **estrictamente orientativo**, ya que depende de las circunstancias personales (IRPF) y la modalidad contractual.\n\n### Comparativa Salario Base Mensual (Jornada Completa)\n\nEl salario varía significativamente según la categoría del establecimiento (Lujo, 1ª, 2ª, etc.).\n\n| Categoría Establecimiento | Madrid (Salario Base/Mes) | León (Salario Base/Mes) |\n| :--- | :--- | :--- |\n| Lujo / 1ª Clase | 1.144,24 € | 1.458,20 € |\n| 2ª Clase | 1.091,76 € | 1.381,47 € |\n| 3ª Clase | 1.063,06 € | 1.304,77 € |\n| 4ª Clase | 992,56 € | N/A |\n\n**Notas importantes:**\n1. **Madrid**: Los importes corresponden a las tablas de 2023 (Anexo III). El convenio incluye pluses adicionales como manutención (52,95 €) y plus convenio (175,11 €) que deben sumarse al salario base.\n2. **León**: Los importes corresponden a las tablas de 2023 (Anexo I). El convenio garantiza un salario mínimo anual (17.205,80 € para 2024, según Art. 15).\n3. **Verificación**: Para determinar qué fila aplicar, debe consultar la clasificación oficial de su centro de trabajo (aparece en el contrato o en el encabezado de la nómina).\n\n*Aviso legal: Los importes reflejados son brutos. Las retenciones de IRPF y Seguridad Social son responsabilidad del trabajador (Art. 26.4 Estatuto de los Trabajadores) y variarán según su situación personal.*"
+      "total_latency_ms": 9291.1,
+      "final_response": "Para comparar el salario bruto de un camarero en Colmenar Viejo (Madrid) y Camponaraya (León), debemos acudir a los convenios provinciales vigentes. Es fundamental recordar que el salario neto es orientativo y dependerá de las circunstancias personales del trabajador (IRPF).\n\n### Tabla Comparativa: Salario Base Mensual (Jornada Completa)\n\n| Categoría Establecimiento | Madrid (2025) | León (2023-2025) |\n| :--- | :--- | :--- |\n| Lujo / 1.ª Clase | 1.249,51 € | 1.458,20 € |\n| 2.ª Clase | 1.160,86 € | 1.381,47 € |\n| 3.ª Clase / Sucesivas | 1.083,88 € | 1.304,77 € |\n\n**Notas importantes:**\n1. **Madrid:** Los importes corresponden a las tablas de 2025 (Anexo III). El convenio de Madrid incluye pluses adicionales como manutención (57,82 €) y plus convenio (191,22 €) que deben sumarse al salario base según el Art. 25.\n2. **León:** Los importes corresponden a las tablas vigentes (Anexo I). El convenio de León establece un salario mínimo anual garantizado (17.808,00 € para 2025, Art. 15).\n3. **Clasificación:** Para determinar qué fila aplicar, debe verificar la categoría oficial de su establecimiento (Lujo, 1.ª, 2.ª, etc.), dato que figura en su contrato de trabajo o en el encabezado de su nómina.\n4. **Advertencia:** Cualquier cálculo de salario neto es estrictamente orientativo. Las retenciones de IRPF y Seguridad Social (Art. 26.4 ET) son responsabilidad del trabajador y varían según su situación personal (Modelo 145)."
     },
     {
       "case_id": "GD_15_LEON_CAMARERA_HORA_EXTRA_CON_TABLA",
@@ -735,8 +740,8 @@
       ],
       "retrieved_articles": [
         "convenio_provincial:Artículo 19.º.–Jornada de trabajo: (Parte 1/2)",
+        "convenio_provincial:Artículo 1.º.–Partes signatarias, ámbito funcional, territorial y personal. (Parte 1/2)",
         "convenio_provincial:Artículo 20.º.–Horas extraordinarias y nocturnas.",
-        "convenio_provincial:Artículo 10.º.–Plus de asistencia.–",
         "convenio_provincial:Área funcional sexta",
         "estatuto_trabajadores:Artículo 12.  Contrato a tiempo parcial y contrato de relevo. (Parte 3/5)",
         "estatuto_trabajadores:Artículo 35.  Horas extraordinarias.",
@@ -753,26 +758,26 @@
         "62"
       ],
       "unverified_numbers": [],
-      "faithfulness": 1.0,
+      "faithfulness": 0.9,
       "answer_relevancy": 1.0,
-      "context_recall_semantic": 1.0,
+      "context_recall_semantic": 0.8,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente sólida y aplica correctamente la jerarquía normativa, aunque el cálculo de la hora ordinaria asume implícitamente 15 pagas (no presentes explícitamente en los fragmentos) para derivar el valor hora. La fidelidad es alta al utilizar correctamente el recargo del 62% y las tablas salariales recuperadas.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2331.3,
-        "parallel_retrieval": 1435.4,
-        "legal_synthesis_and_audit": 6667.8
+        "analyze_and_route": 2318.3,
+        "parallel_retrieval": 1994.4,
+        "legal_synthesis_and_audit": 9621.3
       },
-      "total_latency_ms": 10434.5,
-      "final_response": "Para calcular el valor de la hora extraordinaria en León, el Artículo 20.º del Convenio Colectivo establece una fórmula específica que incluye el salario base y el plus de asistencia. Dado que el salario base varía según la categoría del establecimiento, he realizado el cálculo para cada supuesto (tomando como referencia el plus de asistencia de 2023 y una media de 22 días laborables al mes para el cálculo del plus mensual).\n\n### Valor de la Hora Extraordinaria (Bruto)\n\n| Categoría Establecimiento | Valor Hora Extra (€/hora)\n| :--- | :--- |\n| Lujo y 1.ª clase | 22,55 € |\n| Segunda clase | 21,47 € |\n| Tercera y sucesivas | 20,39 € |\n\n**Notas importantes:**\n1. **Cálculo Bruto:** Estos importes son **brutos**. Cualquier cálculo sobre el importe neto que percibirás en nómina es **estrictamente orientativo**, ya que dependerá de tu retención de IRPF personal y cotizaciones a la Seguridad Social.\n2. **Clasificación:** Para saber qué fila aplicar, verifica la categoría oficial de tu centro de trabajo en tu contrato o nómina.\n3. **Compensación:** El convenio permite optar entre el abono económico o la compensación por tiempos equivalentes de descanso retribuido incrementados en el mismo porcentaje (62%).\n4. **Jornada Parcial:** Aunque tu contrato sea de 30 horas, el valor de la hora extra se calcula sobre la base salarial de jornada completa según la fórmula del convenio, garantizando que no sea inferior al valor de la hora ordinaria (Art. 35.1 Estatuto de los Trabajadores)."
+      "total_latency_ms": 13934.0,
+      "final_response": "Para calcular el precio de tu hora extra en León, debemos aplicar el Artículo 20.º del Convenio Colectivo de Hostelería de León, que establece un incremento del 62% sobre el valor de la hora ordinaria. Dado que el salario base depende de la categoría de tu establecimiento (Lujo/1ª, 2ª o 3ª clase), el valor varía según el siguiente desglose:\n\n| Categoría Establecimiento | Valor Hora Ordinaria (€/h) | Precio Hora Extra (€/h) |\n| :--- | :--- | :--- |\n| Lujo y 1.ª clase | 12,21 € | 19,78 € |\n| Segunda clase | 11,57 € | 18,74 € |\n| Tercera y sucesivas | 10,93 € | 17,71 € |\n\n**Notas importantes:**\n1. **Cálculo:** El valor hora ordinaria se ha obtenido dividiendo el salario base anual (15 pagas según el Art. 11.º) entre la jornada anual de 1.790 horas (Art. 19.º). El precio de la hora extra incluye el incremento del 62% (multiplicador 1,62).\n2. **Categoría:** Debes verificar en tu contrato o nómina la categoría de tu establecimiento para identificar la fila correcta.\n3. **Naturaleza del importe:** Estos importes son **brutos**. Cualquier cálculo sobre el neto (después de IRPF y Seguridad Social) es **estrictamente orientativo**, ya que dependerá de tus circunstancias personales y retribución anual total.\n4. **Compensación:** El convenio permite optar entre el abono económico o la compensación por tiempos equivalentes de descanso retribuido incrementados en el mismo porcentaje (Art. 20.º)."
     },
     {
       "case_id": "GD_16_CATALUNYA_PERIODO_PRUEBA_Y_NULIDAD",
       "category": "provincial_rag",
       "session_id": "eval-ses-cat-periodo-prueba",
       "query": "Me han contratado como cocinero indefinido en Barcelona, pero ya trabajé el verano pasado en el mismo restaurante haciendo exactamente lo mismo. ¿Cuánto puede durar mi periodo de prueba y es válido?",
-      "effective_query": "¿Cuál es la duración máxima del periodo de prueba para un contrato indefinido de cocinero en Barcelona y es válido si ya trabajé el verano pasado en el mismo restaurante realizando las mismas funciones?",
+      "effective_query": "¿Cuál es la duración máxima del periodo de prueba para un contrato indefinido de cocinero en Barcelona y es válido establecerlo si ya trabajé el verano pasado en el mismo restaurante realizando las mismas funciones?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -782,7 +787,7 @@
       "expected_territorio": "barcelona",
       "predicted_territorio": "barcelona",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Jefe/a de cocina, Segundo/a Jefe/a de cocina, Jefe/a de partida o Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupos Profesionales I y II)",
+      "categoria_aleh_detectada": "Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -791,14 +796,14 @@
       ],
       "retrieved_articles": [
         "convenio_provincial:Artículo 17. Períodos de prueba (Parte 1/2)",
+        "convenio_provincial:Artículo 24. Contratos a tiempo parcial",
         "estatuto_trabajadores:Artículo 14.  Periodo de prueba.",
         "estatuto_trabajadores:Artículo 11.  Contrato formativo. (Parte 4/5)",
         "convenio_provincial:Artículo 22. Contratación de primer empleo en el sector",
         "convenio_provincial:Artículo 17. Períodos de prueba (Parte 2/2)",
-        "convenio_provincial:A.9 Baremos Maresme 2028",
-        "convenio_provincial:Artículo 13. Movilidad funcional",
+        "convenio_provincial:A) Barcelona (Parte 12/12)",
+        "aleh_estatal:Preámbulo / Encabezado (Parte 2/2)",
         "convenio_provincial:Artículo 28. Jornada de trabajo (Parte 2/3)",
-        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 1/3)",
         "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
       ],
       "layer_coverage_score": 1.0,
@@ -811,22 +816,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, citando correctamente la nulidad del periodo de prueba según el Convenio de Hostelería de Cataluña y el Estatuto de los Trabajadores, además de identificar correctamente la duración máxima aplicable.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2417.0,
-        "parallel_retrieval": 1417.4,
-        "legal_synthesis_and_audit": 9432.4
+        "analyze_and_route": 2484.5,
+        "parallel_retrieval": 1803.4,
+        "legal_synthesis_and_audit": 5757.8
       },
-      "total_latency_ms": 13266.8,
-      "final_response": "### Validez del Periodo de Prueba\n\nDe acuerdo con el **Artículo 14.1 del Estatuto de los Trabajadores** y el **Artículo 17 del Convenio Colectivo de Hostelería de Cataluña**, el pacto de periodo de prueba **es nulo** si ya has desempeñado las mismas funciones con anterioridad en la misma empresa, independientemente de la modalidad de contratación previa. Dado que ya trabajaste el verano pasado como cocinero en el mismo restaurante, la empresa no puede someterte a un nuevo periodo de prueba para el mismo puesto.\n\n### Duración máxima (en caso de no haber existido experiencia previa)\n\nSi no hubieras trabajado anteriormente en la empresa, el periodo de prueba para un cocinero (clasificado en el **Grupo Profesional Segundo** según el **Artículo 16 del VI ALEH**) sería de **60 días naturales**, conforme a la tabla del **Artículo 17 del Convenio de Hostelería de Cataluña**. \n\n**Recomendación:** Al ser el pacto nulo por ley, si la empresa decidiera finalizar tu contrato alegando 'no superación del periodo de prueba', dicha extinción podría ser considerada un despido improcedente o nulo, al carecer de validez jurídica la cláusula de prueba en tu contrato actual."
+      "total_latency_ms": 10045.7,
+      "final_response": "Como cocinero, tu categoría profesional se encuadra en el **Grupo Profesional II** según el VI ALEH (Art. 16). De acuerdo con el **Artículo 17 del Convenio Colectivo de Hostelería de Cataluña**, la duración máxima del periodo de prueba para un contrato indefinido en tu grupo profesional es de **60 días naturales**.\n\n### Validez del periodo de prueba\nRespecto a tu situación, es fundamental señalar que **el pacto de periodo de prueba es nulo** si ya has desempeñado las mismas funciones con anterioridad en la misma empresa, siempre que lo hubieras superado. Esta protección está recogida tanto en el **Artículo 17 del Convenio de Hostelería de Cataluña** como en el **Artículo 14.1 del Estatuto de los Trabajadores**.\n\nSi el verano pasado trabajaste en el mismo restaurante realizando las mismas funciones de cocinero, la empresa no puede exigirte legalmente un nuevo periodo de prueba. Si dicho pacto figura en tu contrato actual, carecería de validez jurídica, lo que significa que desde el primer día de tu nuevo contrato indefinido tendrías plena antigüedad y protección frente a un despido sin causa justificada (desistimiento durante el periodo de prueba)."
     },
     {
       "case_id": "GD_17_MADRID_FIJO_DISCONTINUO_LLAMAMIENTO",
       "category": "provincial_rag",
       "session_id": "eval-ses-mad-fijo-discontinuo",
       "query": "Tengo un contrato fijo discontinuo a tiempo parcial en un restaurante de Madrid para servicios extraordinarios. ¿Cómo deben hacer el llamamiento y qué duración mínima tiene?",
-      "effective_query": "¿Cómo debe realizarse el llamamiento en un contrato fijo discontinuo a tiempo parcial para servicios extraordinarios en un restaurante de Madrid y cuál es su duración mínima?",
+      "effective_query": "¿Cómo debe realizarse el llamamiento y cuál es la duración mínima de la jornada para un trabajador con contrato fijo-discontinuo a tiempo parcial en un restaurante de Madrid?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -844,45 +849,43 @@
         "estatuto_trabajadores"
       ],
       "retrieved_articles": [
-        "convenio_provincial:Art. 12.- Contrato Fijo Discontinuo (Parte 2/2)",
         "convenio_provincial:Art. 12.- Contrato Fijo Discontinuo (Parte 1/2)",
-        "estatuto_trabajadores:Artículo 16.  Contrato fijo-discontinuo. (Parte 1/3)",
+        "convenio_provincial:Art. 12.- Contrato Fijo Discontinuo (Parte 2/2)",
         "convenio_provincial:Art. 14.- Jornada (Parte 1/4)",
+        "convenio_provincial:Art. 14.- Jornada (Parte 3/4)",
+        "estatuto_trabajadores:Artículo 16.  Contrato fijo-discontinuo. (Parte 1/3)",
         "estatuto_trabajadores:Artículo 16.  Contrato fijo-discontinuo. (Parte 2/3)",
-        "convenio_provincial:Art. 10.- Contrato de duración determinada por circunstancias de la producción",
-        "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
-        "aleh_estatal:Preámbulo / Encabezado (Parte 2/2)",
         "convenio_provincial:Establecimientos de la sección quinta Bares, cafés, cafés-bares, chocolaterías, bares americanos y whiskerías",
-        "convenio_provincial:Establecimientos de la sección quinta Bares, cafés, cafés-bares, chocolaterías, bares americanos y whiskerías"
+        "convenio_provincial:Establecimientos de la sección tercera",
+        "aleh_estatal:Artículo 79. Medidas preventivas. (Parte 2/3)",
+        "aleh_estatal:Artículo 78. Factores de riesgo. (Parte 2/2)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
       "ground_truth_number_hit": 1.0,
       "zero_numerical_hallucination": true,
-      "verified_numbers": [
-        "60"
-      ],
+      "verified_numbers": [],
       "unverified_numbers": [],
       "faithfulness": 1.0,
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, citando con precisión los artículos del Convenio de Hostelería de Madrid y respetando la jerarquía normativa al integrar el Estatuto de los Trabajadores como marco supletorio. La información sobre plazos de preaviso, derecho de rechazo y jornada mínima es exacta conforme a los fragmentos proporcionados.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2367.0,
-        "parallel_retrieval": 1250.2,
-        "legal_synthesis_and_audit": 6469.0
+        "analyze_and_route": 4313.4,
+        "parallel_retrieval": 1838.1,
+        "legal_synthesis_and_audit": 5707.5
       },
-      "total_latency_ms": 10086.2,
-      "final_response": "Para tu contrato fijo-discontinuo a tiempo parcial en servicios extraordinarios en Madrid, la normativa aplicable (Convenio Colectivo de Hostelería de la Comunidad de Madrid, Art. 12) establece las siguientes reglas:\n\n### 1. Llamamiento y Preaviso\n* **Preaviso:** La empresa debe notificarte el llamamiento con una antelación mínima de **3 días** (Art. 12.2.2).\n* **Forma:** Se realizará por el medio acordado en tu contrato. A falta de acuerdo, debe ser un medio que deje constancia fehaciente (correo electrónico con confirmación de lectura, certificado, etc.).\n* **Rechazo:** Tienes derecho a rechazar hasta **3 llamamientos** sin que esto suponga la extinción de tu contrato. Debes comunicar tu rechazo de forma fehaciente en un plazo máximo de **24 horas** desde la recepción del aviso (Art. 12.3.2.a).\n\n### 2. Duración Mínima\n* **Jornada diaria:** Cualquier día que seas llamado, tu jornada no podrá ser inferior a **4 horas continuadas** (Art. 12.3.1).\n* **Periodo anual:** Tu periodo mínimo de llamamiento anual será equivalente al **60% del tiempo que trabajaste efectivamente** bajo esta modalidad en el año natural anterior (Art. 12.3.2.a).\n\n*Nota: Si entre dos llamamientos existe un periodo inferior a 15 días, el llamamiento tiene carácter voluntario para ti.*"
+      "total_latency_ms": 11859.0,
+      "final_response": "Para tu contrato fijo-discontinuo a tiempo parcial en el sector de hostelería de Madrid, la normativa aplicable (Convenio Colectivo de Hostelería de la Comunidad de Madrid, Art. 12) establece las siguientes reglas:\n\n### 1. Procedimiento de Llamamiento\n- **Plazo de preaviso:** Al tratarse de servicios extraordinarios, la empresa debe avisarte con una antelación mínima de **3 días** (Art. 12.2.2).\n- **Forma del llamamiento:** Debe realizarse por un medio que deje constancia fehaciente (correo electrónico con confirmación de lectura, carta certificada, etc.), salvo que hayáis pactado otro procedimiento específico en vuestro contrato (Art. 12.2.3).\n- **Derecho de rechazo:** En la modalidad de servicios extraordinarios, tienes la posibilidad de rechazar hasta **3 llamamientos** sin que la empresa pueda extinguir tu contrato. Para ello, es obligatorio comunicar tu rechazo de forma fehaciente en un plazo máximo de **24 horas** desde la recepción del aviso (Art. 12.2.a).\n\n### 2. Jornada Mínima\n- **Duración diaria:** La jornada mínima que la empresa puede asignarte en cada llamamiento es de **4 horas continuadas** (Art. 12.3.1).\n\n*Nota: Recuerda que, según el Art. 16.3 del Estatuto de los Trabajadores, el llamamiento debe incluir las indicaciones precisas sobre las condiciones de tu incorporación.*"
     },
     {
       "case_id": "GD_18_MADRID_DESCANSO_SEMANAL_20_TRABAJADORES",
       "category": "provincial_rag",
       "session_id": "eval-ses-mad-descanso-20",
       "query": "Trabajo en un bar de Madrid con 12 empleados. ¿Tengo derecho a dos días seguidos de descanso semanal o me los pueden dar sueltos?",
-      "effective_query": "¿Tengo derecho a dos días seguidos de descanso semanal en un bar de Madrid o el convenio permite que los días de descanso sean disfrutados de forma no consecutiva?",
+      "effective_query": "¿Tengo derecho a dos días seguidos de descanso semanal en un bar de Madrid o el convenio permite que sean días sueltos?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -902,14 +905,14 @@
       "retrieved_articles": [
         "convenio_provincial:Art. 17.- Descanso semanal",
         "convenio_provincial:Art. 14.- Jornada (Parte 4/4)",
+        "convenio_provincial:Art. 18.- Vacaciones (Parte 1/2)",
         "convenio_provincial:Art. 14.- Jornada (Parte 3/4)",
-        "convenio_provincial:Art. 16.- Calendario laboral",
         "convenio_provincial:Establecimientos de la sección quinta Bares, cafés, cafés-bares, chocolaterías, bares americanos y whiskerías",
-        "convenio_provincial:c) TABLAS SALARIALES 1 de enero al 31 de diciembre de 2.025. Salarios Base Mensuales.",
-        "aleh_estatal:Artículo 41. Clases de Sanciones.",
-        "aleh_estatal:Artículo 38. Faltas leves.",
         "estatuto_trabajadores:Artículo 37.  Descanso semanal, fiestas y permisos. (Parte 1/7)",
-        "estatuto_trabajadores:Artículo 37.  Descanso semanal, fiestas y permisos. (Parte 6/7)"
+        "aleh_estatal:Artículo 41. Clases de Sanciones.",
+        "estatuto_trabajadores:Artículo 37.  Descanso semanal, fiestas y permisos. (Parte 6/7)",
+        "convenio_provincial:c) TABLAS SALARIALES 1 de enero al 31 de diciembre de 2.025. Salarios Base Mensuales.",
+        "aleh_estatal:Artículo 38. Faltas leves."
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
@@ -921,22 +924,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente precisa, identifica correctamente el umbral de 20 trabajadores del Art. 17 del Convenio de Madrid y aplica correctamente la jerarquía normativa al priorizar el convenio sectorial sobre el mínimo legal del Estatuto de los Trabajadores.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 14584.1,
-        "parallel_retrieval": 1464.3,
-        "legal_synthesis_and_audit": 3895.9
+        "analyze_and_route": 4083.9,
+        "parallel_retrieval": 1737.5,
+        "legal_synthesis_and_audit": 4053.2
       },
-      "total_latency_ms": 19944.3,
-      "final_response": "¡Hola! Respecto a tu consulta sobre el descanso semanal en un bar de Madrid con una plantilla de 12 trabajadores, la respuesta viene determinada de forma directa por el **Artículo 17 del Convenio Colectivo de Hostelería y Actividades Turísticas de la Comunidad de Madrid**.\n\nEn primer lugar, el convenio establece con carácter general que todas las personas trabajadoras del sector tienen derecho a **dos días de descanso semanal**. Sin embargo, la obligatoriedad de que dichos días sean consecutivos (ininterrumpidos) depende estrictamente del tamaño de la plantilla del centro de trabajo:\n\n* **Centros de 20 o más trabajadores:** El descanso semanal debe ser obligatoriamente de **dos días ininterrumpidos**.\n* **Centros de menos de 20 trabajadores:** Al contar tu establecimiento con **12 empleados** (por debajo del umbral de los 20), el artículo 17 prevé que los dos días de descanso semanal **no sean necesariamente ininterrumpidos**, por lo que la empresa puede distribuirlos de forma no consecutiva (sueltos), salvo que exista un pacto en contrario o un acuerdo específico aplicable en tu empresa.\n\nTe recomiendo revisar tu calendario laboral anual o el sistema de turnos pactado con la representación legal de los trabajadores en tu centro (conforme al artículo 16 del mismo convenio) para comprobar cómo se programan tus libranzas."
+      "total_latency_ms": 9874.6,
+      "final_response": "En el sector de hostelería de la Comunidad de Madrid, el derecho al descanso semanal está regulado por el **Artículo 17 del Convenio Colectivo de Hostelería y Actividades Turísticas de la Comunidad de Madrid**. \n\nDado que tu centro de trabajo cuenta con **12 empleados** (es decir, menos de 20 personas trabajadoras), el convenio establece que tienes derecho a **dos días de descanso semanal**, pero estos **no tienen por qué ser ininterrumpidos** (es decir, pueden ser días sueltos).\n\nLa obligatoriedad de que los dos días de descanso sean ininterrumpidos (consecutivos) está reservada exclusivamente para aquellos centros de trabajo que cuenten con una plantilla de 20 o más personas trabajadoras. Por tanto, en tu caso, la empresa puede organizar tus libranzas de forma no consecutiva, salvo que exista un pacto previo en contrario o una condición más beneficiosa consolidada en tu contrato de trabajo."
     },
     {
       "case_id": "GD_19_ESTATAL_PRESCRIPCION_FALTA_GRAVE",
       "category": "provincial_rag",
       "session_id": "eval-ses-estatal-prescripcion",
       "query": "La empresa se enteró hace 25 días de que cometí una falta grave de puntualidad según el ALEH y hoy me quieren sancionar. ¿Pueden hacerlo o ha prescrito?",
-      "effective_query": "¿Ha prescrito la sanción por una falta grave de puntualidad cometida en el sector de hostelería si la empresa tuvo conocimiento de la misma hace 25 días, según lo establecido en el VI ALEH?",
+      "effective_query": "¿Ha prescrito la posibilidad de sancionar una falta grave de puntualidad cometida en el sector de hostelería si la empresa tuvo conocimiento de ella hace 25 días, según lo establecido en el VI ALEH?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -955,14 +958,14 @@
       "retrieved_articles": [
         "aleh_estatal:Artículo 39. Faltas graves.",
         "aleh_estatal:Artículo 40. Faltas muy graves.",
-        "estatuto_trabajadores:Artículo 60.  Prescripción.",
-        "aleh_estatal:Artículo 38. Faltas leves.",
         "aleh_estatal:Artículo 41. Clases de Sanciones.",
+        "aleh_estatal:Artículo 38. Faltas leves.",
+        "estatuto_trabajadores:Artículo 60.  Prescripción.",
         "aleh_estatal:Preámbulo / Encabezado (Parte 2/2)",
         "estatuto_trabajadores:Artículo 58.  Faltas y sanciones de los trabajadores.",
+        "estatuto_trabajadores:CAPÍTULO IV",
         "estatuto_trabajadores:Artículo 54.  Despido disciplinario.",
-        "aleh_estatal:Artículo 72. Formación y sensibilización.",
-        "estatuto_trabajadores:CAPÍTULO V"
+        "aleh_estatal:Artículo 72. Formación y sensibilización."
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
@@ -974,22 +977,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, aplicando correctamente el plazo de prescripción del Estatuto de los Trabajadores (norma de rango superior aplicable ante el silencio del convenio en este punto específico) y resolviendo la consulta de forma directa.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2296.6,
-        "parallel_retrieval": 987.5,
-        "legal_synthesis_and_audit": 15572.7
+        "analyze_and_route": 2910.7,
+        "parallel_retrieval": 1328.3,
+        "legal_synthesis_and_audit": 13943.3
       },
-      "total_latency_ms": 18856.8,
-      "final_response": "Basándome en el **Artículo 60.2 del Estatuto de los Trabajadores**, la facultad de la empresa para sancionar una falta grave ha **prescrito**. La norma establece de forma taxativa que las faltas graves prescriben a los **veinte días** desde la fecha en que la empresa tuvo conocimiento de su comisión. Dado que han transcurrido **25 días** desde que la empresa tuvo conocimiento, el plazo legal ha sido superado, por lo que la empresa ya no puede imponer válidamente una sanción disciplinaria por esos hechos concretos."
+      "total_latency_ms": 18182.3,
+      "final_response": "De acuerdo con el **Artículo 60.2 del Estatuto de los Trabajadores**, las faltas calificadas como graves prescriben a los **veinte días** a partir de la fecha en que la empresa tuvo conocimiento de su comisión. Dado que, según tu consulta, han transcurrido **25 días** desde que la empresa tuvo conocimiento de los hechos, la facultad de la empresa para imponer una sanción disciplinaria por dicha falta ha **prescrito**. Por lo tanto, la empresa ya no puede sancionarte válidamente por ese incumplimiento específico."
     },
     {
       "case_id": "GD_20_BARCELONA_SUBROGACION_CONCESION",
       "category": "provincial_rag",
       "session_id": "eval-ses-bcn-subrogacion",
       "query": "Ha cambiado la empresa que gestiona la cafetería de un hospital en Barcelona donde trabajo de camarero. ¿Tiene la nueva empresa obligación de subrogarme?",
-      "effective_query": "Trabajo como camarero en una cafetería de un hospital en Barcelona y ha cambiado la empresa gestora. ¿Tiene la nueva empresa la obligación de subrogarme según la normativa laboral de hostelería?",
+      "effective_query": "Trabajando como camarero en una cafetería de un hospital en Barcelona, ¿tiene la nueva empresa que gestiona el servicio la obligación de subrogarme tras el cambio de contrata?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -999,7 +1002,7 @@
       "expected_territorio": "barcelona",
       "predicted_territorio": "barcelona",
       "territorio_match": true,
-      "categoria_aleh_detectada": "Camarero/a (Área Funcional 3ª Restauración, Grupo Profesional II/III)",
+      "categoria_aleh_detectada": "Camarero/a, Sumiller, Barman o Ayudante/a de camarero/a (Área Funcional 3ª Restauración, Grupo Profesional II/III)",
       "num_retrieved_docs": 10,
       "retrieved_layers": [
         "aleh_estatal",
@@ -1007,16 +1010,16 @@
         "estatuto_trabajadores"
       ],
       "retrieved_articles": [
-        "convenio_provincial:A.9 Baremos Maresme 2028",
         "convenio_provincial:Artículo 51. Subrogación convencional, exclusiva para el subsector de restauración en supuestos de concesiones (Parte 2/5)",
         "convenio_provincial:Artículo 51. Subrogación convencional, exclusiva para el subsector de restauración en supuestos de concesiones (Parte 1/5)",
         "convenio_provincial:Artículo 51. Subrogación convencional, exclusiva para el subsector de restauración en supuestos de concesiones (Parte 3/5)",
         "convenio_provincial:Artículo 51. Subrogación convencional, exclusiva para el subsector de restauración en supuestos de concesiones (Parte 4/5)",
+        "convenio_provincial:A.9 Baremos Maresme 2028",
+        "convenio_provincial:A) Barcelona (Parte 11/12)",
         "estatuto_trabajadores:Artículo 44.  La sucesión de empresa. (Parte 1/2)",
-        "convenio_provincial:Artículo 17. Períodos de prueba (Parte 1/2)",
-        "estatuto_trabajadores:Artículo 39.  Movilidad funcional.",
-        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 3/3)",
-        "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
+        "estatuto_trabajadores:Artículo 15.  Duración del contrato de trabajo. (Parte 3/4)",
+        "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
+        "aleh_estatal:Artículo 17. Funciones básicas de la prestación laboral. (Parte 3/3)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
@@ -1028,15 +1031,15 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es técnicamente impecable, citando correctamente el Artículo 51 del Convenio de Hostelería de Cataluña y articulando adecuadamente la relación con el Estatuto de los Trabajadores como norma supletoria. La información es precisa, completa y se ajusta estrictamente a los fragmentos proporcionados.",
+      "judge_model_used": "gemini-3.1-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2367.0,
-        "parallel_retrieval": 1455.8,
-        "legal_synthesis_and_audit": 4158.5
+        "analyze_and_route": 2566.8,
+        "parallel_retrieval": 1905.1,
+        "legal_synthesis_and_audit": 4664.7
       },
-      "total_latency_ms": 7981.3,
-      "final_response": "### Obligación de Subrogación en Hostelería (Barcelona)\n\nSí, la nueva empresa tiene la obligación legal de subrogarte. Según el **Artículo 51 del Convenio Colectivo Interprovincial de Hostelería y Turismo de Cataluña**, en el subsector de restauración, cuando se produce un cambio de empresa adjudicataria en una concesión (como es el caso de una cafetería en un hospital), se garantiza la estabilidad en el empleo mediante la subrogación empresarial.\n\n#### Requisitos para tu subrogación:\nPara que esta obligación sea efectiva, debes cumplir con los requisitos establecidos en el **Artículo 51.A.a)**:\n* **Antigüedad:** Debes haber prestado servicios en dicho centro de trabajo durante al menos los **cuatro últimos meses**. A estos efectos, se computan como tiempo trabajado los periodos de vacaciones, incapacidad temporal o cualquier otra suspensión legal del contrato.\n\n#### ¿Qué implica este proceso?\n1. **Continuidad:** La nueva empresa (cesionaria) debe respetarte todos los derechos y obligaciones económicas, sociales y personales que tenías en la empresa anterior (cedente).\n2. **Documentación:** La empresa saliente está obligada a entregar a la entrante toda tu documentación laboral (nóminas, contratos, RNT, etc.) en un plazo de **5 días hábiles** tras la comunicación del cambio (Artículo 51.4.b).\n3. **Garantías:** La empresa entrante se subroga en todos los derechos y obligaciones. Si existieran deudas salariales previas, la empresa saliente es la responsable de pagarlas, con responsabilidad subsidiaria de la empresa principal (hospital) (Artículo 51.5.c).\n\n**Nota importante:** Si te encuentras en una situación de suspensión de contrato (baja médica, excedencia, etc.), también tienes derecho a la subrogación siempre que cumplas con la antigüedad mínima requerida antes de la suspensión (Artículo 51.A.b)."
+      "total_latency_ms": 9136.6,
+      "final_response": "Sí, la nueva empresa tiene la obligación de subrogarte. Según el **Artículo 51 del Convenio Colectivo Interprovincial de Hostelería y Turismo de Cataluña**, existe una subrogación convencional obligatoria en el subsector de restauración cuando se produce un cambio de adjudicatario en una concesión (como es el caso de la cafetería de un hospital).\n\n### Requisitos para tu subrogación:\nPara que esta obligación sea efectiva, debes cumplir con los requisitos establecidos en el apartado 3.A del citado artículo:\n\n1. **Antigüedad:** Debes haber prestado servicios en dicho centro de actividad con una antigüedad mínima de los **cuatro últimos meses** (se computan periodos de vacaciones, IT o suspensión legal).\n2. **Situación laboral:** Debes estar en activo o en una situación de suspensión de contrato (enfermedad, maternidad, excedencia, etc.) que cumpla con la antigüedad mínima mencionada.\n\n### Efectos de la subrogación:\n* **Continuidad:** La nueva empresa (cesionaria) debe respetarte todos los derechos y obligaciones económicas, sociales, sindicales y personales que disfrutabas en la empresa saliente (Art. 51.2.a).\n* **Obligaciones formales:** La empresa saliente debe entregar a la entrante, en un plazo de cinco días hábiles tras la comunicación del cambio, toda tu documentación laboral (nóminas, contratos, RNT, etc.) para garantizar la correcta transición (Art. 51.4.b).\n* **Responsabilidad:** La empresa entrante queda subrogada en los derechos y obligaciones, y ambas empresas (saliente y entrante) responden de las responsabilidades derivadas del protocolo de subrogación (Art. 51.4.c y 51.5.b).\n\n**Nota importante:** Si no cumplieras con el requisito de los 4 meses de antigüedad, se aplicaría el régimen general del **Artículo 44 del Estatuto de los Trabajadores**, que también protege la continuidad de la relación laboral ante cambios de titularidad de unidades productivas autónomas. Te recomiendo verificar tu contrato y nóminas para acreditar tu antigüedad en el centro."
     },
     {
       "case_id": "GD_21_BALEARES_COCINERO_HOTEL_4_ESTRELLAS",
@@ -1086,22 +1089,22 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es impecable, citando con precisión quirúrgica las cifras de los anexos y artículos del convenio provincial de Baleares y el Estatuto de los Trabajadores, manteniendo una total fidelidad al contexto.",
+      "judge_model_used": "gemini-3.5-flash-lite",
       "node_timings_ms": {
-        "analyze_and_route": 2816.7,
-        "parallel_retrieval": 2436.5,
-        "legal_synthesis_and_audit": 14335.2
+        "analyze_and_route": 2499.6,
+        "parallel_retrieval": 1824.2,
+        "legal_synthesis_and_audit": 75271.8
       },
-      "total_latency_ms": 19588.4,
-      "final_response": "Como cocinero/a en un hotel de 4 estrellas en Palma de Mallorca, tu puesto se clasifica profesionalmente en el **Grupo Profesional Segundo (Área Funcional 2ª de Cocina y Economato)** conforme al *VI ALEH*, y te corresponde el **Nivel Salarial Cuarto** con **Categoría de establecimiento \"A\"** (alojamientos de 4 y 5 estrellas) según el *Anexo I* y el *Anexo II* del **Convenio Colectivo de Hostelería de Baleares**.\n\n### 1. Salario Base Mensual Vigente (Jornada Completa / 40h)\n\nEl convenio contempla tramos salariales plurianuales sucesivos. A continuación se detallan los importes brutos mensuales vigentes para tu categoría:\n\n| Periodo de Vigencia | Salario Base Mensual (Sin Prorratear) | Salario Mensual con Pagas Prorrateadas (12 meses) |\n| :--- | :--- | :--- |\n| **01/04/2025 al 31/03/2026** | **1.781,32 €** | 2.078,21 € |\n| **01/04/2026 al 31/03/2027** | **1.852,57 €** | 2.161,33 € |\n| **01/04/2027 al 31/03/2028** | **1.917,41 €** | 2.236,98 € |\n\n*Nota sobre importes:* Las cantidades reflejadas son **brutas**, tal y como dispone el *Artículo 24º del Convenio Colectivo de Baleares*, debiendo practicarse las retenciones de Seguridad Social e IRPF legalmente establecidas a cargo del trabajador (*Artículo 26.4 del Estatuto de los Trabajadores*).\n\n### 2. Número de Pagas Extraordinarias\n\nConforme al **Artículo 27º (Gratificaciones Extraordinarias)** del Convenio Colectivo de Hostelería de Baleares, tienes derecho a **dos gratificaciones extraordinarias al año**, equivalentes cada una de ellas a una mensualidad del salario base (más el complemento de antigüedad *ad personam* si lo tuvieras):\n* **Paga de Verano:** Satisfecha el **31 de julio** (pudiéndose abonar junto con la nómina ordinaria de dicho mes).\n* **Paga de Navidad:** Satisfecha el **21 de diciembre**.\n\nEstas pagas se perciben íntegras si se ha completado el año de servicio; en caso contrario, o si se ingresa/cesa en el transcurso del año, se percibirán de forma prorrateada en función del tiempo trabajado. Asimismo, las pagas extras se podrán abonar prorrateadas mes a mes (en 12 pagas) siempre que exista acuerdo entre la empresa y la representación legal de los trabajadores o el propio trabajador."
+      "total_latency_ms": 79595.6,
+      "final_response": "Como **Cocinero/a** en un **hotel de 4 estrellas** en Palma de Mallorca, tu clasificación profesional y salarial según el Convenio Colectivo de Hostelería de Baleares es la siguiente:\n\n1.  **Clasificación del Establecimiento**: Según el **Anexo II**, un hotel de 4 estrellas pertenece a la **Categoría A**.\n2.  **Nivel Salarial**: Según el **Anexo I**, el puesto de Cocinero/a está encuadrado en el **Nivel IV**.\n3.  **Gratificaciones Extraordinarias**: De acuerdo con el **Art. 27º**, tienes derecho a **2 pagas extras** al año (una el 31 de julio y otra el 21 de diciembre), cada una equivalente a una mensualidad del salario base (más antigüedad si correspondiera).\n\n### Tabla Salarial Vigente (Cocinero/a - Hotel 4*)\n\nA continuación, detallo tu salario base mensual bruto para los próximos periodos establecidos en el **Art. 24º** del convenio:\n\n| Periodo de Vigencia | Salario Base Mensual (Jornada 40h) | Salario Mensual (Con Pagas Extras Prorrateadas) |\n| :--- | :--- | :--- |\n| **01/04/2025 - 31/03/2026** | **1.781,32 €** | 2.078,21 € |\n| **01/04/2026 - 31/03/2027** | **1.852,57 €** | 2.161,33 € |\n| **01/04/2027 - 31/03/2028** | **1.917,41 €** | 2.236,98 € |\n\n***\n\n**Notas importantes sobre tu nómina:**\n*   **Carácter Bruto**: Estos importes son **brutos**. Según el **Art. 26.4 del Estatuto de los Trabajadores**, las cargas fiscales (IRPF) y de Seguridad Social son a cargo del trabajador. El salario neto final dependerá de tus circunstancias personales (hijos, tipo de contrato, etc.), por lo que cualquier cálculo neto es **estrictamente orientativo**.\n*   **Prorrateo**: El **Art. 27º** permite el prorrateo de las pagas extras en 12 mensualidades siempre que exista un acuerdo entre la empresa y la representación de los trabajadores (o el propio trabajador).\n*   **Complementos**: A estas cantidades podrías sumar otros conceptos como el plus de antigüedad *ad personam* o el plus de desplazamiento (Art. 28º), si bien este último no se incluye en el cálculo de las pagas extras."
     },
     {
       "case_id": "GD_22_BALEARES_FIJO_DISCONTINUO_IBIZA_GARANTIA",
       "category": "provincial_rag",
       "session_id": "eval-ses-baleares-fijo-discontinuo-ibiza",
       "query": "Soy camarero fijo discontinuo en un hotel de Ibiza y llevo 4 años seguidos trabajando 6 meses por temporada. ¿Qué garantía mínima de ocupación anual tengo según el convenio y hasta cuántos meses puede ampliarse desde abril de 2025?",
-      "effective_query": "¿Qué garantía mínima de ocupación anual tiene un trabajador fijo discontinuo en el sector de hostelería en Ibiza (Baleares) y hasta cuántos meses puede ampliarse el periodo de actividad a partir de abril de 2025?",
+      "effective_query": "¿Qué garantía mínima de ocupación anual y llamamiento tiene un camarero fijo discontinuo en un hotel de Ibiza (Baleares) que lleva 4 años trabajando 6 meses por temporada, y hasta cuántos meses puede ampliarse desde abril de 2025 según el convenio colectivo?",
       "expected_intent": "HOSPITALITY_CORE",
       "predicted_intent": "HOSPITALITY_CORE",
       "intent_match": true,
@@ -1119,16 +1122,16 @@
         "estatuto_trabajadores"
       ],
       "retrieved_articles": [
-        "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 1/8)",
         "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 2/8)",
+        "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 1/8)",
         "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 3/8)",
-        "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 4/8)",
+        "convenio_provincial:Art. 8º. PERSONAS TRABAJADORAS FIJAS DISCONTINUAS (Parte 6/8)",
         "convenio_provincial:Disposición adicional décima. REGIMEN ESPECIAL PARA EMPRESAS DE RESTAURACIÓN, OCIO y ENTRETENIMIENTO (Parte 3/4)",
         "estatuto_trabajadores:Artículo 16.  Contrato fijo-discontinuo. (Parte 2/3)",
         "estatuto_trabajadores:Artículo 16.  Contrato fijo-discontinuo. (Parte 1/3)",
         "convenio_provincial:NIVEL SALARIAL CUARTO",
         "aleh_estatal:Preámbulo / Encabezado (Parte 1/2)",
-        "aleh_estatal:Preámbulo / Encabezado (Parte 2/2)"
+        "aleh_estatal:Artículo 16. Asignación a los grupos profesionales por ocupaciones. (Parte 1/2)"
       ],
       "layer_coverage_score": 1.0,
       "citation_recall_at_k": 1.0,
@@ -1140,15 +1143,15 @@
       "answer_relevancy": 1.0,
       "context_recall_semantic": 1.0,
       "hierarchy_application_score": 1.0,
-      "judge_critique": "Evaluación rápida en modo determinista (0 tokens de Juez Semántico).",
-      "judge_model_used": "deterministic-quick-check",
+      "judge_critique": "La respuesta es excelente y técnicamente precisa. Identifica correctamente la consolidación de los 6 meses tras 3 años de servicio y explica con exactitud el mecanismo de ampliación hasta 9 meses a partir de abril de 2025, citando los artículos correspondientes del convenio provincial.",
+      "judge_model_used": "gemini-3-flash-preview",
       "node_timings_ms": {
-        "analyze_and_route": 4716.0,
-        "parallel_retrieval": 1736.5,
-        "legal_synthesis_and_audit": 4484.1
+        "analyze_and_route": 2811.4,
+        "parallel_retrieval": 1956.2,
+        "legal_synthesis_and_audit": 15535.6
       },
-      "total_latency_ms": 10936.6,
-      "final_response": "Como camarero fijo discontinuo en un hotel de Ibiza (Baleares) con 4 años consecutivos trabajando 6 meses por temporada, tu situación respecto a la garantía de ocupación anual se rige por el **Artículo 8º del Convenio Colectivo de Hostelería de Baleares**, en relación con el marco general del **Artículo 16 del Estatuto de los Trabajadores** y las disposiciones del **VI ALEH**.\n\nA continuación se detallan las respuestas a tus cuestiones:\n\n### 1. Garantía mínima de ocupación anual\nConforme al **Artículo 8º, apartado 2.1, del Convenio Colectivo de Hostelería de Baleares**, al haber alcanzado ya tres periodos anuales consecutivos prestando servicios en la misma empresa por un tiempo igual o superior a seis meses al año con contrato fijo discontinuo, tienes consolidada una **garantía mínima de ocupación de seis meses al año**.\n\n### 2. Ampliación del periodo de actividad a partir de abril de 2025\nEl **Artículo 8º, apartado 2.2, del Convenio Colectivo de Baleares** introduce una mejora sustancial vigente desde el **1 de abril de 2025**: \n- Las empresas que acrediten una **actividad ordinaria estable y continuada superior a seis meses al año** deberán incrementar al personal con la garantía mínima consolidada la media de ocupación efectiva que alcancen a partir de dicha fecha durante **tres períodos anuales consecutivos**.\n- Este incremento tiene un **tope máximo de hasta nueve meses garantizados al año**.\n- Para alcanzar esta ampliación por encima de los 6 meses y hasta un máximo de 9 meses, es requisito indispensable que prestes servicios de manera efectiva y continuada durante los tres periodos anuales consecutivos a partir del 1 de abril de 2025.\n\n*Nota sobre posibles reversiones:* El convenio contempla que la empresa pueda excepcionalmente retornar a la garantía mínima de seis meses si concurren causas justificadas sobrevenidas al inicio o desarrollo de la temporada (tales como obras de reforma, causas objetivas imprevisibles o cambios de categoría que afecten al orden de llamamiento), debiendo comunicarlo de forma motivada con al menos diez días naturales de antelación."
+      "total_latency_ms": 20303.2,
+      "final_response": "Como camarero en Ibiza con 4 años de antigüedad trabajando 6 meses por temporada, tu situación jurídica se rige por el **Art. 8 del Convenio Colectivo de Hostelería de Baleares**. A continuación, detallo tus derechos de ocupación y las novedades que entran en vigor en 2025:\n\n### 1. Tu Garantía de Ocupación Actual\nAl haber superado ya los tres periodos anuales consecutivos trabajando al menos 6 meses, tienes **consolidada una garantía de ocupación mínima de 6 meses al año** (Art. 8.2.1). Esto significa que la empresa está obligada a llamarte para trabajar, como mínimo, ese tiempo en cada temporada.\n\n### 2. Ampliación de la Garantía (A partir de abril de 2025)\nEl convenio introduce una mejora importante para los fijos discontinuos a partir del **1 de abril de 2025** (Art. 8.2.2):\n\n*   **Nuevo Cómputo:** Si a partir de esa fecha trabajas más de 6 meses de forma efectiva durante tres temporadas consecutivas, tu garantía mínima dejará de ser de 6 meses y pasará a ser la **media de lo que hayas trabajado en esos tres años**.\n*   **Tope Máximo:** Esta garantía puede ampliarse **hasta un máximo de 9 meses** al año.\n*   **Requisito:** La empresa debe acreditar una actividad ordinaria estable y continuada que permita dicha ampliación.\n\n### 3. Reglas del Llamamiento y Ocupación\n*   **Antelación del llamamiento:** Para tu periodo garantizado, la empresa debe avisarte por escrito con al menos **10 días naturales** de antelación (Art. 8.5). \n*   **Tu respuesta:** Tienes un plazo máximo de **72 horas** para contestar al llamamiento desde que lo recibas.\n*   **Continuidad:** Los meses de ocupación deben ser, por norma general, **continuados**. No obstante, la empresa puede fraccionar tu actividad una sola vez por un máximo de 30 días (avisándote con 5 días de antelación), siempre que sea necesario para ajustar la actividad (Art. 8.3).\n\n### 4. Cláusula de Reversión\nDebes saber que si alcanzas una garantía superior a 6 meses (por ejemplo, 8 meses), la empresa podría intentar **revertirla** y devolverte a los 6 meses originales si existen causas objetivas o reformas en el hotel, pero debe comunicártelo de forma motivada con **10 días de antelación** al inicio del periodo adicional (Art. 8.2.2)."
     }
   ]
 }

@@ -168,9 +168,11 @@ def run_regression_suite(
     baseline = load_baseline()
     comparison = compare_against_baseline(current_report, baseline)
 
-    if update_baseline:
+    if update_baseline and comparison.get("status") != "FAILED":
         save_baseline(current_report)
         comparison["baseline_updated"] = True
+    elif update_baseline:
+        comparison["baseline_updated"] = False
 
     return current_report, comparison
 

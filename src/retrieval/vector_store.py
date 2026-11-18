@@ -570,15 +570,17 @@ class AiHorecaVectorStore:
         raw_role = role_context.split("|")[0].strip().lower() if role_context else ""
         role_stems: list[str] = []
         for w in re.findall(r"[a-záéíóúüñ]{4,}", raw_role):
-            stem = re.sub(r"(?:ero|era|ora|or|ista|[oa]s?)$", "", w)
+            stem = re.sub(r"[oa]s?$", "", w)
             role_stems.append(stem if len(stem) >= 4 else w)
 
         def _matches_role_stem(d: RetrievedDocument) -> bool:
-            """Comprueba si el texto del fragmento contiene alguna raíz léxica del oficio solicitado."""
+            """Comprueba si todas las raíces léxicas del oficio coexisten en una misma línea o fila de la tabla."""
             if not role_stems:
                 return False
-            text_lower = d.text.lower()
-            return any(stem in text_lower for stem in role_stems)
+            return any(
+                all(stem in line for stem in role_stems)
+                for line in d.text.lower().splitlines()
+            )
 
         candidates: list[RetrievedDocument] = []
         seen_ids: set[str] = set()
