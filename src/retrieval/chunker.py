@@ -33,6 +33,10 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"verificable\s+en\s+https?://\S+|"
     r"sec\.\s+[ivx]+\.\s+p[áa]g\.\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*(?:•|-)?\s*p[áa]gina\s*\d+.*|"
+    r"\**n[úu]m(?:ero)?\.?\s*\d+\b.*(?:fasc[íi]culo|sec\.\s+[ivx]+|p[áa]g\.?\s*\d+).*|"
+    r"https?://\S+\s+d\.?\s*l\.?\s*:?\s*[a-z]{1,3}[\s-]*\d+.*|"
+    r"fasc[íi]culo\s+\d+.*|"
+    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}|"
     r"boletin@dipuleon\.es|"
     r"bocm-\d+-\d+|"
     r"bocm|"
@@ -44,7 +48,7 @@ _RESIDUAL_NOISE_LINE = re.compile(
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?((?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+[IVXLCDM0-9]+[^\n]*)$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)[^\n]*?)\**$"
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
@@ -52,11 +56,15 @@ _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
 )
 
 _ARTICLE_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?((?:Art[íi]culo|Art\.)\s*\d+(?:\s*(?:º|\.º|bis|ter|quater))?(?:\s*$|(?:\.|\s*[-–—])\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*))$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo|Art\.)\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:\.|\s*[-–—])\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
 )
 
 _DISPOSITION_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?(Disposici[óo]n\s+(?:adicional|transitoria|derogatoria|final)\s+[^\n]+)$"
+    r"(?i)^(?:#{1,4}\s*)?\**(Disposici[óo]n\s+(?:adicional|transitoria|derogatoria|final)\s+[^\n]+?)\**$"
+)
+
+_TOC_HEADER_RE = re.compile(
+    r"(?i)^(?:#{1,4}\s*)?\**(?:[ÍI]NDICE(?:\s+SISTEM[ÁA]TICO|\s+GENERAL)?|SUMARIO|TABLA\s+DE\s+CONTENIDOS?)\**\s*$"
 )
 
 _MARKDOWN_SUBHEADING_RE = re.compile(r"^#{2,4}\s+(.+)$")
@@ -186,6 +194,54 @@ def _infer_document_metadata(
     )
 
 
+def _strip_toc_index_block(lines: list[str]) -> list[str]:
+    """Elimina un bloque inicial de Índice/Sumario para evitar stubs vacíos sin texto articulado."""
+    result: list[str] = []
+    in_toc = False
+    seen_first_chapter_in_toc = False
+    idx = 0
+
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        if not in_toc and idx < 400 and _TOC_HEADER_RE.match(stripped):
+            in_toc = True
+            idx += 1
+            continue
+
+        if in_toc:
+            if re.match(
+                r"(?i)^(?:#{1,4}\s*)?\**(?:CAP[ÍI]TULO|T[ÍI]TULO)\s+(?:I\b|1\b|PRIMERO\b)",
+                stripped,
+            ):
+                if not seen_first_chapter_in_toc:
+                    seen_first_chapter_in_toc = True
+                    idx += 1
+                    continue
+                in_toc = False
+                result.append(lines[idx])
+                idx += 1
+                continue
+
+            if (
+                len(stripped) >= 130
+                and not stripped.startswith("#")
+                and ("." in stripped or "," in stripped)
+                and not stripped.isupper()
+            ):
+                in_toc = False
+                result.append(lines[idx])
+                idx += 1
+                continue
+
+            idx += 1
+            continue
+
+        result.append(lines[idx])
+        idx += 1
+
+    return result
+
+
 def _clean_markdown_lines(raw_text: str) -> list[str]:
     """Limpia líneas residuales de numeración o cabeceras de boletín oficial y normaliza espacios Unicode."""
     normalized = (
@@ -199,7 +255,7 @@ def _clean_markdown_lines(raw_text: str) -> list[str]:
         if _RESIDUAL_NOISE_LINE.match(stripped):
             continue
         cleaned.append(line)
-    return cleaned
+    return _strip_toc_index_block(cleaned)
 
 
 def _split_large_block(
@@ -285,18 +341,25 @@ def chunk_markdown_document(
         if chap_match:
             flush_section()
             chap_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
-            if idx + 1 < len(lines):
-                next_str = lines[idx + 1].strip()
+            lookahead = idx + 1
+            while lookahead < len(lines) and not lines[lookahead].strip():
+                lookahead += 1
+            if lookahead < len(lines):
+                next_str = lines[lookahead].strip()
+                clean_next = re.sub(r"^#{1,4}\s*", "", next_str).strip("* ")
+                is_h1_bold_sub = next_str.startswith("# **")
                 if (
-                    next_str
-                    and len(next_str) < 90
-                    and not next_str.startswith("#")
+                    clean_next
+                    and len(clean_next) < 90
+                    and (lookahead == idx + 1 or is_h1_bold_sub)
+                    and (is_h1_bold_sub or not next_str.startswith("#"))
                     and not next_str.startswith("|")
                     and not _ARTICLE_START_RE.match(next_str)
                     and not _CHAPTER_OR_TITLE_RE.match(next_str)
+                    and not _DISPOSITION_START_RE.match(next_str)
                 ):
-                    chap_title = f"{chap_title} - {next_str}"
-                    idx += 1
+                    chap_title = f"{chap_title} - {clean_next}"
+                    idx = lookahead
             current_base_chapter = chap_title
             current_chapter = chap_title
             current_article = chap_title
@@ -315,7 +378,7 @@ def chunk_markdown_document(
         art_match = _ARTICLE_START_RE.match(stripped)
         if art_match:
             flush_section()
-            art_title = re.sub(r"^#{1,4}\s*", "", stripped).strip()
+            art_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
             if re.fullmatch(r"(?i)(?:Art[íi]culo|Art\.)\s*\d+(?:\.º|º)?\.?", art_title):
                 lookahead = idx + 1
                 while lookahead < len(lines) and not lines[lookahead].strip():
@@ -337,9 +400,20 @@ def chunk_markdown_document(
         disp_match = _DISPOSITION_START_RE.match(stripped)
         if disp_match:
             flush_section()
-            disp_title = re.sub(r"^#{1,4}\s*", "", stripped).strip()
-            current_article = disp_title
-            current_buffer.append(f"### {disp_title}")
+            raw_disp = re.sub(r"^#{1,4}\s*", "", stripped).strip()
+            inline_bold = re.match(
+                r"^\*\*(Disposici[óo]n\s+[^*\n]+?)\*\*(?:\s*[-–—]?\s*(.+))?$",
+                raw_disp,
+                flags=re.IGNORECASE,
+            )
+            if inline_bold and inline_bold.group(2):
+                disp_title = inline_bold.group(1).strip("* ")
+                current_article = disp_title
+                current_buffer.append(raw_disp)
+            else:
+                disp_title = raw_disp.strip("* ")
+                current_article = disp_title
+                current_buffer.append(f"### {disp_title}")
             idx += 1
             continue
 

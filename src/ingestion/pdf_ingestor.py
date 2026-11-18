@@ -44,7 +44,11 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"cve-dogc-|cve:\s*boe-|issn\s+\d|"
     r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fono:\s*\d|"
     r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*de\s*\d+)?|"
+    r"fasc[íi]culo\s+\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
+    r"n[úu]m(?:ero)?\.?\s*\d+$|"
+    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
+    r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}\s*\d+|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}"
     r").*$"
 )
@@ -161,32 +165,23 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
     lines = page_text.splitlines()
     cleaned_lines: list[str] = []
 
-    bulletin_noise = re.compile(
-        r"(?i)^(?:"
-        r"bolet[íi]n\s+oficial\s+de|"
-        r"b\.?\s*o\.?\s*c\.?\s*m\.?\s*n[úu]m|"
-        r"diari\s+oficial\s+de\s+la\s+generalitat|"
-        r"cve-dogc-|cve:\s*boe-| ISSN\s+\d|"
-        r"https?://\S+|www\.\S+|"
-        r"p[áa]g\.?\s*\d+\s*(?:de\s*\d+)?|"
-        r"n[úu]m\.?\s*\d+\s+.*\d{4}"
-        r").*$"
-    )
-
     for line in lines:
         stripped = line.strip()
         if not stripped:
             cleaned_lines.append("")
             continue
-        if bulletin_noise.match(stripped):
+        if _BULLETIN_HEADER_NOISE.match(stripped):
             continue
         if re.fullmatch(r"\d{1,5}", stripped):
             continue
 
         # Formatear encabezados estructurales jurídicos
-        if re.match(r"(?i)^(?:CAP[ÍI]TULO|T[ÍI]TULO|ANEXO)\s+[IVXLCDM0-9]+", stripped):
+        if re.match(
+            r"(?i)^(?:CAP[ÍI]TULO|T[ÍI]TULO|ANEXO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)",
+            stripped,
+        ):
             cleaned_lines.append(f"\n## {stripped}\n")
-        elif re.match(r"(?i)^Art[íi]culo\s+\d+", stripped):
+        elif re.match(r"(?i)^(?:Art[íi]culo|Art\.)\s*\d+", stripped):
             cleaned_lines.append(f"\n### {stripped}\n")
         else:
             cleaned_lines.append(stripped)
@@ -288,7 +283,7 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
     cleaned_lines: list[str] = []
     for line in raw_md.splitlines():
         stripped = line.strip()
-        if _BULLETIN_HEADER_NOISE.match(re.sub(r"[*_#<>/\s]+", " ", stripped).strip()):
+        if _BULLETIN_HEADER_NOISE.match(re.sub(r"[*_#<>\s]+", " ", stripped).strip()):
             continue
         if re.fullmatch(r"[*_#\s]*\d{1,5}[*_#\s]*", stripped):
             continue
@@ -527,9 +522,16 @@ def run_ingestion_pipeline(
 
     # Etapa 3: Auto-Errata Patcher sobre los convenios correspondientes
     for errata_path, errata_boundary in errata_files:
-        if skip_existing and not freshly_extracted_paths:
+        prelim_target = saved_by_territory.get(errata_boundary.territorio)
+        if not prelim_target:
+            for terr, path_candidate in saved_by_territory.items():
+                if terr in errata_boundary.territorio or errata_boundary.territorio in terr:
+                    prelim_target = path_candidate
+                    break
+        if skip_existing and (not freshly_extracted_paths or (prelim_target and prelim_target not in freshly_extracted_paths)):
             logger.info(
-                "[Etapa 3] Sin convenios nuevos extraídos en esta ejecución; omitiendo re-evaluación de erratas (%s).",
+                "[Etapa 3] Sin convenio matriz recién extraído para '%s'; omitiendo re-evaluación de erratas (%s).",
+                errata_boundary.territorio,
                 errata_path.name,
             )
             continue

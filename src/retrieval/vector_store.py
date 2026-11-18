@@ -467,21 +467,21 @@ class AiHorecaVectorStore:
 
     @staticmethod
     def _extract_chunk_year(doc: RetrievedDocument) -> int:
-        """Extrae el año específico de una tabla salarial descartando rangos generales de anexo (ej. '2023-2025')."""
+        """Extrae el año específico de una tabla salarial descartando rangos generales de anexo (ej. '2023-2025') e importes en euros."""
         header_surface = f"{doc.titulo_o_capitulo} | {doc.articulo}"
         # Eliminamos rangos generales tipo '2023-2025' o '2023 - 2025' para quedarnos con el año concreto de la sub-tabla
-        cleaned = re.sub(r"\b2\.?02[2-9]\s*[-–—/]\s*2\.?02[2-9]\b", "", header_surface)
+        cleaned = re.sub(r"\b2\.?02[2-9]\s*[-–—/]\s*2\.?02[2-9]\b(?!,\d)", "", header_surface)
         years: list[int] = []
-        for m in re.finditer(r"\b2\.?0(2[3-9])\b", cleaned):
+        for m in re.finditer(r"\b2\.?0(2[3-9])\b(?!,\d)", cleaned):
             years.append(2000 + int(m.group(1)))
         if years:
             return years[-1]
-        # Si no estaba en el título/artículo, inspeccionamos las primeras líneas del cuerpo tras la cabecera [NORMA:...]
-        body_start = doc.text.split("\n\n", 1)[-1][:250]
-        cleaned_body = re.sub(r"\b2\.?02[2-9]\s*[-–—/]\s*2\.?02[2-9]\b", "", body_start)
-        for m in re.finditer(r"\b2\.?0(2[3-9])\b", cleaned_body):
+        # Si no estaba en el título/artículo, inspeccionamos todo el cuerpo del fragmento tras la cabecera [NORMA:...]
+        body = doc.text.split("\n\n", 1)[-1]
+        cleaned_body = re.sub(r"\b2\.?02[2-9]\s*[-–—/]\s*2\.?02[2-9]\b(?!,\d)", "", body)
+        for m in re.finditer(r"\b2\.?0(2[3-9])\b(?!,\d)", cleaned_body):
             years.append(2000 + int(m.group(1)))
-        return years[-1] if years else 0
+        return max(years) if years else 0
 
     @staticmethod
     def _extract_aleh_area_pattern(role_context: Optional[str]) -> Optional[re.Pattern]:
@@ -549,6 +549,36 @@ class AiHorecaVectorStore:
                 query,
             )
         )
+        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
+
+        def _is_classification_level_table(d: RetrievedDocument) -> bool:
+            """Identifica tablas de encuadramiento/niveles o categorías sin importes en €, excluyendo antigüedad salvo consulta expresa."""
+            if d.capa_normativa != "convenio_provincial" or d.tipo_contenido != "tabla_salarial":
+                return False
+            if "€" in d.text or "euros" in d.text.lower():
+                return False
+            surface = f"{d.titulo_o_capitulo} {d.articulo}"
+            if not include_seniority_tables and ("antigüedad" in surface.lower() or "antiguedad" in surface.lower()):
+                return False
+            return bool(
+                re.search(
+                    r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
+                    surface,
+                )
+            )
+
+        raw_role = role_context.split("|")[0].strip().lower() if role_context else ""
+        role_stems: list[str] = []
+        for w in re.findall(r"[a-záéíóúüñ]{4,}", raw_role):
+            stem = re.sub(r"(?:ero|era|ora|or|ista|[oa]s?)$", "", w)
+            role_stems.append(stem if len(stem) >= 4 else w)
+
+        def _matches_role_stem(d: RetrievedDocument) -> bool:
+            """Comprueba si el texto del fragmento contiene alguna raíz léxica del oficio solicitado."""
+            if not role_stems:
+                return False
+            text_lower = d.text.lower()
+            return any(stem in text_lower for stem in role_stems)
 
         candidates: list[RetrievedDocument] = []
         seen_ids: set[str] = set()
@@ -649,8 +679,27 @@ class AiHorecaVectorStore:
                     older_euro = [t for t in euro_tables if t not in latest_euro]
                     euro_tables = latest_euro + older_euro
 
+            top_level_candidates: list[RetrievedDocument] = []
+            seen_level_sections: set[str] = set()
+            cls_levels = sorted(
+                (t for t in level_tables if _is_classification_level_table(t)),
+                key=lambda t: not _matches_role_stem(t),
+            )
+            for item in cls_levels:
+                sec_key = item.titulo_o_capitulo.strip()
+                if sec_key not in seen_level_sections:
+                    top_level_candidates.append(item)
+                    seen_level_sections.add(sec_key)
+                    if len(top_level_candidates) >= 4:
+                        break
+            for item in cls_levels + level_tables:
+                if len(top_level_candidates) >= 4:
+                    break
+                if item not in top_level_candidates:
+                    top_level_candidates.append(item)
+
             balanced_tables: list[RetrievedDocument] = []
-            for seq in (euro_tables[:6], level_tables[:2], filtered_tables):
+            for seq in (euro_tables[:6], top_level_candidates, euro_tables[6:]):
                 for item in seq:
                     if item not in balanced_tables:
                         balanced_tables.append(item)
@@ -716,6 +765,23 @@ class AiHorecaVectorStore:
                     count += 1
 
         # Cuotas mínimas garantizadas de contexto jerárquico (parametrizadas desde src/config.py)
+        prov_euro_tables = [
+            d
+            for d in candidates
+            if d.capa_normativa == "convenio_provincial"
+            and d.tipo_contenido == "tabla_salarial"
+            and ("€" in d.text or "euros" in d.text.lower())
+        ]
+        distinct_cls_sections = {
+            d.titulo_o_capitulo.strip() for d in candidates if _is_classification_level_table(d)
+        }
+        needs_dual_cls_tables = (
+            is_remuneration_query and bool(prov_euro_tables) and len(distinct_cls_sections) >= 2
+        )
+        effective_article_quota = (
+            max(1, QUOTA_PROVINCIAL_ARTICLES - 1) if needs_dual_cls_tables else QUOTA_PROVINCIAL_ARTICLES
+        )
+
         if is_remuneration_query:
             # 1) Garantizar artículo de Gratificaciones Extraordinarias / Pagas Extras del convenio
             _pick(
@@ -741,17 +807,10 @@ class AiHorecaVectorStore:
                     )
         _pick(
             lambda d: d.capa_normativa == "convenio_provincial" and d.tipo_contenido == "articulo",
-            max(0, QUOTA_PROVINCIAL_ARTICLES - sum(1 for s in selected if s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "articulo")),
+            max(0, effective_article_quota - sum(1 for s in selected if s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "articulo")),
         )
         # En tablas salariales: si el usuario no pidió un año histórico específico, garantizamos primero la tabla en €
         # del año vigente más reciente con mayor relevancia en Cohere Rerank / Hybrid Search, y después la tabla complementaria
-        prov_euro_tables = [
-            d
-            for d in candidates
-            if d.capa_normativa == "convenio_provincial"
-            and d.tipo_contenido == "tabla_salarial"
-            and ("€" in d.text or "euros" in d.text.lower())
-        ]
         max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
         area_pattern = self._extract_aleh_area_pattern(role_context)
 
@@ -792,13 +851,37 @@ class AiHorecaVectorStore:
                     1,
                 )
 
-        # Si el convenio separa tabla de niveles salariales (sin €) y tabla de importes (con €), aseguramos la tabla de niveles
-        _pick(
-            lambda d: d.capa_normativa == "convenio_provincial"
-            and d.tipo_contenido == "tabla_salarial"
-            and not ("€" in d.text or "euros" in d.text.lower()),
-            max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
-        )
+        # Si el convenio separa tabla de niveles salariales/categorías (sin €) y tabla de importes (con €),
+        # aseguramos primero 1 tabla de clasificación sin € dentro de QUOTA_PROVINCIAL_TABLES y,
+        # si el convenio divide puesto->nivel y establecimiento->categoría en dos anexos distintos, garantizamos 1 tabla del segundo anexo
+        if sum(1 for s in selected if s.tipo_contenido == "tabla_salarial") < QUOTA_PROVINCIAL_TABLES:
+            _pick(lambda d: _is_classification_level_table(d) and _matches_role_stem(d), 1)
+            if not any(_is_classification_level_table(s) for s in selected):
+                _pick(_is_classification_level_table, 1)
+            if needs_dual_cls_tables:
+                selected_cls_sections = {
+                    s.titulo_o_capitulo.strip() for s in selected if _is_classification_level_table(s)
+                }
+                if selected_cls_sections:
+                    _pick(
+                        lambda d: _is_classification_level_table(d)
+                        and d.titulo_o_capitulo.strip() not in selected_cls_sections
+                        and _matches_role_stem(d),
+                        1,
+                    )
+                    if sum(1 for s in selected if _is_classification_level_table(s)) < 2:
+                        _pick(
+                            lambda d: _is_classification_level_table(d)
+                            and d.titulo_o_capitulo.strip() not in selected_cls_sections,
+                            1,
+                        )
+            if not any(_is_classification_level_table(s) for s in selected):
+                _pick(
+                    lambda d: d.capa_normativa == "convenio_provincial"
+                    and d.tipo_contenido == "tabla_salarial"
+                    and not ("€" in d.text or "euros" in d.text.lower()),
+                    max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
+                )
         if not explicit_years and max_cand_year > 0:
             _pick(
                 lambda d: d.capa_normativa == "convenio_provincial"

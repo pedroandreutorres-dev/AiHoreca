@@ -124,8 +124,8 @@ def get_indexed_territories() -> set[str]:
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             for info in data.values():
-                terr = _normalize_text(str(info.get("territorio", "")).strip())
-                if terr and terr != "estatal":
+                terr = _canonicalize_llm_province(str(info.get("territorio", "")).strip())
+                if terr:
                     indexed.add(terr)
                     if terr in AUTONOMOUS_COMMUNITY_EXPANSION:
                         indexed.update(AUTONOMOUS_COMMUNITY_EXPANSION[terr])
@@ -260,13 +260,14 @@ class AiHorecaGraphNodes:
             "   - Cuando el usuario SÍ indique un puesto u oficio (en el turno actual o heredado de los slots de la sesión), mapéalo a su denominación técnica en el VI ALEH:\n"
             "     * 'friegaplatos' / 'office' / 'pica' -> 'Auxiliar de limpieza / Marmitón / Freganchín (Área Funcional 2ª Cocina o 3ª Restauración, Grupo Profesional III / Nivel salarial inferior)'\n"
             "     * 'pinche' / 'ayudante de cocina' -> 'Ayudante/a de cocina / Auxiliar de cocina (Área Funcional 2ª Cocina y Economato, Grupo Profesional II/III)'\n"
-            "     * 'cocinero' / 'chef' -> 'Jefe/a de cocina, Segundo/a Jefe/a de cocina, Jefe/a de partida o Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupos Profesionales I y II)'\n"
+            "     * 'cocinero' -> 'Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)'\n"
+            "     * 'chef' / 'jefe de cocina' / 'jefe de partida' -> 'Jefe/a de cocina / Segundo/a Jefe/a de cocina / Jefe/a de partida (Área Funcional 2ª Cocina y Economato, Grupos Profesionales I y II)'\n"
             "     * 'camarero' / 'camarera' / 'chico de barra' / 'mesero' -> 'Camarero/a, Sumiller, Barman o Ayudante/a de camarero/a (Área Funcional 3ª Restauración, Grupo Profesional II/III)'\n"
             "     * 'rider' / 'repartidor' / 'delivery' -> 'Repartidor/a de comida a domicilio (Área Funcional 3ª Restauración / Disposición Adicional ALEH y Convenio Provincial)'\n"
-            "     * 'camarera de pisos' / 'kelly' / 'limpiadora de habitaciones' -> 'Camarero/a de pisos / Gobernante/a / Auxiliar de pisos y limpieza (Área Funcional 4ª Pisos y Limpieza, Grupos Profesionales I/II/III)'\n"
+            "     * 'camarera de pisos' / 'kelly' / 'limpiadora de habitaciones' -> 'Camarero/a de pisos / Auxiliar de pisos y limpieza (Área Funcional 4ª Pisos y Limpieza, Grupos Profesionales II y III)'\n"
             "     * 'recepcionista' / 'botones' / 'conserje' -> 'Recepcionista / Conserje / Auxiliar de recepción y conserjería (Área Funcional 1ª Recepción, Conserjería, Relaciones Públicas, Administración y Gestión)'\n"
             "     * 'mantenimiento' / 'socorrista' / 'animador' -> 'Área Funcional 5ª (Mantenimiento y Servicios Auxiliares) o Área Funcional 6ª (Servicios Complementarios)'\n"
-            "   - Construye `query_busqueda_hibrida` combinando los conceptos clave de `consulta_autocontenida_resuelta`, la categoría oficial del ALEH, el área funcional "
+            "   - Construye `query_busqueda_hibrida` combinando los conceptos clave de `consulta_autocontenida_resuelta` (incluyendo siempre el tipo y categoría/estrellas/tenedores del establecimiento si se menciona), la categoría oficial del ALEH, el área funcional "
             "y el territorio aplicable (NOTA: incluye los términos 'tablas salariales salario base gratificaciones extraordinarias pagas extras' cuando el turno actual pregunte por sueldos, salarios, nómina, retribuciones o cálculo de horas extras)."
         )
 
@@ -578,7 +579,8 @@ class AiHorecaGraphNodes:
             "   - Si la pregunta del turno actual es conceptual, clasificatoria, de permisos, vacaciones, jornada o aclaratoria sobre un requisito del convenio, responde de forma directa, natural y fundamentada en los fragmentos recuperados (integrando cuando proceda Convenio Provincial/Autonómico, VI ALEH y Estatuto de los Trabajadores), **sin forzar tablas salariales que no vienen al caso**.\n"
             "   - Si el convenio hace depender una condición de un parámetro del centro de trabajo o del contrato que el usuario no ha precisado (como la categoría o clasificación turística del establecimiento, su nivel o modalidad), expón las opciones previstas en los fragmentos recuperados e indícale dónde puede verificar ese dato en la práctica (contrato de trabajo, encabezado de la nómina o clasificación oficial del establecimiento). **Importante:** Cuando se trate de cuantías económicas o fórmulas salariales/horas extras, esta indicación práctica es solo complementaria; NUNCA sustituye el cálculo numérico obligatorio de todas las opciones en tabla (Reglas 3 y 4).\n"
             "3. REGLAS PARA CONSULTAS SALARIALES / RETRIBUTIVAS (CUANDO EL TURNO ACTUAL PIDA SUELDOS O CÁLCULOS):\n"
-            "   - **Año más reciente**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos.\n"
+            "   - **Año más reciente y tramos plurianuales**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos. Si un mismo fragmento normativo contiene tablas salariales para varios periodos o tramos plurianuales sucesivos del convenio en vigor (por ejemplo, tramos 2025-2026, 2026-2027 y 2027-2028), incluye en la tabla comparativa una fila por cada tramo temporal de vigencia para el nivel y categoría aplicables al puesto.\n"
+            "   - **Distinción entre Grupo Profesional (VI ALEH) y Nivel Salarial del Convenio**: No confundas ni equipares nunca el número de Grupo Profesional estatal del VI ALEH (ej. Grupo Profesional II) con el Nivel Salarial o Retributivo del convenio provincial/autonómico (ej. Nivel IV en Baleares). Determina siempre el Nivel Salarial y la Categoría del establecimiento buscando literalmente el puesto y el tipo de centro dentro de los Anexos de clasificación del convenio recuperados.\n"
             "   - **Sueldo mensual Sin Prorratear vs. Con Pagas Extras Prorrateadas**: Identifica cuántas **Gratificaciones Extraordinarias (pagas extras)** fija el convenio aplicable (citando su artículo) y presenta una **Tabla Markdown comparativa clara** en **`€ / mes`** mostrando:\n"
             "     * **Sueldo Base Mensual a Jornada Completa (40h)**.\n"
             "     * **Sueldo Base Mensual para su Jornada Contratada (SIN prorratear pagas extras)**: `Salario_40h * (Horas_Contrato / 40)` (cobrando las pagas extras aparte en sus meses de devengo).\n"

@@ -40,5 +40,12 @@
     "start_page": 9,
     "end_page": 97,
     "justificacion": "El texto articulado del Estatuto de los Trabajadores (Artículo 1) comienza en la página 9, tras el índice de contenidos (págs. 1-7) y el preámbulo del Real Decreto Legislativo (pág. 8). El documento finaliza en la página 97, que incluye el cierre de las disposiciones transitorias y la nota de exención de valor jurídico."
+  },
+  "convenio_baleares.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "baleares",
+    "start_page": 2,
+    "end_page": 65,
+    "justificacion": "El documento comienza en la página 2 con el acta de acuerdo y el articulado del XVII Convenio Colectivo de Hostelería de las Illes Balears, extendiéndose hasta la página 65, que contiene las firmas finales de los representantes de la comisión negociadora."
   }
 }
