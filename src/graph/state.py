@@ -77,7 +77,7 @@ class QueryAnalysisSchema(BaseModel):
             "Clasificación estricta del dominio: "
             "'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/restauración/alojamiento "
             "(incluyendo respuestas cortas como 'En Madrid' o 'En un hotel de Barcelona' cuando hay una consulta pendiente en la sesión); "
-            "'UNSUPPORTED_PROVINCE' si es de hostelería pero pregunta por una provincia española fuera de la cobertura MVP (Madrid, Cataluña/Barcelona/Girona/Tarragona/Lleida, León); "
+            "'UNSUPPORTED_PROVINCE' si es de hostelería pero pregunta por una provincia o territorio español fuera de los territorios indexados informados en el prompt; "
             "'OUT_OF_SCOPE' si es ajena al derecho laboral de hostelería (ej. accidentes de tráfico, divorcios, otros convenios como metal o construcción, medicina, programación, etc.)."
         )
     )
@@ -269,11 +269,14 @@ class LegalGraphState(TypedDict, total=False):
     # Resultado de Nodo 3 (Recuperación Híbrida Paralela 3-Capas + Cohere Rerank)
     retrieved_docs: list[RetrievedDocument]
 
-    # Resultado de Nodo 4 + 5 (Síntesis Jurídica + Guardrail de Salida)
+    # Resultado de Nodo 4 + 5 (Síntesis Jurídica + Guardrail de Salida con autocorrección)
     jerarquia_normativa_aplicada: str
     citas_normativas: list[dict[str, Any]]
     cifras_y_datos_criticos: list[str]
+    calculos_derivados: list[dict[str, Any]]
     audit_report: dict[str, Any]
+    audit_retry_count: int
+    audit_needs_retry: bool
     final_response: str
     node_timings_ms: dict[str, float]
     models_used: dict[str, str]

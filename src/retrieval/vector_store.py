@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import re
@@ -68,6 +69,7 @@ class AiHorecaVectorStore:
             self.storage_dir.mkdir(parents=True, exist_ok=True)
             storage_key = str(self.storage_dir.resolve())
 
+        self._storage_key = storage_key
         if storage_key in qdrant_registry and qdrant_registry[storage_key] is not None:
             self.qdrant = qdrant_registry[storage_key]
         else:
@@ -324,9 +326,9 @@ class AiHorecaVectorStore:
         return final_count
 
     def close(self) -> None:
-        """Cierra limpiamente el cliente local de Qdrant y limpia el registro de proceso."""
+        """Cierra limpiamente el cliente Qdrant (Local o Cloud) y limpia el registro de proceso."""
         qdrant_registry: dict[str, QdrantClient] = getattr(sys, "_aihoreca_qdrant_clients", {})
-        storage_key = str(self.storage_dir.resolve())
+        storage_key = getattr(self, "_storage_key", str(self.storage_dir.resolve()))
         qdrant_registry.pop(storage_key, None)
         try:
             self.qdrant.close()
@@ -394,6 +396,7 @@ class AiHorecaVectorStore:
         top_k: int = 6,
         dense_query_vec: Optional[list[float]] = None,
         sparse_query_vec: Optional[models.SparseVector] = None,
+        include_vectors: bool = True,
     ) -> list[RetrievedDocument]:
         """Ejecuta búsqueda híbrida nativa en Qdrant (Prefetch Dense + Prefetch BM25 -> Fusión RRF)."""
         d_vec = (
@@ -412,8 +415,8 @@ class AiHorecaVectorStore:
             tipo_contenido=tipo_contenido,
         )
 
-        q_dense = np.asarray(d_vec, dtype=np.float32)
-        q_norm = float(np.linalg.norm(q_dense)) or 1.0
+        q_dense = np.asarray(d_vec, dtype=np.float32) if include_vectors else None
+        q_norm = (float(np.linalg.norm(q_dense)) or 1.0) if q_dense is not None else 1.0
 
         prefetch_limit = max(top_k * 3, 15)
         result = self.qdrant.query_points(
@@ -435,7 +438,7 @@ class AiHorecaVectorStore:
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=top_k,
             with_payload=True,
-            with_vectors=[DENSE_VECTOR_NAME],
+            with_vectors=[DENSE_VECTOR_NAME] if include_vectors else False,
         )
 
         docs: list[RetrievedDocument] = []
@@ -443,11 +446,11 @@ class AiHorecaVectorStore:
             payload = pt.payload or {}
             rrf_score = float(pt.score or 0.0)
             cos_score = rrf_score
-            if isinstance(pt.vector, dict) and DENSE_VECTOR_NAME in pt.vector:
+            if q_dense is not None and isinstance(pt.vector, dict) and DENSE_VECTOR_NAME in pt.vector:
                 d_arr = np.asarray(pt.vector[DENSE_VECTOR_NAME], dtype=np.float32)
                 d_norm = float(np.linalg.norm(d_arr)) or 1.0
                 cos_score = float(np.dot(q_dense, d_arr) / (q_norm * d_norm))
-            calibrated = round(0.75 * cos_score + 0.25 * rrf_score, 4)
+            calibrated = round(0.75 * cos_score + 0.25 * rrf_score, 4) if include_vectors else round(rrf_score, 4)
             docs.append(
                 RetrievedDocument(
                     chunk_id=str(pt.id),
@@ -591,68 +594,124 @@ class AiHorecaVectorStore:
                     candidates.append(item)
                     seen_ids.add(item.chunk_id)
 
-        # Capa 1: Estatuto de los Trabajadores (Mínimo legal estatal)
-        _append_unique(
-            self.hybrid_search(
-                query=search_query,
-                capa_normativa="estatuto_trabajadores",
-                top_k=top_k_per_layer,
-                dense_query_vec=d_vec,
-                sparse_query_vec=s_vec,
-            )
+        cohere_key = os.getenv("COHERE_API_KEY", "").strip()
+        will_use_cohere = bool(use_cohere_rerank and cohere_key and not cohere_key.startswith("..."))
+        include_vectors = not will_use_cohere
+
+        pay_sparse_vec = (
+            self._embed_sparse_batch(
+                [f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"]
+            )[0]
+            if provincia and is_remuneration_query
+            else None
         )
 
-        # Capa 2: VI Acuerdo Laboral Estatal de Hostelería (ALEH)
-        _append_unique(
-            self.hybrid_search(
-                query=search_query,
-                capa_normativa="aleh_estatal",
-                top_k=top_k_per_layer,
-                dense_query_vec=d_vec,
-                sparse_query_vec=s_vec,
-            )
-        )
-
-        # Capa 3: Convenio Colectivo Provincial / Autonómico estratificado (articulado + tablas salariales + disposiciones)
-        # Reutiliza d_vec y s_vec en memoria (0 llamadas extra a la API de embeddings)
+        query_specs: list[tuple[str, dict]] = [
+            (
+                "et",
+                {
+                    "query": search_query,
+                    "capa_normativa": "estatuto_trabajadores",
+                    "top_k": top_k_per_layer,
+                    "dense_query_vec": d_vec,
+                    "sparse_query_vec": s_vec,
+                    "include_vectors": include_vectors,
+                },
+            ),
+            (
+                "aleh",
+                {
+                    "query": search_query,
+                    "capa_normativa": "aleh_estatal",
+                    "top_k": top_k_per_layer,
+                    "dense_query_vec": d_vec,
+                    "sparse_query_vec": s_vec,
+                    "include_vectors": include_vectors,
+                },
+            ),
+        ]
         if provincia:
-            _append_unique(
-                self.hybrid_search(
-                    query=search_query,
-                    capa_normativa="convenio_provincial",
-                    provincia=provincia,
-                    tipo_contenido="articulo",
-                    top_k=max(top_k_per_layer + 2, 8),
-                    dense_query_vec=d_vec,
-                    sparse_query_vec=s_vec,
+            query_specs.append(
+                (
+                    "prov_art",
+                    {
+                        "query": search_query,
+                        "capa_normativa": "convenio_provincial",
+                        "provincia": provincia,
+                        "tipo_contenido": "articulo",
+                        "top_k": max(top_k_per_layer + 2, 8),
+                        "dense_query_vec": d_vec,
+                        "sparse_query_vec": s_vec,
+                        "include_vectors": include_vectors,
+                    },
                 )
             )
-            if is_remuneration_query:
-                # Búsqueda léxica local en CPU (0 llamadas API) para asegurar que tanto el artículo de Gratificaciones Extraordinarias / Pagas Extras
-                # como los artículos de Horas Extraordinarias / Nocturnidad / Jornada estén siempre entre los candidatos antes del Rerank
-                pay_sparse_vec = self._embed_sparse_batch(
-                    [f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"]
-                )[0]
-                _append_unique(
-                    self.hybrid_search(
-                        query=search_query,
-                        capa_normativa="convenio_provincial",
-                        provincia=provincia,
-                        tipo_contenido="articulo",
-                        top_k=5,
-                        dense_query_vec=d_vec,
-                        sparse_query_vec=pay_sparse_vec,
+            if pay_sparse_vec is not None:
+                query_specs.append(
+                    (
+                        "prov_pay_art",
+                        {
+                            "query": search_query,
+                            "capa_normativa": "convenio_provincial",
+                            "provincia": provincia,
+                            "tipo_contenido": "articulo",
+                            "top_k": 5,
+                            "dense_query_vec": d_vec,
+                            "sparse_query_vec": pay_sparse_vec,
+                            "include_vectors": include_vectors,
+                        },
                     )
                 )
-            raw_tables = self.hybrid_search(
-                query=search_query,
-                capa_normativa="convenio_provincial",
-                provincia=provincia,
-                tipo_contenido="tabla_salarial",
-                top_k=max(top_k_per_layer * 4, 20),
-                dense_query_vec=d_vec,
-                sparse_query_vec=s_vec,
+            query_specs.append(
+                (
+                    "prov_tables",
+                    {
+                        "query": search_query,
+                        "capa_normativa": "convenio_provincial",
+                        "provincia": provincia,
+                        "tipo_contenido": "tabla_salarial",
+                        "top_k": max(top_k_per_layer * 4, 20),
+                        "dense_query_vec": d_vec,
+                        "sparse_query_vec": s_vec,
+                        "include_vectors": include_vectors,
+                    },
+                )
             )
+            query_specs.append(
+                (
+                    "prov_anexo",
+                    {
+                        "query": query,
+                        "capa_normativa": "convenio_provincial",
+                        "provincia": provincia,
+                        "tipo_contenido": "anexo_o_disposicion",
+                        "top_k": 2,
+                        "dense_query_vec": d_vec,
+                        "sparse_query_vec": s_vec,
+                        "include_vectors": include_vectors,
+                    },
+                )
+            )
+
+        if self.is_cloud and len(query_specs) > 1:
+            with ThreadPoolExecutor(max_workers=len(query_specs)) as pool:
+                futures = {key: pool.submit(self.hybrid_search, **kw) for key, kw in query_specs}
+                layer_results = {key: fut.result() for key, fut in futures.items()}
+        else:
+            layer_results = {key: self.hybrid_search(**kw) for key, kw in query_specs}
+
+        # Capa 1: Estatuto de los Trabajadores (Mínimo legal estatal)
+        _append_unique(layer_results["et"])
+
+        # Capa 2: VI Acuerdo Laboral Estatal de Hostelería (ALEH)
+        _append_unique(layer_results["aleh"])
+
+        # Capa 3: Convenio Colectivo Provincial / Autonómico estratificado (articulado + tablas salariales + disposiciones)
+        if provincia:
+            _append_unique(layer_results["prov_art"])
+            if "prov_pay_art" in layer_results:
+                _append_unique(layer_results["prov_pay_art"])
+            raw_tables = layer_results["prov_tables"]
             # Si es un convenio multiprovincial (ej. Cataluña: barcelona, girona, tarragona, lleida),
             # descartamos tablas salariales exclusivas de otra provincia hermana.
             norm_p = provincia.lower().strip()
@@ -706,24 +765,13 @@ class AiHorecaVectorStore:
                     if item not in balanced_tables:
                         balanced_tables.append(item)
             _append_unique((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
-            _append_unique(
-                self.hybrid_search(
-                    query=query,
-                    capa_normativa="convenio_provincial",
-                    provincia=provincia,
-                    tipo_contenido="anexo_o_disposicion",
-                    top_k=2,
-                    dense_query_vec=d_vec,
-                    sparse_query_vec=s_vec,
-                )
-            )
+            _append_unique(layer_results["prov_anexo"])
 
         if not candidates:
             return []
 
-        cohere_key = os.getenv("COHERE_API_KEY", "").strip()
         effective_rerank_query = (rerank_query or query).strip()
-        if use_cohere_rerank and cohere_key and not cohere_key.startswith("..."):
+        if will_use_cohere:
             try:
                 co_client = cohere.ClientV2(api_key=cohere_key)
                 rerank_resp = co_client.rerank(

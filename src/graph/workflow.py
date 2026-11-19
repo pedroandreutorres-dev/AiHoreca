@@ -24,6 +24,13 @@ def _route_after_analysis(state: LegalGraphState) -> RouteDecision:
     return "block_out_of_scope"
 
 
+def _route_after_audit(state: LegalGraphState):
+    """Reintenta la síntesis una única vez si el auditor determinista detectó cifras no verificadas o falta de citas."""
+    if state.get("audit_needs_retry"):
+        return "synthesize_response"
+    return END
+
+
 def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     """Construye y compila la máquina de estados (StateGraph) de AiHoreca."""
     nodes = AiHorecaGraphNodes(vector_store=vector_store)
@@ -34,7 +41,8 @@ def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     workflow.add_node("block_out_of_scope", nodes.block_out_of_scope_node)
     workflow.add_node("ask_clarification", nodes.ask_clarification_node)
     workflow.add_node("parallel_retrieve", nodes.parallel_retrieval_node)
-    workflow.add_node("legal_synthesis_and_audit", nodes.legal_synthesis_and_audit_node)
+    workflow.add_node("synthesize_response", nodes.synthesize_response_node)
+    workflow.add_node("audit_output", nodes.audit_output_node)
 
     workflow.add_edge(START, "analyze_and_route")
 
@@ -51,8 +59,16 @@ def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     workflow.add_edge("block_out_of_scope", END)
     workflow.add_edge("ask_clarification", END)
 
-    workflow.add_edge("parallel_retrieve", "legal_synthesis_and_audit")
-    workflow.add_edge("legal_synthesis_and_audit", END)
+    workflow.add_edge("parallel_retrieve", "synthesize_response")
+    workflow.add_edge("synthesize_response", "audit_output")
+    workflow.add_conditional_edges(
+        "audit_output",
+        _route_after_audit,
+        {
+            "synthesize_response": "synthesize_response",
+            END: END,
+        },
+    )
 
     return workflow.compile()
 
@@ -86,6 +102,8 @@ def run_legal_query(
         "query": query,
         "session_slots": slots,
         "conversation_history": history,
+        "audit_retry_count": 0,
+        "audit_needs_retry": False,
         "node_timings_ms": {},
         "models_used": {},
     }

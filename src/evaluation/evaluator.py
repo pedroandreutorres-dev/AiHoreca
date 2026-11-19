@@ -439,7 +439,10 @@ def _build_summary_report(cases: list[EvaluationCaseResult]) -> EvaluationSummar
 
     routing_lats = [c.node_timings_ms.get("analyze_and_route", 0.0) for c in cases]
     retr_lats = [c.node_timings_ms.get("parallel_retrieval", 0.0) for c in gen_cases]
-    synth_lats = [c.node_timings_ms.get("legal_synthesis_and_audit", 0.0) for c in gen_cases]
+    synth_lats = [
+        c.node_timings_ms.get("synthesize_response", c.node_timings_ms.get("legal_synthesis_and_audit", 0.0))
+        for c in gen_cases
+    ]
     tot_lats = [c.total_latency_ms for c in cases]
 
     return EvaluationSummaryReport(

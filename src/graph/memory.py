@@ -310,8 +310,16 @@ class SessionMemoryStore:
         semantic_digest = " ".join(clean_lines)[:420]
 
         if route == "ask_clarification":
+            if not new_territorio and not new_cat_aleh:
+                requested_slot = "provincia y puesto de trabajo"
+            elif new_territorio and not new_cat_aleh:
+                requested_slot = "puesto de trabajo"
+            elif new_cat_aleh and not new_territorio:
+                requested_slot = "provincia"
+            else:
+                requested_slot = "aclaración contextual"
             assistant_summary = (
-                f"[GATEKEEPER_HITL] Solicitó provincia al usuario para resolver: '{effective_query}'. "
+                f"[GATEKEEPER_HITL] Solicitó {requested_slot} al usuario para resolver: '{effective_query}'. "
                 f"Adelantó encuadramiento ALEH: {new_cat_aleh or 'N/A'}."
             )
         elif route == "block_out_of_scope":
@@ -549,7 +557,7 @@ class SessionMemoryStore:
                         unverified_cnt,
                         total_ms,
                         models_dict.get("analyze_and_route", ""),
-                        models_dict.get("legal_synthesis_and_audit", ""),
+                        models_dict.get("synthesize_response") or models_dict.get("legal_synthesis_and_audit", ""),
                         r["user_feedback"] or "SIN_VOTO",
                         r["feedback_at"] or "",
                         r["user_query"],

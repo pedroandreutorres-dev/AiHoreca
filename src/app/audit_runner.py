@@ -169,7 +169,7 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
                     f"Usuario: {t['user_query']}",
                     f"(Efectiva: {t['effective_query']} | Intención: {t['intent']} | Ruta: {t['route_decision']})",
                     "",
-                    f"Asistente (Modelo síntesis: {models.get('legal_synthesis_and_audit', 'n/d')}):",
+                    f"Asistente (Modelo síntesis: {models.get('synthesize_response') or models.get('legal_synthesis_and_audit', 'n/d')}):",
                     t["final_response"],
                     "",
                     f"Feedback usuario: {feedback_str}",

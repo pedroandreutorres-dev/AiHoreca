@@ -12,8 +12,8 @@ Implementa:
 - Nodo 3 (`parallel_retrieval_node`): Recuperación híbrida paralela en las 3 capas normativas
   (Estatuto de los Trabajadores + VI ALEH + Convenio Colectivo Provincial estratificado) y reranking neuronal
   (`Cohere rerank-multilingual-v3.0`) con selección por cuotas jerárquicas.
-- Nodo 4 + 5 (`legal_synthesis_and_audit_node`): Síntesis jurídica con jerarquía normativa (`Art. 3.3 ET`)
-  y auditoría determinista de citas y fidelidad numérica (Guardrail de Salida).
+- Nodo 4 (`synthesize_response_node`): Síntesis jurídica con jerarquía normativa (`Art. 3.3 ET`).
+- Nodo 5 (`audit_output_node`): Auditoría determinista en CPU de citas, territorio y fidelidad numérica con autocorrección (hasta 1 reintento).
 """
 
 from __future__ import annotations
@@ -39,6 +39,8 @@ from src.config import (
 )
 from src.graph.state import (
     AuditReport,
+    DerivedCalculation,
+    LegalCitation,
     LegalGraphState,
     LegalSynthesisSchema,
     QueryAnalysisSchema,
@@ -52,9 +54,12 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
-# Cooldown en memoria por modelo ante picos 503/429 del Free Tier
+# Cooldown en memoria por modelo ante cuotas (429) vs saturación transitoria (503/504)
 _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
-_COOLDOWN_SECONDS = 90.0
+_MODEL_QUOTA_COOLDOWN_UNTIL: dict[str, float] = {}
+_COOLDOWN_SECONDS = 45.0
+_QUOTA_COOLDOWN_SECONDS = 120.0
+_TRANSIENT_RETRY_BACKOFFS: tuple[float, ...] = (8.0, 12.0)
 
 AUTONOMOUS_COMMUNITY_EXPANSION: dict[str, list[str]] = {
     "catalunya": ["barcelona", "girona", "tarragona", "lleida", "catalunya"],
@@ -142,6 +147,66 @@ def get_indexed_territories() -> set[str]:
     return indexed
 
 
+_PRETTY_TERRITORY_LABELS: dict[str, str] = {
+    "a_coruna": "A Coruña",
+    "alava": "Álava",
+    "baleares": "Islas Baleares",
+    "catalunya": "Cataluña",
+    "castellon": "Castellón",
+    "ciudad_real": "Ciudad Real",
+    "cordoba": "Córdoba",
+    "guipuzcoa": "Guipúzcoa",
+    "jaen": "Jaén",
+    "la_rioja": "La Rioja",
+    "leon": "León",
+    "madrid": "Comunidad de Madrid",
+    "malaga": "Málaga",
+    "santa_cruz_tenerife": "Santa Cruz de Tenerife",
+    "vizcaya": "Vizcaya",
+}
+
+
+def _pretty_territory_label(territory_id: str) -> str:
+    """Convierte un identificador canónico de territorio en etiqueta legible."""
+    key = territory_id.lower().strip()
+    if key in _PRETTY_TERRITORY_LABELS:
+        return _PRETTY_TERRITORY_LABELS[key]
+    return key.replace("_", " ").title()
+
+
+def _format_supported_territories_display(
+    indexed_territories: set[str],
+) -> tuple[str, list[str]]:
+    """Formatea dinámicamente la lista de territorios indexados colapsando autonomías multiprovinciales."""
+    subprovinces_covered: set[str] = set()
+    entries: list[str] = []
+
+    for comm, provs in AUTONOMOUS_COMMUNITY_EXPANSION.items():
+        if comm in indexed_territories:
+            subprovs = [p for p in provs if p != comm]
+            subprovinces_covered.update(subprovs)
+            sub_labels = ", ".join(_pretty_territory_label(p) for p in subprovs)
+            entries.append(
+                f"{_pretty_territory_label(comm)} ({sub_labels})"
+                if sub_labels
+                else _pretty_territory_label(comm)
+            )
+
+    for terr in sorted(indexed_territories):
+        if terr in AUTONOMOUS_COMMUNITY_EXPANSION or terr in subprovinces_covered:
+            continue
+        entries.append(_pretty_territory_label(terr))
+
+    if not entries:
+        return "ningún convenio autonómico/provincial indexado", []
+    if len(entries) == 1:
+        inline = f"**{entries[0]}**"
+    else:
+        inline = ", ".join(f"**{e}**" for e in entries[:-1]) + f" y **{entries[-1]}**"
+    bullets = [f"- **{e}**" for e in entries]
+    return inline, bullets
+
+
 def _call_structured_llm(
     prompt: str,
     schema: Type[T],
@@ -149,7 +214,7 @@ def _call_structured_llm(
     system_instruction: str,
     temperature: float = 0.0,
 ) -> tuple[T, str]:
-    """Ejecuta una llamada estructurada (JSON Schema Pydantic) con failover automático multi-modelo."""
+    """Ejecuta una llamada estructurada (JSON Schema Pydantic) con failover multi-modelo y reintento acotado ante 503/504."""
     client = get_genai_client()
     candidate_models: list[str] = [preferred_model]
     for m in GEMINI_FALLBACK_MODELS:
@@ -157,53 +222,110 @@ def _call_structured_llm(
             candidate_models.append(m)
 
     now = time.time()
-    available_models = [
-        m for m in candidate_models if _MODEL_COOLDOWN_UNTIL.get(m, 0.0) <= now
+    fresh_models = [
+        m
+        for m in candidate_models
+        if _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now
+        and _MODEL_COOLDOWN_UNTIL.get(m, 0.0) <= now
     ]
-    if not available_models:
-        available_models = candidate_models
+    transient_cooled_models = sorted(
+        (
+            m
+            for m in candidate_models
+            if m not in fresh_models and _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now
+        ),
+        key=lambda m: _MODEL_COOLDOWN_UNTIL.get(m, 0.0),
+    )
+    round_models: list[str] = fresh_models + transient_cooled_models
+    if not round_models:
+        round_models = candidate_models
 
     last_error: Optional[Exception] = None
-    for model_name in available_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=temperature,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                ),
-            )
-            if response.parsed is not None and isinstance(response.parsed, schema):
-                parsed_obj = response.parsed
-            else:
-                raw_text = (response.text or "").strip()
-                parsed_obj = schema.model_validate_json(raw_text)
+    max_rounds = 1 + len(_TRANSIENT_RETRY_BACKOFFS)
 
-            # Verificación anti-truncamiento para respuestas largas de síntesis jurídica
-            if hasattr(parsed_obj, "respuesta_final_markdown"):
-                md_body = getattr(parsed_obj, "respuesta_final_markdown", "").strip()
-                if len(md_body) < 300 or md_body.endswith("(") or md_body.endswith(":"):
-                    raise ValueError(
-                        f"Generación truncada prematuramente en {model_name} (len={len(md_body)})."
-                    )
-            return parsed_obj, model_name
-        except Exception as exc:
-            last_error = exc
-            err_str = str(exc)
-            if any(code in err_str for code in ("429", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED")):
-                _MODEL_COOLDOWN_UNTIL[model_name] = time.time() + _COOLDOWN_SECONDS
-                logger.warning(
-                    "Modelo %s saturado/timeout (%s). Activando cooldown de %.0fs y rotando al siguiente modelo...",
-                    model_name,
-                    err_str[:120],
-                    _COOLDOWN_SECONDS,
+    for round_idx in range(max_rounds):
+        quota_failed_in_call: set[str] = set()
+        transient_failed_in_call: set[str] = set()
+
+        for model_name in round_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=temperature,
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                    ),
                 )
+                if response.parsed is not None and isinstance(response.parsed, schema):
+                    parsed_obj = response.parsed
+                else:
+                    raw_text = (response.text or "").strip()
+                    parsed_obj = schema.model_validate_json(raw_text)
+
+                # Verificación anti-truncamiento para respuestas largas de síntesis jurídica
+                if hasattr(parsed_obj, "respuesta_final_markdown"):
+                    md_body = getattr(parsed_obj, "respuesta_final_markdown", "").strip()
+                    if len(md_body) < 300 or md_body.endswith("(") or md_body.endswith(":"):
+                        raise ValueError(
+                            f"Generación truncada prematuramente en {model_name} (len={len(md_body)})."
+                        )
+                _MODEL_COOLDOWN_UNTIL.pop(model_name, None)
+                return parsed_obj, model_name
+            except Exception as exc:
+                last_error = exc
+                err_str = str(exc)
+                is_quota_err = any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED"))
+                is_transient_err = any(
+                    code in err_str for code in ("503", "504", "UNAVAILABLE", "DEADLINE_EXCEEDED")
+                )
+                if is_quota_err:
+                    _MODEL_QUOTA_COOLDOWN_UNTIL[model_name] = time.time() + _QUOTA_COOLDOWN_SECONDS
+                    quota_failed_in_call.add(model_name)
+                    logger.warning(
+                        "Modelo %s sin cuota (%s). Cooldown de %.0fs y rotando al siguiente modelo...",
+                        model_name,
+                        err_str[:120],
+                        _QUOTA_COOLDOWN_SECONDS,
+                    )
+                    continue
+                if is_transient_err:
+                    _MODEL_COOLDOWN_UNTIL[model_name] = time.time() + _COOLDOWN_SECONDS
+                    transient_failed_in_call.add(model_name)
+                    logger.warning(
+                        "Modelo %s saturado/timeout (%s). Cooldown de %.0fs y rotando al siguiente modelo...",
+                        model_name,
+                        err_str[:120],
+                        _COOLDOWN_SECONDS,
+                    )
+                    continue
+                logger.warning("Error en modelo %s (%s). Probando fallback...", model_name, err_str[:120])
                 continue
-            logger.warning("Error en modelo %s (%s). Probando fallback...", model_name, err_str[:120])
-            continue
+
+        if round_idx < len(_TRANSIENT_RETRY_BACKOFFS) and transient_failed_in_call:
+            now_after = time.time()
+            next_models = [
+                m
+                for m in candidate_models
+                if m not in quota_failed_in_call
+                and _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now_after
+            ]
+            if not next_models:
+                break
+            backoff_sec = _TRANSIENT_RETRY_BACKOFFS[round_idx]
+            logger.warning(
+                "Todos los modelos sufrieron fallos transitorios/cuota (ronda %d/%d). Esperando %.0fs para reintentar %s...",
+                round_idx + 1,
+                max_rounds,
+                backoff_sec,
+                next_models,
+            )
+            time.sleep(backoff_sec)
+            round_models = next_models
+        else:
+            break
 
     raise RuntimeError(f"Todos los modelos de la cadena de failover fallaron. Último error: {last_error}")
 
@@ -379,18 +501,20 @@ class AiHorecaGraphNodes:
         intent = state.get("intent", "OUT_OF_SCOPE")
         prov = state.get("provincia_detectada")
 
+        supported_inline, _ = _format_supported_territories_display(self.indexed_territories)
+
         if intent == "UNSUPPORTED_PROVINCE" and prov:
-            prov_pretty = prov.replace("_", " ").title()
+            prov_pretty = _pretty_territory_label(prov)
             msg = (
-                f"### Aviso de Cobertura Territorial (MVP AiHoreca)\n\n"
-                f"He detectado que tu consulta pertenece al ámbito laboral de **Hostelería**, pero hace referencia a la provincia de **{prov_pretty}**.\n\n"
-                f"- **Estado actual del índice normativo**: En esta versión MVP están indexados y verificados los convenios colectivos de "
-                f"**Comunidad de Madrid**, **Cataluña (Barcelona, Girona, Tarragona y Lleida)** y **León**, además de las dos normas estatales "
+                f"### Aviso de Cobertura Territorial\n\n"
+                f"He detectado que tu consulta pertenece al ámbito laboral de **Hostelería**, pero hace referencia a **{prov_pretty}**.\n\n"
+                f"- **Estado actual del índice normativo**: Están indexados y verificados los convenios colectivos de "
+                f"{supported_inline}, además de las dos normas estatales "
                 f"(**Estatuto de los Trabajadores** y **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI**).\n"
                 f"- **Por rigor jurídico (Cero Alucinación)**: No puedo aplicarte tablas salariales ni condiciones de otra provincia ni responderte solo con el Estatuto de los Trabajadores "
                 f"ocultando las mejoras del Convenio Colectivo de {prov_pretty}.\n\n"
                 f"Si deseas consultar únicamente la **clasificación profesional estatal (Áreas Funcionales del VI ALEH)** o los **mínimos generales del Estatuto de los Trabajadores**, "
-                f"indícalo expresamente o realiza tu consulta para **Madrid, Cataluña (Barcelona/Girona/Tarragona/Lleida) o León**."
+                f"indícalo expresamente o realiza tu consulta para uno de los territorios disponibles ({supported_inline})."
             )
         else:
             msg = (
@@ -439,6 +563,9 @@ class AiHorecaGraphNodes:
                 f"dentro del **{area_aleh or 'Área Funcional correspondiente del VI ALEH'}**."
             )
 
+        _, supported_bullets = _format_supported_territories_display(self.indexed_territories)
+        territories_block = "\n".join(supported_bullets)
+
         if missing_prov and missing_role:
             msg = (
                 "### Información Requerida para el Cálculo (Provincia y Puesto de Trabajo)\n\n"
@@ -446,13 +573,11 @@ class AiHorecaGraphNodes:
                 "1. **¿En qué provincia o localidad está ubicado el centro de trabajo?** (Cada provincia tiene su propio Convenio Colectivo de Hostelería con tablas salariales, número de pagas extras y jornada anual propios).\n"
                 "2. **¿Qué puesto u oficio desempeña dentro del establecimiento?** (Por ejemplo: *camarero/a, ayudante de camarero/a, cocinero/a, ayudante de cocina/pinche, friegaplatos/limpieza, recepcionista...*, ya que el salario base varía según el Grupo Profesional y Nivel salarial).\n\n"
                 "**Territorios disponibles actualmente en el índice:**\n"
-                "- **Madrid** (Comunidad de Madrid)\n"
-                "- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n"
-                "- **León** (Provincia de León)"
+                f"{territories_block}"
             )
             warn_msg = "Gatekeeper contextual detuvo la consulta por falta de provincia y puesto de trabajo."
         elif missing_role and not missing_prov:
-            terr_pretty = (terr or "").replace("_", " ").title()
+            terr_pretty = _pretty_territory_label(terr or "")
             msg = (
                 f"### Puesto de Trabajo Requerido (Convenio de Hostelería — {terr_pretty})\n\n"
                 f"He registrado que el centro de trabajo se encuentra en la provincia/territorio de **{terr_pretty}**.\n\n"
@@ -477,9 +602,7 @@ class AiHorecaGraphNodes:
                 "dependen directamente de tu **Convenio Colectivo Provincial o Autonómico**."
                 f"{aleh_note}\n\n"
                 "**¿En cuál de las provincias o territorios soportados prestas servicios?**\n"
-                "- **Madrid** (Comunidad de Madrid)\n"
-                "- **Barcelona / Cataluña** (Barcelona, Girona, Tarragona o Lleida)\n"
-                "- **León** (Provincia de León)"
+                f"{territories_block}"
             )
             warn_msg = "Gatekeeper contextual detuvo la consulta por falta de provincia obligatoria."
 
@@ -540,8 +663,8 @@ class AiHorecaGraphNodes:
             "models_used": models_used,
         }
 
-    def legal_synthesis_and_audit_node(self, state: LegalGraphState) -> LegalGraphState:
-        """Nodo 4 + 5: Síntesis Jurídica con Jerarquía Normativa + Guardrail Determinista de Salida."""
+    def synthesize_response_node(self, state: LegalGraphState) -> LegalGraphState:
+        """Nodo 4: Síntesis Jurídica con Jerarquía Normativa (con soporte de autocorrección tras auditoría)."""
         t0 = time.perf_counter()
         raw_query = state.get("query", "")
         effective_query = state.get("effective_query") or raw_query
@@ -550,6 +673,8 @@ class AiHorecaGraphNodes:
         area_aleh = state.get("area_funcional_aleh")
         history = state.get("conversation_history") or []
         docs: list[RetrievedDocument] = state.get("retrieved_docs") or []
+        retry_count = int(state.get("audit_retry_count") or 0)
+        prev_audit = state.get("audit_report") or {}
 
         context_blocks: list[str] = []
         for idx, doc in enumerate(docs, start=1):
@@ -598,6 +723,16 @@ class AiHorecaGraphNodes:
             "   - Para operaciones aritméticas directas y proporciones en línea (ej. `30h / 40h = 75%`, `80h × 0,75 = 60 horas/año`, `15h × 0,75 = 11,25 horas/mes`), utiliza exclusivamente texto plano o negritas limpias. **Está prohibido usar comandos LaTeX complejos (`\\frac`, `\\text`, `\\mathbf`) dentro de delimitadores en línea `$...$`** para evitar errores de renderizado en la interfaz web. Reserva los bloques `$$...$$` en línea aparte únicamente si citas una fórmula oficial extensa del convenio."
         )
 
+        retry_correction_block = ""
+        if retry_count > 0 and prev_audit and not prev_audit.get("passed", True):
+            retry_correction_block = (
+                f"\n\n⚠️ CORRECCIÓN OBLIGATORIA TRAS AUDITORÍA DETERMINISTA (REINTENTO #{retry_count}):\n"
+                "Tu respuesta anterior no superó el guardrail de verificación numérica/citación.\n"
+                f"- Cifras no verificadas detectadas: {prev_audit.get('unverified_numbers') or []}\n"
+                f"- Advertencias del auditor: {prev_audit.get('warnings') or []}\n"
+                "INSTRUCCIÓN DE REPARACIÓN: Elimina o corrige inmediatamente toda cifra no respaldada literalmente por los fragmentos recuperados o por un cálculo explícito en `calculos_derivados` cuyos operandos figuren en dichos fragmentos, y asegura citas explícitas a artículo/anexo."
+            )
+
         prompt = (
             f"HISTORIAL RECIENTE DE LA CONVERSACIÓN (TURNOS PREVIOS DE ESTA SESIÓN): {json.dumps(history, ensure_ascii=False)}\n"
             f"MENSAJE ACTUAL DEL USUARIO: {raw_query}\n"
@@ -606,6 +741,7 @@ class AiHorecaGraphNodes:
             f"TRADUCCIÓN TÉCNICA VI ALEH: Categoría={cat_aleh or 'N/A'} | Área Funcional={area_aleh or 'N/A'}\n\n"
             f"FRAGMENTOS NORMATIVOS RECUPERADOS DE QDRANT + COHERE RERANK:\n"
             f"{full_context_str}"
+            f"{retry_correction_block}"
         )
 
         synthesis, model_used = _call_structured_llm(
@@ -616,25 +752,83 @@ class AiHorecaGraphNodes:
             temperature=0.0,
         )
 
-        audit = self._audit_numerical_and_citation_fidelity(
-            synthesis=synthesis,
-            docs=docs,
-            user_query=f"{raw_query} {effective_query}",
-            expected_territorio=provincia,
-        )
-
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         timings = dict(state.get("node_timings_ms") or {})
-        timings["legal_synthesis_and_audit"] = elapsed_ms
+        timings["synthesize_response"] = round(float(timings.get("synthesize_response", 0.0)) + elapsed_ms, 1)
         models_used = dict(state.get("models_used") or {})
-        models_used["legal_synthesis_and_audit"] = model_used
+        models_used["synthesize_response"] = model_used
 
         return {
             "jerarquia_normativa_aplicada": synthesis.jerarquia_normativa_aplicada,
             "citas_normativas": [c.model_dump() for c in synthesis.citas_normativas],
             "cifras_y_datos_criticos": synthesis.cifras_y_datos_criticos,
-            "audit_report": audit.model_dump(),
+            "calculos_derivados": [c.model_dump() for c in synthesis.calculos_derivados],
             "final_response": synthesis.respuesta_final_markdown,
+            "audit_needs_retry": False,
+            "node_timings_ms": timings,
+            "models_used": models_used,
+        }
+
+    def audit_output_node(self, state: LegalGraphState) -> LegalGraphState:
+        """Nodo 5 (CPU Determinista): audita cifras/citas y dispara hasta 1 reintento de síntesis si falla."""
+        t0 = time.perf_counter()
+        raw_query = state.get("query", "")
+        effective_query = state.get("effective_query") or raw_query
+        provincia = state.get("territorio_normalizado")
+        docs: list[RetrievedDocument] = state.get("retrieved_docs") or []
+
+        citas_objs = [LegalCitation.model_validate(c) for c in (state.get("citas_normativas") or [])]
+        calcs_objs = [DerivedCalculation.model_validate(c) for c in (state.get("calculos_derivados") or [])]
+        final_md = state.get("final_response", "")
+
+        synthesis_obj = LegalSynthesisSchema(
+            jerarquia_normativa_aplicada=state.get("jerarquia_normativa_aplicada", ""),
+            citas_normativas=citas_objs,
+            cifras_y_datos_criticos=list(state.get("cifras_y_datos_criticos") or []),
+            calculos_derivados=calcs_objs,
+            respuesta_final_markdown=final_md,
+        )
+
+        audit = self._audit_numerical_and_citation_fidelity(
+            synthesis=synthesis_obj,
+            docs=docs,
+            user_query=f"{raw_query} {effective_query}",
+            expected_territorio=provincia,
+        )
+
+        current_retry = int(state.get("audit_retry_count") or 0)
+        if audit.passed:
+            audit_needs_retry = False
+            next_retry = current_retry
+        elif current_retry < 1:
+            audit_needs_retry = True
+            next_retry = current_retry + 1
+            logger.warning(
+                "Auditoría determinista fallida (warnings=%s). Activando autocorrección (reintento %d/1)...",
+                audit.warnings,
+                next_retry,
+            )
+        else:
+            audit_needs_retry = False
+            next_retry = current_retry
+            if audit.warnings:
+                final_md = (
+                    f"{final_md}\n\n"
+                    "> ⚠️ **Aviso de verificación automática:** Algunas cifras o citas requieren comprobación directa en el texto oficial citado "
+                    f"({'; '.join(audit.warnings)})."
+                )
+
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        timings = dict(state.get("node_timings_ms") or {})
+        timings["audit_output"] = round(float(timings.get("audit_output", 0.0)) + elapsed_ms, 2)
+        models_used = dict(state.get("models_used") or {})
+        models_used["audit_output"] = "deterministic-cpu-auditor"
+
+        return {
+            "audit_report": audit.model_dump(),
+            "audit_retry_count": next_retry,
+            "audit_needs_retry": audit_needs_retry,
+            "final_response": final_md,
             "node_timings_ms": timings,
             "models_used": models_used,
         }
@@ -775,7 +969,10 @@ class AiHorecaGraphNodes:
                         derived_display_list.append(raw_res)
 
         has_citations = len(synthesis.citas_normativas) > 0 and bool(
-            re.search(r"(?i)\b(?:art[íi]culo|art\.|anexo|tabla|disposici[óo]n)\b", synthesis.respuesta_final_markdown)
+            re.search(
+                r"(?i)\b(?:art[íi]culos?\b|arts?\.(?=\s|\d|$)|arts?\s+\d|anexos?\b|tablas?\b|disposici[óo]n(?:es)?\b)",
+                synthesis.respuesta_final_markdown,
+            )
         )
 
         extracted_tokens = re.findall(
