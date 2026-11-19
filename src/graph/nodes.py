@@ -437,13 +437,16 @@ class AiHorecaGraphNodes:
             "seguimiento o cambio de ámbito geográfico, el `MENSAJE ACTUAL` prevalece sobre los slots previos. Si el usuario menciona una nueva provincia o solicita comparar "
             "varias provincias (ej. '¿y en Madrid?', 'compara con Barcelona', 'compara Madrid y León'), identifica y devuelve TODAS las provincias del turno actual en la lista `provincias_detectadas_en_turno_actual` "
             "para actualizar el ámbito de la sesión, heredando de los slots activos únicamente los datos no modificados (puesto, jornada, etc.). "
+            "Si el usuario aporta un parámetro cuantitativo, temporal o contractual (ej. una fecha de alta/baja, horas de jornada, días trabajados, antigüedad o número de festivos) en seguimiento a un derecho cuantificable tratado en la sesión, formula `consulta_autocontenida_resuelta` pidiendo explícitamente el cálculo numérico exacto resultante para ese parámetro (no solo cómo afecta en abstracto). "
             "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores.\n\n"
-            "2. GUARDRAIL DE DOMINIO:\n"
-            "   - Clasifica como 'OUT_OF_SCOPE' cualquier consulta ajena al derecho laboral de hostelería/restauración/alojamiento/turismo "
-            "(ej. accidentes de tráfico, herencias, divorcios, convenios del metal/construcción/comercio general, programación, medicina, etc.).\n"
+            "2. GUARDRAIL DE DOMINIO Y DECISIÓN DE ACCESO A LA BASE DE DATOS NORMATIVA (`requiere_consulta_normativa_bbdd`):\n"
+            "   - Clasifica como 'OUT_OF_SCOPE' cualquier consulta no legal o ajena al derecho laboral de hostelería/restauración/alojamiento/turismo "
+            "(ej. temas generales no jurídicos, recetas, medicina, programación, o consultas legales de otras ramas como accidentes de tráfico, herencias, divorcios, o convenios de otros sectores como metal/construcción/comercio general) y marca `requiere_consulta_normativa_bbdd = False`.\n"
             f"   - Clasifica como 'UNSUPPORTED_PROVINCE' si la consulta es de hostelería pero el territorio aplicable es una provincia española "
-            f"NO incluida en los territorios indexados actuales ({indexed_list_str}).\n"
-            "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida (incluyendo respuestas breves que aportan un puesto o una provincia cuando había una consulta pendiente).\n\n"
+            f"NO incluida en los territorios indexados actuales ({indexed_list_str}) y marca `requiere_consulta_normativa_bbdd = False`.\n"
+            "   - Clasifica como 'HOSPITALITY_CORE' si el mensaje se enmarca en una conversación laboral de hostelería/turismo/catering/reparto de comida:\n"
+            "     * Marca `requiere_consulta_normativa_bbdd = True` ÚNICAMENTE cuando exista una consulta o duda jurídico-laboral concreta que deba verificarse en los convenios/ALEH/Estatuto (o cuando el mensaje actual aporte un dato para desbloquear `pending_clarification_query`).\n"
+            "     * Marca `requiere_consulta_normativa_bbdd = False` cuando el mensaje sea puramente conversacional o introductorio y NO contenga todavía ninguna pregunta jurídica concreta ni desbloquee una pregunta pendiente (ej. saludos iniciales, presentaciones personales sin pregunta, agradecimientos, despedidas o anuncios genéricos sin cuestión laboral formulada).\n\n"
             "3. GATEKEEPER CONTEXTUAL GENERALISTA (PROVINCIA Y PUESTO/CATEGORÍA):\n"
             "   - `provincias_detectadas_en_turno_actual`: Identifica por contexto semántico TODAS las **provincias españolas donde se ubican físicamente el/los centro(s) de trabajo** mencionados en el `MENSAJE ACTUAL`, como lista en minúsculas y sin tildes (ej. `['madrid']`, o `['madrid', 'leon']` en comparativas).\n"
             "     * Si el usuario menciona uno o varios municipios, localidades o comarcas (incluso con errores tipográficos), resuelve y devuelve TODAS sus provincias administrativas oficiales dentro de la lista.\n"
@@ -551,14 +554,17 @@ class AiHorecaGraphNodes:
                 suffix = f" ({', '.join(context_parts)})" if context_parts else f" ({query})"
                 effective_query = f"{slots.pending_clarification_query}{suffix}"
 
-        # 4. Decisión determinista de enrutamiento (Gatekeeper de Provincia y Puesto/Categoría)
+        # 4. Decisión determinista de enrutamiento (Acceso a BBDD + Gatekeeper de Provincia y Puesto/Categoría)
+        has_pending = bool(slots.pending_clarification_query)
+        requiere_bbdd = bool(analysis.requiere_consulta_normativa_bbdd or has_pending)
         missing_prov = bool(analysis.requiere_convenio_provincial and not territorio_norm)
         missing_role = bool(analysis.requiere_puesto_o_categoria and not cat_aleh_resuelta)
 
         if intent in ("OUT_OF_SCOPE", "UNSUPPORTED_PROVINCE"):
+            requiere_bbdd = False
             datos_completos = False
             route_decision: RouteDecision = "block_out_of_scope"
-        elif missing_prov or missing_role:
+        elif not requiere_bbdd or missing_prov or missing_role:
             datos_completos = False
             route_decision = "ask_clarification"
         else:
@@ -578,6 +584,7 @@ class AiHorecaGraphNodes:
             "provincia_detectada": raw_prov,
             "territorio_normalizado": territorio_norm,
             "territorios_normalizados": territorios_norm_list,
+            "requiere_consulta_normativa_bbdd": requiere_bbdd,
             "requiere_convenio_provincial": analysis.requiere_convenio_provincial,
             "requiere_puesto_o_categoria": analysis.requiere_puesto_o_categoria,
             "datos_completos": datos_completos,
@@ -615,10 +622,10 @@ class AiHorecaGraphNodes:
         else:
             msg = (
                 "### Consulta Fuera del Dominio de Especialización\n\n"
-                "Soy **AiHoreca**, un asistente jurídico-laboral especializado exclusivamente en el **Sector de Hostelería y Turismo en España** "
-                "(Estatuto de los Trabajadores, VI Acuerdo Laboral Estatal de Hostelería y Convenios Colectivos Provinciales/Autonómicos del sector).\n\n"
+                "Soy **AiHoreca**, un asistente jurídico-laboral especializado exclusivamente en el **Sector de Hostelería y Turismo en España**.\n\n"
                 f"- **Motivo de bloqueo**: {state.get('motivo_clasificacion', 'La consulta no pertenece al ámbito laboral de hostelería.')}\n"
-                "- No puedo asesorarte sobre otras ramas del Derecho (civil, penal, tráfico, mercantil) ni sobre convenios colectivos de otros sectores."
+                f"- **Ámbito de este RAG**: Resuelvo consultas sobre el **Estatuto de los Trabajadores**, el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** y los **Convenios Colectivos de Hostelería** indexados ({supported_inline}).\n"
+                "- **No soportado**: Consultas no jurídicas, otras ramas del Derecho (civil, penal, tráfico, mercantil, fiscal) o convenios colectivos de otros sectores."
             )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -645,6 +652,7 @@ class AiHorecaGraphNodes:
         oficio = state.get("oficio_coloquial_detectado")
         cat_aleh = state.get("categoria_profesional_aleh")
         area_aleh = state.get("area_funcional_aleh")
+        requiere_bbdd = bool(state.get("requiere_consulta_normativa_bbdd", True))
         req_prov = bool(state.get("requiere_convenio_provincial", True))
         req_role = bool(state.get("requiere_puesto_o_categoria", False))
 
@@ -662,7 +670,30 @@ class AiHorecaGraphNodes:
         _, supported_bullets = _format_supported_territories_display(self.indexed_territories)
         territories_block = "\n".join(supported_bullets)
 
-        if missing_prov and missing_role:
+        if not requiere_bbdd:
+            profile_parts: list[str] = []
+            if terr:
+                profile_parts.append(f"territorio **{_pretty_territory_label(terr)}**")
+            if oficio or cat_aleh:
+                profile_parts.append(f"puesto **{oficio or cat_aleh}**")
+            profile_note = (
+                f"\n\nHe tomado nota de tu contexto activo ({', '.join(profile_parts)})."
+                if profile_parts
+                else ""
+            )
+            msg = (
+                "### ¡Hola! Soy AiHoreca — Asistente Jurídico-Laboral de Hostelería\n\n"
+                "Estoy especializado en resolver dudas laborales del **Sector de Hostelería y Turismo en España** "
+                "cruzando el **Estatuto de los Trabajadores**, el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** "
+                "y los **Convenios Colectivos Provinciales y Autonómicos**."
+                f"{profile_note}"
+                f"{aleh_note}\n\n"
+                "**¿Qué consulta laboral necesitas resolver?** *(Para cálculos de salario, jornada, vacaciones o permisos, "
+                "indícame tu **provincia/localidad** y tu **puesto de trabajo**):*\n"
+                f"{territories_block}"
+            )
+            warn_msg = "Cortocircuito conversacional activado (sin pregunta normativa concreta: 0 llamadas a BBDD)."
+        elif missing_prov and missing_role:
             msg = (
                 "### Información Requerida para el Cálculo (Provincia y Puesto de Trabajo)\n\n"
                 "Para darte una respuesta jurídicamente exacta y sin asumir datos que alterarían las cifras, **necesito conocer dos datos básicos**:\n\n"
@@ -1168,8 +1199,9 @@ class AiHorecaGraphNodes:
             "   - **PRINCIPIO DE ATRIBUCIÓN JURISDICCIONAL ESTRICTA**: Responde a la consulta basándote estricta y exclusivamente en los FRAGMENTOS NORMATIVOS recuperados. Cita siempre con precisión la norma, el artículo o anexo y el territorio al que pertenece cada dato. No inventes condiciones de provincias que no consten en los fragmentos ni traslades condiciones de un convenio a otro salvo que la consulta solicite expresamente contrastarlos.\n"
             "   - Revisa `HISTORIAL RECIENTE DE LA CONVERSACIÓN` para mantener todos los parámetros del caso ya aportados por el usuario en la sesión (jornada parcial o completa, puesto, modalidad, etc.) sin olvidarlos.\n"
             "   - **PROHIBIDO REPETIR EXPLICACIONES O TABLAS DE TURNOS ANTERIORES**: Si en un turno previo ya desglosaste una tabla o cálculo y en el `MENSAJE ACTUAL` el usuario plantea una repregunta o nueva duda, **responde directa y exclusivamente a la nueva pregunta del turno actual**, sin volver a volcar las tablas ni repetir el discurso del turno anterior salvo que el usuario pida recalcularlo.\n"
-            "2. ADECUACIÓN DE LA ESTRUCTURA A LA INTENCIÓN DEL TURNO:\n"
+            "2. ADECUACIÓN DE LA ESTRUCTURA A LA INTENCIÓN DEL TURNO Y CIERRE CUANTITATIVO EN TURNO ÚNICO:\n"
             "   - Si la pregunta del turno actual es conceptual, clasificatoria, de permisos, vacaciones, jornada o aclaratoria sobre un requisito del convenio, responde de forma directa, natural y fundamentada en los fragmentos recuperados (integrando cuando proceda Convenio Provincial/Autonómico, VI ALEH y Estatuto de los Trabajadores), **sin forzar tablas salariales que no vienen al caso**.\n"
+            "   - **REGLA GENERALISTA DE CIERRE CUANTITATIVO (MONETARIO, TEMPORAL Y PROPORCIONAL)**: Siempre que la normativa en los fragmentos fije una cuantía, duración, límite o regla de proporcionalidad —ya sea en **`€`** (salarios, pluses, horas extra, finiquito), en **`días` / `horas` / `meses`** (vacaciones proporcionales según fecha de inicio/fin o tiempo trabajado, permisos/horas anuales ajustadas a jornada parcial, descansos compensatorios por festivos trabajados) o en **`%`**— y el usuario haya aportado los parámetros necesarios para aplicarla a su caso (en el turno actual o en el historial de la sesión), **es obligatorio ejecutar la operación aritmética completa paso a paso hasta entregar el resultado numérico final** y registrarla en `calculos_derivados` con su fórmula y operandos base. **Está prohibido limitarse a explicar la regla teórica de proporcionalidad o dejar planteados los datos sin calcular el número final**.\n"
             "   - Si el convenio hace depender una condición de un parámetro del centro de trabajo o del contrato que el usuario no ha precisado (como la categoría o clasificación turística del establecimiento, su nivel o modalidad), expón las opciones previstas en los fragmentos recuperados e indícale dónde puede verificar ese dato en la práctica (contrato de trabajo, encabezado de la nómina o clasificación oficial del establecimiento). **Importante:** Cuando se trate de cuantías económicas o fórmulas salariales/horas extras, esta indicación práctica es solo complementaria; NUNCA sustituye el cálculo numérico obligatorio de todas las opciones en tabla (Reglas 3 y 4).\n"
             "3. REGLAS PARA CONSULTAS SALARIALES / RETRIBUTIVAS (CUANDO EL TURNO ACTUAL PIDA SUELDOS O CÁLCULOS):\n"
             "   - **Año más reciente y tramos plurianuales**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos. Si un mismo fragmento normativo contiene tablas salariales para varios periodos o tramos plurianuales sucesivos del convenio en vigor (por ejemplo, tramos 2025-2026, 2026-2027 y 2027-2028), incluye en la tabla comparativa una fila por cada tramo temporal de vigencia para el nivel y categoría aplicables al puesto.\n"

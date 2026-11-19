@@ -272,9 +272,11 @@ class SessionMemoryStore:
         new_area_aleh = current_slots.active_area_funcional_aleh
         new_pending = current_slots.pending_clarification_query
 
+        requiere_bbdd = bool(state.get("requiere_consulta_normativa_bbdd", True))
         if route == "ask_clarification":
-            # Guardamos la consulta pendiente para fusionarla cuando el usuario indique la provincia
-            new_pending = effective_query
+            # Solo guardamos consulta pendiente si había una pregunta laboral real bloqueada por falta de provincia/puesto
+            if requiere_bbdd:
+                new_pending = effective_query
             if terr:
                 new_territorio = terr
             if oficio:
@@ -317,7 +319,11 @@ class SessionMemoryStore:
                 clean_lines.append(s)
         semantic_digest = " ".join(clean_lines)[:420]
 
-        if route == "ask_clarification":
+        if route == "ask_clarification" and not requiere_bbdd:
+            assistant_summary = (
+                "[INTERACCION_SIN_CONSULTA_BBDD] Invitó al usuario a plantear una consulta laboral concreta de hostelería."
+            )
+        elif route == "ask_clarification":
             if not new_territorio and not new_cat_aleh:
                 requested_slot = "provincia y puesto de trabajo"
             elif new_territorio and not new_cat_aleh:

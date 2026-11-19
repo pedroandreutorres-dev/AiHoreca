@@ -630,11 +630,42 @@ class AiHorecaVectorStore:
 
     @staticmethod
     def _is_remuneration_query(query: str) -> bool:
-        """Detecta si la consulta involucra retribución, salarios, pagas extras o pluses."""
+        """Detecta si la consulta involucra retribución, salarios, tablas, pagas extras, pluses o liquidaciones."""
         return bool(
             re.search(
-                r"(?i)\b(?:sueldo|salario|cobrar|cobro|n[óo]mina|retribuci[óo]n|pagas?|horas?\s+extras?|extraordinarias?|nocturnidad|plus)\b",
+                r"(?i)\b(?:sueldos?|salarios?|salarial(?:es)?|tablas?|cobrar|cobro|n[óo]minas?|retribuci[óo]n(?:es)?|pagas?|horas?\s+extras?|extraordinarias?|nocturnidad|plus(?:es)?|finiquitos?|liquidaci[óo]n|indemnizaci[óo]n|antig[üu]edad|trienios?|manutenci[óo]n|dietas?)\b",
                 query,
+            )
+        )
+
+    @classmethod
+    def _clean_intent_query(
+        cls,
+        query: str,
+        rerank_query: Optional[str] = None,
+        role_context: Optional[str] = None,
+    ) -> str:
+        """Devuelve la consulta limpia del turno (sin la etiqueta automática de role_context ni el keyword-stuffing)."""
+        target = (rerank_query or query or "").strip()
+        if role_context:
+            target = target.replace(f"({role_context})", "").replace(role_context, "").strip()
+        return target
+
+    @classmethod
+    def _needs_table_retrieval(
+        cls,
+        query: str,
+        rerank_query: Optional[str] = None,
+        role_context: Optional[str] = None,
+    ) -> bool:
+        """Determina de forma generalista si la consulta requiere tablas salariales o anexos de encuadramiento/niveles."""
+        clean_target = cls._clean_intent_query(query, rerank_query, role_context)
+        if cls._is_remuneration_query(clean_target):
+            return True
+        return bool(
+            re.search(
+                r"(?i)\b(?:tablas?|nivel(?:es)?\s+(?:salarial|retributivo)|encuadramiento|clasificaci[óo]n\s+en\s+grupos|[áa]reas?\s+funcional(?:es)?|categor[íi]as?\s+del?\s+establecimiento)\b",
+                clean_target,
             )
         )
 
@@ -988,23 +1019,34 @@ class AiHorecaVectorStore:
         if not norm_territorios:
             return candidates[:final_top_k]
 
+        clean_intent_q = self._clean_intent_query(query, effective_rerank_query, role_context=role_context)
+        explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", clean_intent_q)]
+        is_remuneration_query = self._is_remuneration_query(clean_intent_q)
+        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", clean_intent_q))
+        needs_tables = (
+            self._needs_table_retrieval(query, effective_rerank_query, role_context=role_context)
+            or include_seniority_tables
+        )
+
         if len(norm_territorios) == 1:
-            total_budget = final_top_k
+            total_budget = (
+                final_top_k
+                if needs_tables
+                else min(final_top_k, QUOTA_PROVINCIAL_ARTICLES + 1 + QUOTA_ESTATUTO_CHUNKS)
+            )
             if len(candidates) <= total_budget:
                 return candidates[:total_budget]
         else:
-            per_terr_quota = QUOTA_PROVINCIAL_ARTICLES + QUOTA_PROVINCIAL_TABLES
+            per_terr_table_quota = QUOTA_PROVINCIAL_TABLES if needs_tables else 0
+            per_terr_quota = QUOTA_PROVINCIAL_ARTICLES + per_terr_table_quota
             total_budget = min(
                 20,
                 max(
-                    final_top_k,
+                    final_top_k if needs_tables else (len(norm_territorios) * per_terr_quota + 3),
                     len(norm_territorios) * per_terr_quota + QUOTA_ALEH_CHUNKS + QUOTA_ESTATUTO_CHUNKS,
                 ),
             )
 
-        explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", query)]
-        is_remuneration_query = self._is_remuneration_query(query)
-        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
         role_stems = self._build_role_stems(role_context)
         area_pattern = self._extract_aleh_area_pattern(role_context)
 
@@ -1101,6 +1143,9 @@ class AiHorecaVectorStore:
                 max(0, effective_article_quota - _t_art_count()),
                 terr_cands,
             )
+
+            if not needs_tables:
+                return
 
             max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
             if area_pattern:
@@ -1212,9 +1257,14 @@ class AiHorecaVectorStore:
         for terr_key in norm_territorios:
             _select_for_territory(terr_key)
 
-        _pick(lambda d: d.capa_normativa == "aleh_estatal", QUOTA_ALEH_CHUNKS)
+        aleh_quota = 1 if (not needs_tables and len(norm_territorios) == 1) else QUOTA_ALEH_CHUNKS
+        _pick(lambda d: d.capa_normativa == "aleh_estatal", aleh_quota)
         _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", QUOTA_ESTATUTO_CHUNKS)
-        _pick(lambda _d: True, max(0, total_budget - len(selected)))
+        _pick(
+            lambda d: (needs_tables or d.tipo_contenido != "tabla_salarial")
+            and (d.rerank_score is None or d.rerank_score >= 0.05),
+            max(0, total_budget - len(selected)),
+        )
 
         selected.sort(key=lambda d: d.rerank_score or 0.0, reverse=True)
         return selected

@@ -98,6 +98,18 @@ class QueryAnalysisSchema(BaseModel):
     cambio_de_puesto_en_turno_actual: bool = Field(
         description="True si el usuario menciona explícitamente un puesto u oficio nuevo o distinto en el mensaje actual.",
     )
+    requiere_consulta_normativa_bbdd: bool = Field(
+        default=True,
+        description=(
+            "True ÚNICAMENTE cuando exista una consulta o duda jurídico-laboral concreta sobre el sector de hostelería/turismo "
+            "que requiera buscar artículos o tablas en la base de datos normativa (ya sea formulada en el mensaje actual "
+            "o resultante de aportar un dato que desbloquea `pending_clarification_query`). "
+            "False cuando NO proceda consultar la base de datos normativa: "
+            "(1) consultas no legales o ajenas al ámbito laboral ('OUT_OF_SCOPE'), "
+            "(2) consultas legales de otras ramas/sectores o de provincias no indexadas ('OUT_OF_SCOPE' / 'UNSUPPORTED_PROVINCE'), o "
+            "(3) interacciones conversacionales sin pregunta jurídica formulada todavía (saludos aislados como 'Hola', presentaciones sin consulta como 'Me llamo Pedro', agradecimientos, despedidas o mensajes introductorios sin duda concreta cuando `pending_clarification_query` es null)."
+        ),
+    )
     requiere_convenio_provincial: bool = Field(
         description=(
             "True si la respuesta exacta depende del Convenio Colectivo Provincial/Autonómico "
@@ -143,7 +155,8 @@ class QueryAnalysisSchema(BaseModel):
             "REGLA CRÍTICA DE PROGRESIÓN: (A) Si existía `pending_clarification_query` (consulta previa detenida esperando provincia o puesto) y el usuario aporta el dato faltante, "
             "fusiona aquella pregunta pendiente con el nuevo dato. (B) Si NO había consulta bloqueada y el usuario formula una repregunta o nueva duda en la conversación, "
             "reescribe ÚNICAMENTE la nueva duda de este turno contextualizada con el perfil activo de la sesión, "
-            "PROHIBIDO volver a incluir en la reescritura preguntas que ya fueron respondidas en turnos anteriores."
+            "PROHIBIDO volver a incluir en la reescritura preguntas que ya fueron respondidas en turnos anteriores. "
+            "(C) CIERRE CUANTITATIVO: Cuando el usuario aporte en seguimiento cualquier parámetro cuantitativo, temporal o contractual (fecha de inicio/fin, duración, horas de jornada, días trabajados, antigüedad, número de festivos, etc.) vinculado a un derecho o magnitud cuantificable tratado en la sesión, formula la consulta exigiendo explícitamente el cálculo numérico exacto resultante para ese parámetro, no solo cómo afecta en abstracto."
         )
     )
     query_busqueda_hibrida: str = Field(
@@ -357,6 +370,7 @@ class LegalGraphState(TypedDict, total=False):
     provincia_detectada: Optional[str]
     territorio_normalizado: Optional[str]
     territorios_normalizados: list[str]
+    requiere_consulta_normativa_bbdd: bool
     requiere_convenio_provincial: bool
     requiere_puesto_o_categoria: bool
     datos_completos: bool
