@@ -18,25 +18,28 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 
 ```text
 Consulta ──► 1. Análisis y validación (LangGraph + Gemini)
-                ├─ Fuera del sector o provincia no soportada ──► Aviso directo (sin generar respuesta)
-                ├─ Falta provincia o puesto de trabajo       ──► Pide el dato necesario al usuario
-                └─ Datos completos
+                ├─ Fuera del sector o provincia no soportada ──► Aviso determinista (0 tokens de síntesis)
+                ├─ Falta provincia o puesto de trabajo       ──► Solicita el dato necesario al usuario
+                └─ Datos completos (1 o N territorios)
                         │
-                        ▼
+                        ▼ (fan-out paralelo con Send)
              2. Búsqueda híbrida paralela (Qdrant Cloud + Cohere Rerank)
-                • Vectores densos (gemini-embedding-001) + léxicos (BM25 en CPU)
-                • Recupera en paralelo Estatuto + ALEH + Convenio (artículos y tablas de €, niveles y categorías)
+                • Ramas independientes por territorio + capa estatal (ET y VI ALEH)
+                • Vectores densos (gemini-embedding-001, caché single-flight) + BM25 en CPU + cuotas por territorio
                         │
                         ▼
-             3. Respuesta y verificación numérica
-                • Redacta citando artículo y convenio aplicable
-                • Valida en CPU que cada cifra (€, %) salga de los fragmentos recuperados o de su cálculo directo
+             3. Verificación y ampliación condicional (CPU, máx. 1 salto)
+                • Comprueba cobertura y remisiones entre artículos/anexos; recupera el fragmento ausente si hace falta
+                        │
+                        ▼
+             4. Síntesis y guardrail numérico (máx. 1 reintento)
+                • Redacta citando artículo y convenio; verifica en CPU cada cifra (€, %) antes de responder
 ```
 
-- **Ingesta de PDFs (`src/ingestion/`):** Recorta automáticamente las páginas del convenio dentro del boletín oficial (BOE, BOCM, DOGC, BOIB, BOP). El texto y las tablas con rejilla vectorial se extraen en CPU (`PyMuPDF` / `pymupdf4llm`); solo las tablas complejas sin bordes se procesan con Gemini Multimodal (`temperature=0.0`). Si existe corrección de erratas del convenio, se aplica sobre el documento base.
-- **Fragmentación (`src/retrieval/chunker.py`):** Divide el Markdown por artículo, disposición o tabla salarial descartando índices iniciales y cabeceras de boletín. Añade a cada bloque su cabecera de contexto (`norma`, `capa`, `territorio`, `sección`, `referencia`).
-- **Recuperación multi-tabla (`src/retrieval/vector_store.py`):** Soporta tanto convenios con tabla salarial única como convenios que separan los importes en euros, el nivel salarial del puesto y la categoría del establecimiento en distintos anexos.
-- **Memoria y RGPD (`src/graph/memory.py`, `src/app/audit_runner.py`):** Guarda el contexto de cada sesión en SQLite (modo WAL) para mantener el hilo en repreguntas o cambios de provincia, y purga automáticamente las sesiones inactivas a los 90 días (art. 5.1.e RGPD).
+- **Ingesta y fragmentación (`src/ingestion/`, `src/retrieval/chunker.py`):** Recorta boletines oficiales (BOE, BOCM, DOGC, BOIB, BOP), aplica correcciones de erratas, extrae texto y tablas con rejilla en CPU (`PyMuPDF`/`pymupdf4llm`) —reservando Gemini Multimodal (`temperature=0.0`) para tablas sin bordes— y trocea por artículo, disposición o tabla conservando su cabecera jerárquica.
+- **Recuperación multi-tabla (`src/retrieval/vector_store.py`):** Soporta tanto convenios con tabla salarial única como convenios que separan importes en euros, niveles profesionales y categorías de establecimiento en anexos distintos.
+- **Streaming, memoria y RGPD (`src/app/ui.py`, `src/graph/memory.py`, `src/app/telemetry_sync.py`):** Muestra progreso nodo a nodo en Streamlit (`graph.stream`), persiste sesiones en SQLite WAL en $O(1)$ desacoplando en segundo plano la exportación de logs planos y el respaldo opcional en Hugging Face, y purga sesiones inactivas a los 90 días (art. 5.1.e RGPD).
+- **Telemetría de tokens y auditoría (`src/app/audit_runner.py`, `src/app/ui.py`):** Registra por paso los tokens reales reportados por la API (`usage_metadata`), failovers, aciertos de caché de embeddings y `search_units` de Cohere; los expone en vivo en el panel *Rayos-X* y los consolida por consulta, modelo y etapa en el informe diario, transcripciones e `historico_metricas.csv`.
 
 ---
 
@@ -57,8 +60,9 @@ AiHoreca/
 │   ├── retrieval/            # Chunker e indexación/búsqueda híbrida en Qdrant
 │   ├── graph/                # Flujo en LangGraph, esquemas Pydantic y verificador numérico
 │   ├── evaluation/           # Evaluador RAGAS y tests de regresión (22 casos)
-│   └── app/                  # Interfaz Streamlit, CLI y auditor diario de telemetría
+│   └── app/                  # Streamlit (streaming y Rayos-X), servicio, CLI y auditor diario
 ├── requirements.txt
+├── ROADMAP_GRAFOS.md         # Evolución de la arquitectura del grafo (Bloques A–D)
 └── README.md
 ```
 
@@ -76,6 +80,7 @@ Variables necesarias en `.env` (ver [`.env.example`](.env.example)):
 - `GOOGLE_API_KEY`: clave de Google AI Studio.
 - `COHERE_API_KEY`: clave de Cohere.
 - `QDRANT_URL` y `QDRANT_API_KEY`: conexión al clúster de Qdrant Cloud (si no se definen, usa almacenamiento local en `data/qdrant_storage/`).
+- `HF_LOG_TOKEN` y `HF_LOG_DATASET_REPO`: *(opcional)* respaldo remoto de telemetría en Hugging Face Dataset para despliegues efímeros.
 
 ### 2. Añadir o actualizar convenios
 ```powershell
@@ -99,7 +104,8 @@ python -m src.evaluation.regression --quick
 # Evaluación completa con juez semántico RAGAS
 python -m src.evaluation.regression --force
 
-# Interfaz web (Streamlit) o consulta desde terminal (CLI)
+# Interfaz web (Streamlit), consulta CLI o auditoría diaria (usa --force-audit-all para regenerar el informe del día)
 streamlit run src/app/ui.py
 python -m src.app.cli --session demo --query "Soy cocinero en un hotel de 4 estrellas en Palma de Mallorca, ¿cuál es mi salario base?"
+python -m src.app.audit_runner
 ```
