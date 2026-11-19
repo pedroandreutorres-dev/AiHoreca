@@ -26,6 +26,7 @@ import sys
 from typing import Any
 
 from src.app.telemetry_sync import HuggingFaceTelemetrySync, get_hf_telemetry_config
+from src.graph.memory import SessionMemoryStore
 from src.config import (
     AUDIT_CURSOR_PATH,
     AUDIT_REPORTS_DIR,
@@ -593,6 +594,9 @@ def run_daily_audit_pipeline(
     pull_res = HuggingFaceTelemetrySync().pull_latest_from_hf(force=force_pull)
 
     retention_res = apply_local_retention(db_path=SESSIONS_DB_PATH)
+
+    if SESSIONS_DB_PATH.exists():
+        SessionMemoryStore(db_path=SESSIONS_DB_PATH).export_flat_logs()
 
     archived_sessions = archive_session_transcripts(
         db_path=SESSIONS_DB_PATH,

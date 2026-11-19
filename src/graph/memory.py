@@ -243,6 +243,7 @@ class SessionMemoryStore:
         self,
         session_id: str,
         state: LegalGraphState,
+        sync_flat_logs: bool = False,
     ) -> SessionContextSlots:
         """Persiste el turno ejecutado y actualiza de forma segura los slots de la sesión."""
         sid = self.ensure_session(session_id)
@@ -400,8 +401,9 @@ class SessionMemoryStore:
                 ),
             )
 
-        # Fase 1 (T = 0 ms): Exportación inmediata a archivos planos sin esperar voto del usuario
-        self.export_flat_logs()
+        # Ruta crítica O(1) en SQLite WAL; la regeneración de ficheros planos es asíncrona/diferida salvo petición expresa
+        if sync_flat_logs:
+            self.export_flat_logs()
 
         return SessionContextSlots(
             active_territorio=new_territorio,
@@ -411,8 +413,14 @@ class SessionMemoryStore:
             pending_clarification_query=new_pending,
         )
 
-    def update_turn_feedback(self, session_id: str, turn_index: int, feedback: str) -> bool:
-        """Fase 2 (T > 0): Actualiza el voto ('OK' / 'KO') de un turno y regenera los archivos de telemetría."""
+    def update_turn_feedback(
+        self,
+        session_id: str,
+        turn_index: int,
+        feedback: str,
+        sync_flat_logs: bool = False,
+    ) -> bool:
+        """Fase 2 (T > 0): Actualiza el voto ('OK' / 'KO') de un turno en SQLite (exportación plana diferida por defecto)."""
         normalized = feedback.strip().upper()
         if normalized not in ("OK", "KO", "SIN_VOTO"):
             raise ValueError(f"Feedback inválido: {feedback}")
@@ -430,7 +438,7 @@ class SessionMemoryStore:
             )
             updated = cur.rowcount > 0
 
-        if updated:
+        if updated and sync_flat_logs:
             self.export_flat_logs()
         return updated
 

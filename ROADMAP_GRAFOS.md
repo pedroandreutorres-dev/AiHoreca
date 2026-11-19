@@ -71,15 +71,15 @@ START ──► analyze_and_route
 
 ---
 
-## Bloque C — Streaming en Interfaz y Optimización I/O de Memoria (Siguiente)
+## Bloque C — Streaming en Interfaz y Optimización I/O de Memoria (Completado)
 
-- [ ] **C1. Streaming de progreso nodo a nodo en la interfaz (`graph.stream`)**
+- [x] **C1. Streaming de progreso nodo a nodo en la interfaz (`graph.stream`)**
   - **Archivos:** `src/graph/workflow.py`, `src/app/` (UI Streamlit)
   - **Problema:** `run_legal_query()` usa `graph.invoke()`, bloqueando la UI ~12s hasta terminar todo el grafo sin indicar en qué fase está.
   - **Cambio:** Exponer generador/callback con `graph.stream(..., stream_mode="updates")` manteniendo `run_legal_query()` compatible para evaluación/CLI.
-- [ ] **C2. Desacoplar `export_flat_logs()` del camino crítico de cada turno**
+- [x] **C2. Desacoplar `export_flat_logs()` del camino crítico de cada turno**
   - **Archivos:** `src/graph/memory.py` (`save_turn_and_update_slots`, `export_flat_logs`)
   - **Problema:** `save_turn_and_update_slots()` reescribe de cero en disco el CSV y TXT histórico en cada consulta del usuario ($O(N)$ síncrono).
   - **Cambio:** Pasar a escritura incremental por turno o diferir la regeneración completa al proceso batch diario (`audit_runner`).
-- [ ] **Verificación Bloque C:**
+- [x] **Verificación Bloque C:**
   - Confirmar renderizado progresivo por nodos en Streamlit, integridad de `sessions/*.db` y `logs/`, y ejecución completa de `python -m src.evaluation.regression --quick` (`22/22`).

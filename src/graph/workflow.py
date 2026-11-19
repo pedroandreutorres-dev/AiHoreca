@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -109,15 +109,13 @@ def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     return workflow.compile()
 
 
-def run_legal_query(
+def _prepare_initial_state(
     query: str,
     session_id: Optional[str] = None,
     memory_store: Optional[SessionMemoryStore] = None,
     conversation_history: Optional[list[dict[str, str]]] = None,
-    compiled_graph=None,
-) -> LegalGraphState:
-    """Ejecuta una consulta laboral a través del grafo agéntico con soporte de memoria persistente por `session_id`."""
-    graph = compiled_graph or build_aihoreca_graph()
+) -> tuple[Optional[SessionMemoryStore], str, LegalGraphState]:
+    """Inicializa sesión SQLite, working memory slots e historial compacto para una ejecución del grafo."""
     store = memory_store or (SessionMemoryStore() if session_id else None)
 
     if store and session_id:
@@ -149,6 +147,61 @@ def run_legal_query(
         "node_timings_ms": {},
         "models_used": {},
     }
+    return store, sid, initial_state
+
+
+def stream_legal_query(
+    query: str,
+    session_id: Optional[str] = None,
+    memory_store: Optional[SessionMemoryStore] = None,
+    conversation_history: Optional[list[dict[str, str]]] = None,
+    compiled_graph=None,
+) -> Iterator[tuple[str, Any]]:
+    """Ejecuta el grafo en streaming (`updates` + `values`), emitiendo eventos nodo a nodo y el estado final persistido."""
+    graph = compiled_graph or build_aihoreca_graph()
+    store, sid, initial_state = _prepare_initial_state(
+        query=query,
+        session_id=session_id,
+        memory_store=memory_store,
+        conversation_history=conversation_history,
+    )
+
+    final_state: Optional[LegalGraphState] = None
+    for mode, chunk in graph.stream(initial_state, stream_mode=["updates", "values"]):
+        if mode == "updates" and isinstance(chunk, dict):
+            for node_name, node_delta in chunk.items():
+                yield (
+                    "node_update",
+                    {"node": node_name, "update": node_delta or {}},
+                )
+        elif mode == "values" and isinstance(chunk, dict):
+            final_state = chunk
+
+    if final_state is None:
+        final_state = graph.invoke(initial_state)
+
+    if store and session_id:
+        updated_slots = store.save_turn_and_update_slots(sid, final_state)
+        final_state["session_slots"] = updated_slots.model_dump()
+
+    yield ("final_state", final_state)
+
+
+def run_legal_query(
+    query: str,
+    session_id: Optional[str] = None,
+    memory_store: Optional[SessionMemoryStore] = None,
+    conversation_history: Optional[list[dict[str, str]]] = None,
+    compiled_graph=None,
+) -> LegalGraphState:
+    """Ejecuta una consulta laboral a través del grafo agéntico con soporte de memoria persistente por `session_id`."""
+    graph = compiled_graph or build_aihoreca_graph()
+    store, sid, initial_state = _prepare_initial_state(
+        query=query,
+        session_id=session_id,
+        memory_store=memory_store,
+        conversation_history=conversation_history,
+    )
 
     result_state: LegalGraphState = graph.invoke(initial_state)
 

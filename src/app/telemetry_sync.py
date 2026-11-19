@@ -37,12 +37,21 @@ from src.graph.memory import SessionMemoryStore
 class HuggingFaceTelemetrySync:
     """Gestor thread-safe de persistencia remota hacia un repositorio Dataset privado en Hugging Face."""
 
-    def __init__(self, debounce_seconds: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        debounce_seconds: Optional[float] = None,
+        db_path: Optional[Path] = None,
+        txt_path: Optional[Path] = None,
+        csv_path: Optional[Path] = None,
+    ) -> None:
         self.debounce_seconds = (
             float(debounce_seconds)
             if debounce_seconds is not None
             else HF_SYNC_DEBOUNCE_SECONDS
         )
+        self.db_path = Path(db_path or SESSIONS_DB_PATH)
+        self.txt_path = Path(txt_path or CONVERSATIONS_TXT_PATH)
+        self.csv_path = Path(csv_path or TURNS_CSV_PATH)
         self._lock = threading.Lock()
         self._timer: Optional[threading.Timer] = None
         self._first_pending_ts: Optional[float] = None
@@ -100,18 +109,16 @@ class HuggingFaceTelemetrySync:
 
         # Asegurar que `conversaciones.txt` y `turnos_metricas.csv` existen y reflejan la BD actual
         try:
-            memory_store.export_flat_logs()
+            memory_store.export_flat_logs(txt_path=self.txt_path, csv_path=self.csv_path)
         except Exception:
             pass
 
         return restored
 
     def trigger_async_sync(self) -> None:
-        """Encola una subida asíncrona con debounce hacia el Dataset privado de Hugging Face."""
+        """Encola una regeneración asíncrona con debounce de logs planos y subida remota (si HF está configurado)."""
         token, repo_id = get_hf_telemetry_config()
-        if not token or not repo_id:
-            self.last_sync_status = "LOCAL_ONLY (HF_LOG_TOKEN no configurado)"
-            return
+        has_hf = bool(token and repo_id)
 
         with self._lock:
             now = time.monotonic()
@@ -132,10 +139,14 @@ class HuggingFaceTelemetrySync:
             self._timer = threading.Timer(delay, self._run_background_upload)
             self._timer.daemon = True
             self._timer.start()
-            self.last_sync_status = f"QUEUED (en {delay:.0f}s -> {repo_id})"
+            self.last_sync_status = (
+                f"QUEUED (en {delay:.0f}s -> {repo_id})"
+                if has_hf
+                else f"QUEUED_LOCAL (en {delay:.0f}s)"
+            )
 
     def flush_sync_now(self) -> bool:
-        """Fuerza una subida inmediata bloqueante (útil para tests o cierre controlado)."""
+        """Fuerza una exportación/subida inmediata bloqueante (útil para tests o cierre controlado)."""
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
@@ -144,8 +155,6 @@ class HuggingFaceTelemetrySync:
 
     def _run_background_upload(self) -> bool:
         token, repo_id = get_hf_telemetry_config()
-        if not token or not repo_id:
-            return False
 
         with self._lock:
             if self._upload_in_progress:
@@ -157,40 +166,52 @@ class HuggingFaceTelemetrySync:
 
         success = False
         try:
-            from huggingface_hub import HfApi
-
-            staging_dir = LOGS_DIR / ".hf_staging"
-            staging_dir.mkdir(parents=True, exist_ok=True)
-
-            # 1. Copia en caliente transaccionalmente segura de SQLite (`sqlite3.backup`)
-            if SESSIONS_DB_PATH.exists():
-                staged_db = staging_dir / "aihoreca_sessions.db"
-                src_conn = sqlite3.connect(str(SESSIONS_DB_PATH), timeout=15.0)
-                dst_conn = sqlite3.connect(str(staged_db), timeout=15.0)
-                try:
-                    with dst_conn:
-                        src_conn.backup(dst_conn)
-                finally:
-                    dst_conn.close()
-                    src_conn.close()
-
-            # 2. Copiar `conversaciones.txt` y `turnos_metricas.csv`
-            if CONVERSATIONS_TXT_PATH.exists():
-                shutil.copy2(CONVERSATIONS_TXT_PATH, staging_dir / "conversaciones.txt")
-            if TURNS_CSV_PATH.exists():
-                shutil.copy2(TURNS_CSV_PATH, staging_dir / "turnos_metricas.csv")
+            # 1. Regeneración atómica asíncrona de ficheros planos (tanto en local como previo a HF)
+            if self.db_path.exists():
+                SessionMemoryStore(db_path=self.db_path).export_flat_logs(
+                    txt_path=self.txt_path,
+                    csv_path=self.csv_path,
+                )
 
             now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            api = HfApi(token=token)
-            api.upload_folder(
-                repo_id=repo_id,
-                repo_type="dataset",
-                folder_path=str(staging_dir),
-                commit_message=f"Auto-sync telemetria AiHoreca ({now_utc})",
-            )
-            self.last_sync_at = now_utc
-            self.last_sync_status = f"SYNCED ({now_utc} -> {repo_id})"
-            success = True
+            if not token or not repo_id:
+                self.last_sync_at = now_utc
+                self.last_sync_status = f"LOCAL_EXPORTED ({now_utc})"
+                success = True
+            else:
+                from huggingface_hub import HfApi
+
+                staging_dir = LOGS_DIR / ".hf_staging"
+                staging_dir.mkdir(parents=True, exist_ok=True)
+
+                # 2. Copia en caliente transaccionalmente segura de SQLite (`sqlite3.backup`)
+                if self.db_path.exists():
+                    staged_db = staging_dir / "aihoreca_sessions.db"
+                    src_conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                    dst_conn = sqlite3.connect(str(staged_db), timeout=15.0)
+                    try:
+                        with dst_conn:
+                            src_conn.backup(dst_conn)
+                    finally:
+                        dst_conn.close()
+                        src_conn.close()
+
+                # 3. Copiar `conversaciones.txt` y `turnos_metricas.csv`
+                if self.txt_path.exists():
+                    shutil.copy2(self.txt_path, staging_dir / "conversaciones.txt")
+                if self.csv_path.exists():
+                    shutil.copy2(self.csv_path, staging_dir / "turnos_metricas.csv")
+
+                api = HfApi(token=token)
+                api.upload_folder(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    folder_path=str(staging_dir),
+                    commit_message=f"Auto-sync telemetria AiHoreca ({now_utc})",
+                )
+                self.last_sync_at = now_utc
+                self.last_sync_status = f"SYNCED ({now_utc} -> {repo_id})"
+                success = True
         except Exception as exc:
             self.last_sync_status = f"SYNC_ERROR ({type(exc).__name__}: {exc})"
         finally:

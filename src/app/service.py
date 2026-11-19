@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,9 +34,9 @@ from src.config import (
 )
 from src.evaluation.evaluator import audit_corpus_and_index_stats
 from src.graph.memory import SessionMemoryStore
-from src.graph.nodes import get_indexed_territories
+from src.graph.nodes import _format_supported_territories_display, get_indexed_territories
 from src.graph.state import AuditReport, LegalCitation, SessionContextSlots
-from src.graph.workflow import build_aihoreca_graph, run_legal_query
+from src.graph.workflow import build_aihoreca_graph, run_legal_query, stream_legal_query
 from src.retrieval.schemas import RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
 
@@ -67,6 +67,8 @@ class TurnExecutionPayload(BaseModel):
     route_decision: str
     provincia_detectada: Optional[str] = None
     territorio_normalizado: Optional[str] = None
+    territorios_normalizados: list[str] = Field(default_factory=list)
+    retrieval_hop: int = 0
     requiere_convenio_provincial: bool = False
     oficio_coloquial_detectado: Optional[str] = None
     categoria_profesional_aleh: Optional[str] = None
@@ -95,12 +97,17 @@ class AiHorecaEngineService:
         self._exec_lock = threading.Lock()
         self.vector_store = AiHorecaVectorStore()
         self.memory_store = SessionMemoryStore()
-        self.telemetry_sync = HuggingFaceTelemetrySync()
+        self.telemetry_sync = HuggingFaceTelemetrySync(db_path=self.memory_store.db_path)
         self.telemetry_sync.restore_from_hf_if_needed(self.memory_store)
         self._last_retention_check: float = 0.0
         self._apply_retention_policy_if_due(force=True)
         self.compiled_graph = build_aihoreca_graph(vector_store=self.vector_store)
         self._corpus_stats_cache: Optional[dict[str, Any]] = None
+
+    def get_supported_territories_display(self) -> str:
+        """Devuelve la cadena legible con todos los territorios actualmente indexados."""
+        inline, _ = _format_supported_territories_display(get_indexed_territories())
+        return inline.replace("**", "")
 
     def _apply_retention_policy_if_due(self, force: bool = False) -> int:
         """Aplica la caducidad de sesiones en origen (SESSION_RETENTION_DAYS) como máximo una vez cada 12 horas."""
@@ -113,7 +120,6 @@ class AiHorecaEngineService:
         except Exception:
             return 0
         if purged:
-            self.memory_store.export_flat_logs()
             self.telemetry_sync.trigger_async_sync()
         return purged
 
@@ -204,27 +210,46 @@ class AiHorecaEngineService:
         return updated
 
     def reset_or_delete_session(self, session_id: str) -> None:
-        """Elimina una sesión y sus turnos asociados en SQLite."""
+        """Elimina una sesión y sus turnos asociados en SQLite y agenda regeneración asíncrona de logs."""
         with self._exec_lock:
             self.memory_store.delete_session(session_id)
-            self.memory_store.export_flat_logs()
         self.telemetry_sync.trigger_async_sync()
 
-    def process_chat_turn(self, session_id: str, query: str) -> TurnExecutionPayload:
-        """Ejecuta un turno conversacional de forma thread-safe y devuelve toda la telemetría RAG."""
+    def process_chat_turn(
+        self,
+        session_id: str,
+        query: str,
+        on_node_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    ) -> TurnExecutionPayload:
+        """Ejecuta un turno conversacional de forma thread-safe (con streaming opcional nodo a nodo) y devuelve la telemetría RAG."""
         clean_query = query.strip()
         if not clean_query:
             raise ValueError("La consulta del usuario no puede estar vacía.")
 
         with self._exec_lock:
-            state_out = run_legal_query(
-                query=clean_query,
-                session_id=session_id,
-                memory_store=self.memory_store,
-                compiled_graph=self.compiled_graph,
-            )
+            if on_node_event is not None:
+                state_out = None
+                for event_type, payload in stream_legal_query(
+                    query=clean_query,
+                    session_id=session_id,
+                    memory_store=self.memory_store,
+                    compiled_graph=self.compiled_graph,
+                ):
+                    if event_type == "node_update":
+                        on_node_event(payload["node"], payload.get("update") or {})
+                    elif event_type == "final_state":
+                        state_out = payload
+                if state_out is None:
+                    raise RuntimeError("La ejecución en streaming finalizó sin estado resultante.")
+            else:
+                state_out = run_legal_query(
+                    query=clean_query,
+                    session_id=session_id,
+                    memory_store=self.memory_store,
+                    compiled_graph=self.compiled_graph,
+                )
 
-        # Disparar sincronización asíncrona con debounce hacia Hugging Face Dataset (sin bloquear UI)
+        # Disparar exportación local y sincronización remota asíncrona con debounce (0 ms en el camino crítico del chat)
         self.telemetry_sync.trigger_async_sync()
         with self._exec_lock:
             self._apply_retention_policy_if_due()
@@ -250,6 +275,8 @@ class AiHorecaEngineService:
             route_decision=state_out.get("route_decision", "block_out_of_scope"),
             provincia_detectada=state_out.get("provincia_detectada"),
             territorio_normalizado=state_out.get("territorio_normalizado"),
+            territorios_normalizados=list(state_out.get("territorios_normalizados") or []),
+            retrieval_hop=int(state_out.get("retrieval_hop") or 0),
             requiere_convenio_provincial=bool(state_out.get("requiere_convenio_provincial", False)),
             oficio_coloquial_detectado=state_out.get("oficio_coloquial_detectado"),
             categoria_profesional_aleh=state_out.get("categoria_profesional_aleh"),

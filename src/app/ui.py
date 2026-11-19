@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Any
 
 import streamlit as st
 
@@ -73,6 +74,78 @@ def _render_turn_feedback_controls(
             st.caption("Valoración registrada: **👎 Marcada para revisión**")
 
 
+def _format_stream_node_event(node_name: str, update: dict[str, Any]) -> tuple[str, str]:
+    """Traduce una actualización de nodo LangGraph a etiqueta de estado y detalle legible en tiempo real."""
+    if node_name == "analyze_and_route":
+        route = update.get("route_decision", "")
+        terrs = update.get("territorios_normalizados") or []
+        terr_lbl = ", ".join(terrs) if terrs else (update.get("territorio_normalizado") or "Estatal (ET/ALEH)")
+        if route == "block_out_of_scope":
+            return "Guardrail de entrada completado", f"- **Enrutamiento:** Bloqueo determinista (`{update.get('intent', 'OUT_OF_SCOPE')}`)"
+        if route == "ask_clarification":
+            return "Clarificación contextual requerida", "- **Gatekeeper HITL:** Faltan datos mínimos antes de recuperar tablas"
+        return (
+            "Enrutamiento completado; recuperando normativa en paralelo...",
+            f"- **Análisis y ruta (`analyze_and_route`):** `{update.get('intent', 'HOSPITALITY_CORE')}` | Territorios: `{terr_lbl}`",
+        )
+    if node_name == "retrieve_state_layers":
+        docs = update.get("branch_docs") or []
+        return (
+            "Capas estatales (ET + ALEH) recuperadas",
+            f"- **Rama estatal (`retrieve_state_layers`):** `{len(docs)}` candidatos (Estatuto + VI ALEH)",
+        )
+    if node_name == "retrieve_territory":
+        docs = update.get("branch_docs") or []
+        timings = update.get("branch_timings") or []
+        terr_name = timings[-1][0].split(":", 1)[-1] if timings else "provincial"
+        return (
+            f"Convenio de {terr_name} recuperado",
+            f"- **Rama territorial (`retrieve_territory:{terr_name}`):** `{len(docs)}` candidatos híbridos",
+        )
+    if node_name == "verify_retrieval":
+        docs = update.get("retrieved_docs") or []
+        needs_exp = bool(update.get("needs_retrieval_expansion"))
+        if needs_exp:
+            refs = [f"{r.get('territorio')}:{r.get('ref_label')}" for r in (update.get("missing_cross_refs") or [])]
+            return (
+                "Remisiones internas detectadas; ejecutando 2.º salto...",
+                f"- **Verificación (`verify_retrieval`):** `{len(docs)}` fragmentos reranqueados; remisiones ausentes: `{', '.join(refs)}`",
+            )
+        return (
+            "Contexto verificado; redactando dictamen jurídico...",
+            f"- **Verificación (`verify_retrieval`):** `{len(docs)}` fragmentos reranqueados y validados",
+        )
+    if node_name == "expand_retrieval":
+        docs = update.get("retrieved_docs") or []
+        return (
+            "2.º salto completado; redactando dictamen jurídico...",
+            f"- **Expansión (`expand_retrieval`):** Contexto ampliado a `{len(docs)}` fragmentos (hop 1)",
+        )
+    if node_name == "synthesize_response":
+        return (
+            "Dictamen generado; ejecutando auditoría determinista...",
+            "- **Síntesis jurídica (`synthesize_response`):** Redacción estructurada y citas generadas",
+        )
+    if node_name == "audit_output":
+        if update.get("audit_needs_retry"):
+            return (
+                "Auditoría solicitó corrección; reintentando síntesis...",
+                "- **Auditoría (`audit_output`):** Detectada cifra/cita revisable; autocorrección (reintento 1/1)",
+            )
+        audit = update.get("audit_report") or {}
+        state_lbl = "PASSED" if audit.get("passed", True) else "CON AVISO"
+        return (
+            "Auditoría determinista completada",
+            f"- **Auditoría (`audit_output`):** Resultado `{state_lbl}`",
+        )
+    if node_name in ("block_out_of_scope", "ask_clarification"):
+        return (
+            "Respuesta directa generada (0 tokens extra)",
+            f"- **Cortocircuito (`{node_name}`):** Respuesta determinista preparada",
+        )
+    return (f"Ejecutado nodo `{node_name}`", f"- Nodo `{node_name}` completado")
+
+
 def _render_turn_xray_panel(telemetry: TurnExecutionPayload) -> None:
     """Renderiza el panel desplegable de rayos-X (telemetría RAG + Guardrail Nodo 5) bajo la respuesta."""
     route_badge = {
@@ -113,6 +186,11 @@ def _render_turn_xray_panel(telemetry: TurnExecutionPayload) -> None:
                 f"Categoría=`{telemetry.categoria_profesional_aleh or 'N/A'}` | "
                 f"Área Funcional=`{telemetry.area_funcional_aleh or 'N/A'}`"
             )
+            if len(telemetry.territorios_normalizados) > 1 or telemetry.retrieval_hop > 0:
+                st.caption(
+                    f"Territorios paralelos (`Send`): `{telemetry.territorios_normalizados}` | "
+                    f"Saltos de expansión (`retrieval_hop`): `{telemetry.retrieval_hop}`"
+                )
             if telemetry.motivo_clasificacion:
                 st.caption(f"Motivo del clasificador: {telemetry.motivo_clasificacion}")
 
@@ -250,9 +328,10 @@ def main() -> None:
     active_sid = _render_sidebar(service)
 
     st.title("AiHoreca — Asistente Legal RAG Agéntico para Hostelería")
+    supported_territories_str = service.get_supported_territories_display()
     st.caption(
         "Estatuto de los Trabajadores (BOE) • VI Acuerdo Laboral Estatal de Hostelería (ALEH VI) • "
-        "Convenios Colectivos de Madrid (BOCM), Cataluña/Barcelona/Girona/Tarragona/Lleida (DOGC) y León (BOP)"
+        f"Convenios Colectivos indexados: {supported_territories_str}"
     )
 
     persisted_turns = service.get_session_turns(active_sid)
@@ -297,11 +376,25 @@ def main() -> None:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("Ejecutando Grafo Agéntico (Router -> Qdrant 3 Capas + Cohere Rerank -> Síntesis + Auditoría)..."):
-                payload = service.process_chat_turn(session_id=active_sid, query=user_input)
+            with st.status("Analizando consulta laboral...", expanded=True) as status:
+                def _on_node_update(node_name: str, update: dict[str, Any]) -> None:
+                    label, detail = _format_stream_node_event(node_name, update)
+                    status.update(label=label, state="running")
+                    st.markdown(detail)
+
+                payload = service.process_chat_turn(
+                    session_id=active_sid,
+                    query=user_input,
+                    on_node_event=_on_node_update,
+                )
                 updated_turns = service.get_session_turns(active_sid)
                 latest_turn_idx = int(updated_turns[-1]["turn_index"]) if updated_turns else 1
                 session_telemetry[latest_turn_idx] = payload
+                status.update(
+                    label=f"Respuesta lista ({payload.total_latency_ms:.0f} ms)",
+                    state="complete",
+                    expanded=False,
+                )
 
             st.markdown(payload.final_response)
             _render_turn_xray_panel(payload)
