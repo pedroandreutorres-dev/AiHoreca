@@ -7,21 +7,43 @@ import logging
 from typing import Optional
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from src.graph.memory import SessionMemoryStore
 from src.graph.nodes import AiHorecaGraphNodes
-from src.graph.state import LegalGraphState, RouteDecision
+from src.graph.state import LegalGraphState
 from src.retrieval.vector_store import AiHorecaVectorStore
 
 logger = logging.getLogger(__name__)
 
 
-def _route_after_analysis(state: LegalGraphState) -> RouteDecision:
-    """Arista condicional determinista tras el nodo de Guardrail + Gatekeeper + Traductor ALEH."""
+def _route_after_analysis(state: LegalGraphState):
+    """Arista condicional con fan-out paralelo Send() tras Guardrail + Gatekeeper + Traductor ALEH."""
     decision = state.get("route_decision", "block_out_of_scope")
-    if decision in ("block_out_of_scope", "ask_clarification", "parallel_retrieve"):
+    if decision in ("block_out_of_scope", "ask_clarification"):
         return decision
+    if decision == "parallel_retrieve":
+        base_payload = {
+            "query": state.get("query", ""),
+            "effective_query": state.get("effective_query", ""),
+            "query_busqueda_hibrida": state.get("query_busqueda_hibrida", ""),
+            "oficio_coloquial_detectado": state.get("oficio_coloquial_detectado"),
+            "categoria_profesional_aleh": state.get("categoria_profesional_aleh"),
+            "area_funcional_aleh": state.get("area_funcional_aleh"),
+        }
+        sends = [Send("retrieve_state_layers", base_payload)]
+        for terr in state.get("territorios_normalizados") or []:
+            if terr:
+                sends.append(Send("retrieve_territory", {**base_payload, "target_territorio": terr}))
+        return sends
     return "block_out_of_scope"
+
+
+def _route_after_verify(state: LegalGraphState) -> str:
+    """Ejecuta un máximo de 1 salto adicional (`expand_retrieval`) si faltan remisiones internas o la relevancia es baja."""
+    if state.get("needs_retrieval_expansion") and int(state.get("retrieval_hop") or 0) < 1:
+        return "expand_retrieval"
+    return "synthesize_response"
 
 
 def _route_after_audit(state: LegalGraphState):
@@ -40,7 +62,10 @@ def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     workflow.add_node("analyze_and_route", nodes.analyze_and_route_node)
     workflow.add_node("block_out_of_scope", nodes.block_out_of_scope_node)
     workflow.add_node("ask_clarification", nodes.ask_clarification_node)
-    workflow.add_node("parallel_retrieve", nodes.parallel_retrieval_node)
+    workflow.add_node("retrieve_state_layers", nodes.retrieve_state_layers_node)
+    workflow.add_node("retrieve_territory", nodes.retrieve_territory_node)
+    workflow.add_node("verify_retrieval", nodes.verify_retrieval_node)
+    workflow.add_node("expand_retrieval", nodes.expand_retrieval_node)
     workflow.add_node("synthesize_response", nodes.synthesize_response_node)
     workflow.add_node("audit_output", nodes.audit_output_node)
 
@@ -49,17 +74,28 @@ def build_aihoreca_graph(vector_store: Optional[AiHorecaVectorStore] = None):
     workflow.add_conditional_edges(
         "analyze_and_route",
         _route_after_analysis,
-        {
-            "block_out_of_scope": "block_out_of_scope",
-            "ask_clarification": "ask_clarification",
-            "parallel_retrieve": "parallel_retrieve",
-        },
+        [
+            "block_out_of_scope",
+            "ask_clarification",
+            "retrieve_state_layers",
+            "retrieve_territory",
+        ],
     )
 
     workflow.add_edge("block_out_of_scope", END)
     workflow.add_edge("ask_clarification", END)
 
-    workflow.add_edge("parallel_retrieve", "synthesize_response")
+    workflow.add_edge("retrieve_state_layers", "verify_retrieval")
+    workflow.add_edge("retrieve_territory", "verify_retrieval")
+    workflow.add_conditional_edges(
+        "verify_retrieval",
+        _route_after_verify,
+        {
+            "expand_retrieval": "expand_retrieval",
+            "synthesize_response": "synthesize_response",
+        },
+    )
+    workflow.add_edge("expand_retrieval", "synthesize_response")
     workflow.add_edge("synthesize_response", "audit_output")
     workflow.add_conditional_edges(
         "audit_output",
@@ -102,6 +138,12 @@ def run_legal_query(
         "query": query,
         "session_slots": slots,
         "conversation_history": history,
+        "territorios_normalizados": [],
+        "branch_docs": [],
+        "branch_timings": [],
+        "retrieval_hop": 0,
+        "missing_cross_refs": [],
+        "needs_retrieval_expansion": False,
         "audit_retry_count": 0,
         "audit_needs_retry": False,
         "node_timings_ms": {},

@@ -7,9 +7,10 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar
 
 import cohere
 import numpy as np
@@ -88,18 +89,26 @@ class AiHorecaVectorStore:
         self._sparse_model: Optional[SparseTextEmbedding] = getattr(
             sys, "_aihoreca_sparse_model", None
         )
+        self._embed_lock = threading.Lock()
+        self._sparse_init_lock = threading.Lock()
+        self._dense_inflight: dict[str, threading.Event] = {}
+        self._sparse_inflight: dict[str, threading.Event] = {}
+        self._dense_query_cache: dict[str, list[float]] = {}
+        self._sparse_query_cache: dict[str, models.SparseVector] = {}
 
     @property
     def sparse_model(self) -> SparseTextEmbedding:
-        """Inicializa perezosamente en CPU el modelo léxico BM25 de FastEmbed y lo conserva en `sys`."""
+        """Inicializa perezosamente en CPU el modelo léxico BM25 de FastEmbed de forma thread-safe."""
         if self._sparse_model is None:
-            cached = getattr(sys, "_aihoreca_sparse_model", None)
-            if cached is not None:
-                self._sparse_model = cached
-            else:
-                logger.info("Cargando modelo disperso FastEmbed 'Qdrant/bm25' en CPU...")
-                self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
-                setattr(sys, "_aihoreca_sparse_model", self._sparse_model)
+            with self._sparse_init_lock:
+                if self._sparse_model is None:
+                    cached = getattr(sys, "_aihoreca_sparse_model", None)
+                    if cached is not None:
+                        self._sparse_model = cached
+                    else:
+                        logger.info("Cargando modelo disperso FastEmbed 'Qdrant/bm25' en CPU...")
+                        self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+                        setattr(sys, "_aihoreca_sparse_model", self._sparse_model)
         return self._sparse_model
 
     def _ensure_payload_indexes(self) -> None:
@@ -211,6 +220,56 @@ class AiHorecaVectorStore:
             )
             for emb in sparse_embeddings
         ]
+
+    def _singleflight_query_vector(
+        self,
+        key: str,
+        cache: dict[str, Any],
+        inflight: dict[str, threading.Event],
+        compute_fn: Callable[[], Any],
+    ) -> Any:
+        """Caché single-flight thread-safe para compartir embeddings entre ramas `Send()` concurrentes."""
+        while True:
+            with self._embed_lock:
+                if key in cache:
+                    return cache[key]
+                wait_evt = inflight.get(key)
+                if wait_evt is None:
+                    own_evt = threading.Event()
+                    inflight[key] = own_evt
+                    break
+            wait_evt.wait()
+
+        try:
+            vec = compute_fn()
+            with self._embed_lock:
+                if len(cache) >= 64:
+                    oldest_key = next(iter(cache))
+                    cache.pop(oldest_key, None)
+                cache[key] = vec
+            return vec
+        finally:
+            with self._embed_lock:
+                inflight.pop(key, None)
+                own_evt.set()
+
+    def _get_query_dense_vec(self, query: str) -> list[float]:
+        """Obtiene o calcula el embedding denso de una consulta evitando llamadas duplicadas en paralelo."""
+        return self._singleflight_query_vector(
+            key=query,
+            cache=self._dense_query_cache,
+            inflight=self._dense_inflight,
+            compute_fn=lambda: self._embed_dense_batch([query], task_type="RETRIEVAL_QUERY")[0],
+        )
+
+    def _get_query_sparse_vec(self, query: str) -> models.SparseVector:
+        """Obtiene o calcula el vector BM25 disperso de una consulta con caché single-flight en CPU."""
+        return self._singleflight_query_vector(
+            key=query,
+            cache=self._sparse_query_cache,
+            inflight=self._sparse_inflight,
+            compute_fn=lambda: self._embed_sparse_batch([query])[0],
+        )
 
     def index_chunks(
         self,
@@ -525,86 +584,102 @@ class AiHorecaVectorStore:
         surface = f"{doc.articulo} | {body_head}"
         return bool(area_pattern.search(surface))
 
-    def parallel_hierarchical_retrieve(
-        self,
-        query: str,
-        provincia: Optional[str] = None,
-        top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
-        final_top_k: int = RETRIEVAL_FINAL_TOP_K,
-        use_cohere_rerank: bool = True,
-        rerank_query: Optional[str] = None,
-        role_context: Optional[str] = None,
-    ) -> list[RetrievedDocument]:
-        """Recupera en paralelo de las 3 capas normativas (ET + ALEH + Convenio Provincial estratificado) y reordena con Cohere."""
-        # Si hay contexto de puesto/categoría activo en la sesión y no figura ya en la query de este turno,
-        # lo integramos en la consulta vectorial/léxica para que las tablas salariales se recuperen con el perfil completo.
-        search_query = f"{query} ({role_context})" if role_context and role_context.lower() not in query.lower() else query
+    @staticmethod
+    def _will_use_cohere(use_cohere_rerank: bool) -> bool:
+        """Determina si Cohere Rerank está habilitado y dispone de clave configurada."""
+        cohere_key = os.getenv("COHERE_API_KEY", "").strip()
+        return bool(use_cohere_rerank and cohere_key and not cohere_key.startswith("..."))
 
-        # Calculamos el vector de consulta una sola vez (1 llamada API densa + 1 cálculo BM25 en CPU)
-        d_vec = self._embed_dense_batch([search_query], task_type="RETRIEVAL_QUERY")[0]
-        s_vec = self._embed_sparse_batch([search_query])[0]
+    @staticmethod
+    def _build_search_query(query: str, role_context: Optional[str]) -> str:
+        """Combina la consulta técnica con el contexto del oficio/categoría si aún no figura en ella."""
+        return (
+            f"{query} ({role_context})"
+            if role_context and role_context.lower() not in query.lower()
+            else query
+        )
 
-        # Detectar si el usuario solicitó explícitamente un año histórico concreto en la consulta
-        explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", query)]
-        is_remuneration_query = bool(
+    @staticmethod
+    def _is_remuneration_query(query: str) -> bool:
+        """Detecta si la consulta involucra retribución, salarios, pagas extras o pluses."""
+        return bool(
             re.search(
                 r"(?i)\b(?:sueldo|salario|cobrar|cobro|n[óo]mina|retribuci[óo]n|pagas?|horas?\s+extras?|extraordinarias?|nocturnidad|plus)\b",
                 query,
             )
         )
-        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
 
-        def _is_classification_level_table(d: RetrievedDocument) -> bool:
-            """Identifica tablas de encuadramiento/niveles o categorías sin importes en €, excluyendo antigüedad salvo consulta expresa."""
-            if d.capa_normativa != "convenio_provincial" or d.tipo_contenido != "tabla_salarial":
-                return False
-            if "€" in d.text or "euros" in d.text.lower():
-                return False
-            surface = f"{d.titulo_o_capitulo} {d.articulo}"
-            if not include_seniority_tables and ("antigüedad" in surface.lower() or "antiguedad" in surface.lower()):
-                return False
-            return bool(
-                re.search(
-                    r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
-                    surface,
-                )
-            )
-
+    @staticmethod
+    def _build_role_stems(role_context: Optional[str]) -> list[str]:
+        """Extrae raíces léxicas morfológicas (eliminando solo sufijo de género/número) del puesto detectado."""
         raw_role = role_context.split("|")[0].strip().lower() if role_context else ""
-        role_stems: list[str] = []
+        stems: list[str] = []
         for w in re.findall(r"[a-záéíóúüñ]{4,}", raw_role):
             stem = re.sub(r"[oa]s?$", "", w)
-            role_stems.append(stem if len(stem) >= 4 else w)
+            stems.append(stem if len(stem) >= 4 else w)
+        return stems
 
-        def _matches_role_stem(d: RetrievedDocument) -> bool:
-            """Comprueba si todas las raíces léxicas del oficio coexisten en una misma línea o fila de la tabla."""
-            if not role_stems:
-                return False
-            return any(
-                all(stem in line for stem in role_stems)
-                for line in d.text.lower().splitlines()
+    @staticmethod
+    def _matches_role_stem(doc: RetrievedDocument, role_stems: list[str]) -> bool:
+        """Comprueba si todas las raíces léxicas del oficio coexisten en una misma línea del fragmento."""
+        if not role_stems:
+            return False
+        return any(all(stem in line for stem in role_stems) for line in doc.text.lower().splitlines())
+
+    @staticmethod
+    def _is_classification_level_table(
+        doc: RetrievedDocument,
+        include_seniority_tables: bool = False,
+    ) -> bool:
+        """Identifica tablas de encuadramiento/niveles o categorías sin importes en €, excluyendo antigüedad salvo consulta expresa."""
+        if doc.capa_normativa != "convenio_provincial" or doc.tipo_contenido != "tabla_salarial":
+            return False
+        if "€" in doc.text or "euros" in doc.text.lower():
+            return False
+        surface = f"{doc.titulo_o_capitulo} {doc.articulo}"
+        if not include_seniority_tables and ("antigüedad" in surface.lower() or "antiguedad" in surface.lower()):
+            return False
+        return bool(
+            re.search(
+                r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
+                surface,
             )
-
-        candidates: list[RetrievedDocument] = []
-        seen_ids: set[str] = set()
-
-        def _append_unique(items: list[RetrievedDocument]) -> None:
-            for item in items:
-                if item.chunk_id not in seen_ids:
-                    candidates.append(item)
-                    seen_ids.add(item.chunk_id)
-
-        cohere_key = os.getenv("COHERE_API_KEY", "").strip()
-        will_use_cohere = bool(use_cohere_rerank and cohere_key and not cohere_key.startswith("..."))
-        include_vectors = not will_use_cohere
-
-        pay_sparse_vec = (
-            self._embed_sparse_batch(
-                [f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"]
-            )[0]
-            if provincia and is_remuneration_query
-            else None
         )
+
+    @staticmethod
+    def _deduplicate_docs(items: list[RetrievedDocument]) -> list[RetrievedDocument]:
+        """Deduplica fragmentos preservando orden de llegada y primera aparición."""
+        out: list[RetrievedDocument] = []
+        seen_ids: set[str] = set()
+        for item in items:
+            if item.chunk_id not in seen_ids:
+                out.append(item)
+                seen_ids.add(item.chunk_id)
+        return out
+
+    def _run_query_specs(
+        self,
+        query_specs: list[tuple[str, dict]],
+    ) -> dict[str, list[RetrievedDocument]]:
+        """Ejecuta múltiples búsquedas híbridas en paralelo cuando se usa Qdrant Cloud."""
+        if self.is_cloud and len(query_specs) > 1:
+            with ThreadPoolExecutor(max_workers=len(query_specs)) as pool:
+                futures = {key: pool.submit(self.hybrid_search, **kw) for key, kw in query_specs}
+                return {key: fut.result() for key, fut in futures.items()}
+        return {key: self.hybrid_search(**kw) for key, kw in query_specs}
+
+    def retrieve_state_layer_candidates(
+        self,
+        query: str,
+        top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
+        use_cohere_rerank: bool = True,
+        role_context: Optional[str] = None,
+    ) -> list[RetrievedDocument]:
+        """Rama paralela B1: recupera candidatos de Estatuto de los Trabajadores y VI ALEH."""
+        search_query = self._build_search_query(query, role_context)
+        d_vec = self._get_query_dense_vec(search_query)
+        s_vec = self._get_query_sparse_vec(search_query)
+        include_vectors = not self._will_use_cohere(use_cohere_rerank)
 
         query_specs: list[tuple[str, dict]] = [
             (
@@ -630,159 +705,200 @@ class AiHorecaVectorStore:
                 },
             ),
         ]
-        if provincia:
+        layer_results = self._run_query_specs(query_specs)
+        return self._deduplicate_docs(layer_results["et"] + layer_results["aleh"])
+
+    def retrieve_territory_candidates(
+        self,
+        query: str,
+        provincia: str,
+        top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
+        use_cohere_rerank: bool = True,
+        role_context: Optional[str] = None,
+    ) -> list[RetrievedDocument]:
+        """Rama paralela B1 por territorio: recupera articulado, tablas estratificadas y anexos de un único convenio."""
+        norm_p = provincia.lower().strip()
+        search_query = self._build_search_query(query, role_context)
+        d_vec = self._get_query_dense_vec(search_query)
+        s_vec = self._get_query_sparse_vec(search_query)
+        include_vectors = not self._will_use_cohere(use_cohere_rerank)
+
+        explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", query)]
+        is_remuneration_query = self._is_remuneration_query(query)
+        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
+        role_stems = self._build_role_stems(role_context)
+
+        pay_sparse_vec = (
+            self._get_query_sparse_vec(
+                f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"
+            )
+            if is_remuneration_query
+            else None
+        )
+
+        query_specs: list[tuple[str, dict]] = [
+            (
+                "prov_art",
+                {
+                    "query": search_query,
+                    "capa_normativa": "convenio_provincial",
+                    "provincia": norm_p,
+                    "tipo_contenido": "articulo",
+                    "top_k": max(top_k_per_layer + 2, 8),
+                    "dense_query_vec": d_vec,
+                    "sparse_query_vec": s_vec,
+                    "include_vectors": include_vectors,
+                },
+            ),
+        ]
+        if pay_sparse_vec is not None:
             query_specs.append(
                 (
-                    "prov_art",
+                    "prov_pay_art",
                     {
                         "query": search_query,
                         "capa_normativa": "convenio_provincial",
-                        "provincia": provincia,
+                        "provincia": norm_p,
                         "tipo_contenido": "articulo",
-                        "top_k": max(top_k_per_layer + 2, 8),
+                        "top_k": 5,
                         "dense_query_vec": d_vec,
-                        "sparse_query_vec": s_vec,
+                        "sparse_query_vec": pay_sparse_vec,
                         "include_vectors": include_vectors,
                     },
                 )
             )
-            if pay_sparse_vec is not None:
-                query_specs.append(
-                    (
-                        "prov_pay_art",
-                        {
-                            "query": search_query,
-                            "capa_normativa": "convenio_provincial",
-                            "provincia": provincia,
-                            "tipo_contenido": "articulo",
-                            "top_k": 5,
-                            "dense_query_vec": d_vec,
-                            "sparse_query_vec": pay_sparse_vec,
-                            "include_vectors": include_vectors,
-                        },
-                    )
-                )
-            query_specs.append(
-                (
-                    "prov_tables",
-                    {
-                        "query": search_query,
-                        "capa_normativa": "convenio_provincial",
-                        "provincia": provincia,
-                        "tipo_contenido": "tabla_salarial",
-                        "top_k": max(top_k_per_layer * 4, 20),
-                        "dense_query_vec": d_vec,
-                        "sparse_query_vec": s_vec,
-                        "include_vectors": include_vectors,
-                    },
-                )
+        query_specs.append(
+            (
+                "prov_tables",
+                {
+                    "query": search_query,
+                    "capa_normativa": "convenio_provincial",
+                    "provincia": norm_p,
+                    "tipo_contenido": "tabla_salarial",
+                    "top_k": max(top_k_per_layer * 4, 20),
+                    "dense_query_vec": d_vec,
+                    "sparse_query_vec": s_vec,
+                    "include_vectors": include_vectors,
+                },
             )
-            query_specs.append(
-                (
-                    "prov_anexo",
-                    {
-                        "query": query,
-                        "capa_normativa": "convenio_provincial",
-                        "provincia": provincia,
-                        "tipo_contenido": "anexo_o_disposicion",
-                        "top_k": 2,
-                        "dense_query_vec": d_vec,
-                        "sparse_query_vec": s_vec,
-                        "include_vectors": include_vectors,
-                    },
-                )
+        )
+        query_specs.append(
+            (
+                "prov_anexo",
+                {
+                    "query": query,
+                    "capa_normativa": "convenio_provincial",
+                    "provincia": norm_p,
+                    "tipo_contenido": "anexo_o_disposicion",
+                    "top_k": 2,
+                    "dense_query_vec": d_vec,
+                    "sparse_query_vec": s_vec,
+                    "include_vectors": include_vectors,
+                },
             )
+        )
 
-        if self.is_cloud and len(query_specs) > 1:
-            with ThreadPoolExecutor(max_workers=len(query_specs)) as pool:
-                futures = {key: pool.submit(self.hybrid_search, **kw) for key, kw in query_specs}
-                layer_results = {key: fut.result() for key, fut in futures.items()}
-        else:
-            layer_results = {key: self.hybrid_search(**kw) for key, kw in query_specs}
+        layer_results = self._run_query_specs(query_specs)
 
-        # Capa 1: Estatuto de los Trabajadores (Mínimo legal estatal)
-        _append_unique(layer_results["et"])
-
-        # Capa 2: VI Acuerdo Laboral Estatal de Hostelería (ALEH)
-        _append_unique(layer_results["aleh"])
-
-        # Capa 3: Convenio Colectivo Provincial / Autonómico estratificado (articulado + tablas salariales + disposiciones)
-        if provincia:
-            _append_unique(layer_results["prov_art"])
-            if "prov_pay_art" in layer_results:
-                _append_unique(layer_results["prov_pay_art"])
-            raw_tables = layer_results["prov_tables"]
-            # Si es un convenio multiprovincial (ej. Cataluña: barcelona, girona, tarragona, lleida),
-            # descartamos tablas salariales exclusivas de otra provincia hermana.
-            norm_p = provincia.lower().strip()
-            sibling_provs = {"barcelona", "girona", "tarragona", "lleida"}
-            other_siblings = sibling_provs - {norm_p} if norm_p in sibling_provs else set()
-            filtered_tables = [
-                t
-                for t in raw_tables
-                if not any(
-                    sib in f"{t.titulo_o_capitulo} {t.articulo}".lower()
-                    for sib in other_siblings
-                )
-                and (
-                    norm_p != "girona"
-                    or "a) barcelona" not in f"{t.titulo_o_capitulo} {t.articulo}".lower()
-                )
-            ]
-            # Prioridad Temporal General: si el usuario NO pide un año concreto, priorizamos las tablas con el año vigente más reciente
-            # manteniendo intacto su orden de relevancia híbrida (Dense + BM25) dentro de ese año.
-            euro_tables = [t for t in filtered_tables if "€" in t.text or "euros" in t.text.lower()]
-            level_tables = [t for t in filtered_tables if t not in euro_tables]
-            if not explicit_years and euro_tables:
-                max_avail_year = max((self._extract_chunk_year(t) for t in euro_tables), default=0)
-                if max_avail_year > 0:
-                    latest_euro = [t for t in euro_tables if self._extract_chunk_year(t) == max_avail_year]
-                    older_euro = [t for t in euro_tables if t not in latest_euro]
-                    euro_tables = latest_euro + older_euro
-
-            top_level_candidates: list[RetrievedDocument] = []
-            seen_level_sections: set[str] = set()
-            cls_levels = sorted(
-                (t for t in level_tables if _is_classification_level_table(t)),
-                key=lambda t: not _matches_role_stem(t),
+        raw_tables = layer_results["prov_tables"]
+        sibling_provs = {"barcelona", "girona", "tarragona", "lleida"}
+        other_siblings = sibling_provs - {norm_p} if norm_p in sibling_provs else set()
+        filtered_tables = [
+            t
+            for t in raw_tables
+            if not any(
+                sib in f"{t.titulo_o_capitulo} {t.articulo}".lower()
+                for sib in other_siblings
             )
-            for item in cls_levels:
-                sec_key = item.titulo_o_capitulo.strip()
-                if sec_key not in seen_level_sections:
-                    top_level_candidates.append(item)
-                    seen_level_sections.add(sec_key)
-                    if len(top_level_candidates) >= 4:
-                        break
-            for item in cls_levels + level_tables:
+            and (
+                norm_p != "girona"
+                or "a) barcelona" not in f"{t.titulo_o_capitulo} {t.articulo}".lower()
+            )
+        ]
+
+        euro_tables = [t for t in filtered_tables if "€" in t.text or "euros" in t.text.lower()]
+        level_tables = [t for t in filtered_tables if t not in euro_tables]
+        if not explicit_years and euro_tables:
+            max_avail_year = max((self._extract_chunk_year(t) for t in euro_tables), default=0)
+            if max_avail_year > 0:
+                latest_euro = [t for t in euro_tables if self._extract_chunk_year(t) == max_avail_year]
+                older_euro = [t for t in euro_tables if t not in latest_euro]
+                euro_tables = latest_euro + older_euro
+
+        top_level_candidates: list[RetrievedDocument] = []
+        seen_level_sections: set[str] = set()
+        cls_levels = sorted(
+            (t for t in level_tables if self._is_classification_level_table(t, include_seniority_tables)),
+            key=lambda t: not self._matches_role_stem(t, role_stems),
+        )
+        for item in cls_levels:
+            sec_key = item.titulo_o_capitulo.strip()
+            if sec_key not in seen_level_sections:
+                top_level_candidates.append(item)
+                seen_level_sections.add(sec_key)
                 if len(top_level_candidates) >= 4:
                     break
-                if item not in top_level_candidates:
-                    top_level_candidates.append(item)
+        for item in cls_levels + level_tables:
+            if len(top_level_candidates) >= 4:
+                break
+            if item not in top_level_candidates:
+                top_level_candidates.append(item)
 
-            balanced_tables: list[RetrievedDocument] = []
-            for seq in (euro_tables[:6], top_level_candidates, euro_tables[6:]):
-                for item in seq:
-                    if item not in balanced_tables:
-                        balanced_tables.append(item)
-            _append_unique((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
-            _append_unique(layer_results["prov_anexo"])
+        balanced_tables: list[RetrievedDocument] = []
+        for seq in (euro_tables[:6], top_level_candidates, euro_tables[6:]):
+            for item in seq:
+                if item not in balanced_tables:
+                    balanced_tables.append(item)
 
+        combined: list[RetrievedDocument] = []
+        combined.extend(layer_results["prov_art"])
+        if "prov_pay_art" in layer_results:
+            combined.extend(layer_results["prov_pay_art"])
+        combined.extend((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
+        combined.extend(layer_results["prov_anexo"])
+
+        deduped = self._deduplicate_docs(combined)
+        for doc in deduped:
+            doc.matched_territorio = norm_p
+        return deduped
+
+    def rerank_and_select_by_territory(
+        self,
+        candidates: list[RetrievedDocument],
+        query: str,
+        territorios: list[str],
+        final_top_k: int = RETRIEVAL_FINAL_TOP_K,
+        use_cohere_rerank: bool = True,
+        rerank_query: Optional[str] = None,
+        role_context: Optional[str] = None,
+    ) -> list[RetrievedDocument]:
+        """Ejecuta 1 sola llamada Cohere Rerank sobre candidatos deduplicados y aplica cuotas independientes por territorio."""
         if not candidates:
             return []
 
+        chunk_territories: dict[str, set[str]] = {}
+        unique_candidates: list[RetrievedDocument] = []
+        seen_ids: set[str] = set()
+        for doc in candidates:
+            if doc.matched_territorio:
+                chunk_territories.setdefault(doc.chunk_id, set()).add(doc.matched_territorio.lower().strip())
+            if doc.chunk_id not in seen_ids:
+                unique_candidates.append(doc)
+                seen_ids.add(doc.chunk_id)
+
         effective_rerank_query = (rerank_query or query).strip()
-        if will_use_cohere:
+        if self._will_use_cohere(use_cohere_rerank):
             try:
-                co_client = cohere.ClientV2(api_key=cohere_key)
+                co_client = cohere.ClientV2(api_key=os.getenv("COHERE_API_KEY", "").strip())
                 rerank_resp = co_client.rerank(
                     model=COHERE_RERANK_MODEL,
                     query=effective_rerank_query,
-                    documents=[c.text for c in candidates],
-                    top_n=len(candidates),
+                    documents=[c.text for c in unique_candidates],
+                    top_n=len(unique_candidates),
                 )
                 reranked_all: list[RetrievedDocument] = []
                 for item in rerank_resp.results:
-                    doc = candidates[item.index].model_copy()
+                    doc = unique_candidates[item.index].model_copy()
                     doc.rerank_score = float(item.relevance_score)
                     reranked_all.append(doc)
                 candidates = reranked_all
@@ -791,165 +907,286 @@ class AiHorecaVectorStore:
                     "Aviso: fallo o clave ausente en Cohere Rerank (%s). Usando ordenación RRF híbrida.",
                     exc,
                 )
-                candidates.sort(key=lambda d: d.rerank_score or 0.0, reverse=True)
+                candidates = sorted(unique_candidates, key=lambda d: d.rerank_score or 0.0, reverse=True)
         else:
-            # Respaldo matemático calibrado entre capas (0.75 * Cosine global + 0.25 * RRF local)
-            candidates.sort(key=lambda d: d.rerank_score or 0.0, reverse=True)
+            candidates = sorted(unique_candidates, key=lambda d: d.rerank_score or 0.0, reverse=True)
 
-        # Selección estratificada por capa normativa para evitar que el nombre de la provincia
-        # monopolice el Top-K y deje sin representación al Estatuto o al VI ALEH
-        if not provincia or len(candidates) <= final_top_k:
+        norm_territorios = list(dict.fromkeys(t.lower().strip() for t in territorios if t and t.strip()))
+        if not norm_territorios:
             return candidates[:final_top_k]
+
+        if len(norm_territorios) == 1:
+            total_budget = final_top_k
+            if len(candidates) <= total_budget:
+                return candidates[:total_budget]
+        else:
+            per_terr_quota = QUOTA_PROVINCIAL_ARTICLES + QUOTA_PROVINCIAL_TABLES
+            total_budget = min(
+                20,
+                max(
+                    final_top_k,
+                    len(norm_territorios) * per_terr_quota + QUOTA_ALEH_CHUNKS + QUOTA_ESTATUTO_CHUNKS,
+                ),
+            )
+
+        explicit_years = [2000 + int(m.group(1)) for m in re.finditer(r"\b2\.?0(2[3-9])\b", query)]
+        is_remuneration_query = self._is_remuneration_query(query)
+        include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
+        role_stems = self._build_role_stems(role_context)
+        area_pattern = self._extract_aleh_area_pattern(role_context)
 
         selected: list[RetrievedDocument] = []
         selected_ids: set[str] = set()
 
-        def _pick(predicate, limit: int) -> None:
+        def _pick(predicate, limit: int, pool: Optional[list[RetrievedDocument]] = None) -> None:
             count = 0
-            for doc in candidates:
-                if count >= limit or len(selected) >= final_top_k:
+            source_docs = pool if pool is not None else candidates
+            for doc in source_docs:
+                if count >= limit or len(selected) >= total_budget:
                     break
                 if doc.chunk_id not in selected_ids and predicate(doc):
                     selected.append(doc)
                     selected_ids.add(doc.chunk_id)
                     count += 1
 
-        # Cuotas mínimas garantizadas de contexto jerárquico (parametrizadas desde src/config.py)
-        prov_euro_tables = [
-            d
-            for d in candidates
-            if d.capa_normativa == "convenio_provincial"
-            and d.tipo_contenido == "tabla_salarial"
-            and ("€" in d.text or "euros" in d.text.lower())
-        ]
-        distinct_cls_sections = {
-            d.titulo_o_capitulo.strip() for d in candidates if _is_classification_level_table(d)
-        }
-        needs_dual_cls_tables = (
-            is_remuneration_query and bool(prov_euro_tables) and len(distinct_cls_sections) >= 2
-        )
-        effective_article_quota = (
-            max(1, QUOTA_PROVINCIAL_ARTICLES - 1) if needs_dual_cls_tables else QUOTA_PROVINCIAL_ARTICLES
-        )
+        def _belongs_to_territory(doc: RetrievedDocument, terr_key: str) -> bool:
+            if doc.capa_normativa != "convenio_provincial":
+                return False
+            tagged = chunk_territories.get(doc.chunk_id, set())
+            if tagged:
+                return terr_key in tagged
+            doc_t = (doc.territorio or "").lower().strip()
+            if doc_t == terr_key:
+                return True
+            return terr_key in {"barcelona", "girona", "tarragona", "lleida"} and doc_t == "catalunya"
 
-        if is_remuneration_query:
-            # 1) Garantizar artículo de Gratificaciones Extraordinarias / Pagas Extras del convenio
-            _pick(
-                lambda d: d.capa_normativa == "convenio_provincial"
-                and d.tipo_contenido == "articulo"
-                and bool(re.search(r"(?i)gratificaciones\s+extraordinarias|pagas\s+extraordinarias", f"{d.articulo} {d.text}")),
-                1,
+        def _select_for_territory(terr_key: str) -> None:
+            terr_cands = [d for d in candidates if _belongs_to_territory(d, terr_key)]
+            if not terr_cands:
+                return
+
+            def _t_art_count() -> int:
+                return sum(
+                    1
+                    for s in selected
+                    if _belongs_to_territory(s, terr_key) and s.tipo_contenido == "articulo"
+                )
+
+            def _t_tbl_count() -> int:
+                return sum(
+                    1
+                    for s in selected
+                    if _belongs_to_territory(s, terr_key) and s.tipo_contenido == "tabla_salarial"
+                )
+
+            prov_euro_tables = [
+                d
+                for d in terr_cands
+                if d.tipo_contenido == "tabla_salarial"
+                and ("€" in d.text or "euros" in d.text.lower())
+            ]
+            distinct_cls_sections = {
+                d.titulo_o_capitulo.strip()
+                for d in terr_cands
+                if self._is_classification_level_table(d, include_seniority_tables)
+            }
+            needs_dual_cls_tables = (
+                is_remuneration_query and bool(prov_euro_tables) and len(distinct_cls_sections) >= 2
             )
-            # 2) Si la consulta pregunta además por un concepto específico (horas extras, nocturnidad, jornada, vacaciones),
-            # garantizar que su artículo regulador específico también tenga plaza asegurada antes de llenar el resto de la cuota
-            for specific_pat in (
-                r"(?i)horas\s+extra(?:ordinaria)?s?",
-                r"(?i)nocturnidad|horas\s+nocturnas",
-                r"(?i)vacaciones",
-                r"(?i)jornada\s+de\s+trabajo|tiempo\s+parcial",
-            ):
-                if re.search(specific_pat, f"{query} {effective_rerank_query}"):
-                    _pick(
-                        lambda d, pat=specific_pat: d.capa_normativa == "convenio_provincial"
-                        and d.tipo_contenido == "articulo"
-                        and bool(re.search(pat, f"{d.articulo} {d.text[:500]}")),
-                        1,
-                    )
-        _pick(
-            lambda d: d.capa_normativa == "convenio_provincial" and d.tipo_contenido == "articulo",
-            max(0, effective_article_quota - sum(1 for s in selected if s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "articulo")),
-        )
-        # En tablas salariales: si el usuario no pidió un año histórico específico, garantizamos primero la tabla en €
-        # del año vigente más reciente con mayor relevancia en Cohere Rerank / Hybrid Search, y después la tabla complementaria
-        max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
-        area_pattern = self._extract_aleh_area_pattern(role_context)
+            effective_article_quota = (
+                max(1, QUOTA_PROVINCIAL_ARTICLES - 1) if needs_dual_cls_tables else QUOTA_PROVINCIAL_ARTICLES
+            )
 
-        # Priorizar primero la tabla salarial en € del Área Funcional ALEH exacta (si el convenio segmenta tablas por áreas)
-        if area_pattern:
-            if not explicit_years and max_cand_year > 0:
+            if is_remuneration_query:
                 _pick(
-                    lambda d: d.capa_normativa == "convenio_provincial"
-                    and d.tipo_contenido == "tabla_salarial"
-                    and ("€" in d.text or "euros" in d.text.lower())
-                    and self._extract_chunk_year(d) == max_cand_year
-                    and self._doc_matches_area(d, area_pattern),
-                    1,
-                )
-            else:
-                _pick(
-                    lambda d: d.capa_normativa == "convenio_provincial"
-                    and d.tipo_contenido == "tabla_salarial"
-                    and ("€" in d.text or "euros" in d.text.lower())
-                    and self._doc_matches_area(d, area_pattern),
-                    1,
-                )
-
-        if not any(s.capa_normativa == "convenio_provincial" and s.tipo_contenido == "tabla_salarial" for s in selected):
-            if not explicit_years and max_cand_year > 0:
-                _pick(
-                    lambda d: d.capa_normativa == "convenio_provincial"
-                    and d.tipo_contenido == "tabla_salarial"
-                    and ("€" in d.text or "euros" in d.text.lower())
-                    and self._extract_chunk_year(d) == max_cand_year,
-                    1,
-                )
-            else:
-                _pick(
-                    lambda d: d.capa_normativa == "convenio_provincial"
-                    and d.tipo_contenido == "tabla_salarial"
-                    and ("€" in d.text or "euros" in d.text.lower()),
-                    1,
-                )
-
-        # Si el convenio separa tabla de niveles salariales/categorías (sin €) y tabla de importes (con €),
-        # aseguramos primero 1 tabla de clasificación sin € dentro de QUOTA_PROVINCIAL_TABLES y,
-        # si el convenio divide puesto->nivel y establecimiento->categoría en dos anexos distintos, garantizamos 1 tabla del segundo anexo
-        if sum(1 for s in selected if s.tipo_contenido == "tabla_salarial") < QUOTA_PROVINCIAL_TABLES:
-            _pick(lambda d: _is_classification_level_table(d) and _matches_role_stem(d), 1)
-            if not any(_is_classification_level_table(s) for s in selected):
-                _pick(_is_classification_level_table, 1)
-            if needs_dual_cls_tables:
-                selected_cls_sections = {
-                    s.titulo_o_capitulo.strip() for s in selected if _is_classification_level_table(s)
-                }
-                if selected_cls_sections:
-                    _pick(
-                        lambda d: _is_classification_level_table(d)
-                        and d.titulo_o_capitulo.strip() not in selected_cls_sections
-                        and _matches_role_stem(d),
-                        1,
-                    )
-                    if sum(1 for s in selected if _is_classification_level_table(s)) < 2:
-                        _pick(
-                            lambda d: _is_classification_level_table(d)
-                            and d.titulo_o_capitulo.strip() not in selected_cls_sections,
-                            1,
+                    lambda d: d.tipo_contenido == "articulo"
+                    and bool(
+                        re.search(
+                            r"(?i)gratificaciones\s+extraordinarias|pagas\s+extraordinarias",
+                            f"{d.articulo} {d.text}",
                         )
-            if not any(_is_classification_level_table(s) for s in selected):
-                _pick(
-                    lambda d: d.capa_normativa == "convenio_provincial"
-                    and d.tipo_contenido == "tabla_salarial"
-                    and not ("€" in d.text or "euros" in d.text.lower()),
-                    max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
+                    ),
+                    1,
+                    terr_cands,
                 )
-        if not explicit_years and max_cand_year > 0:
+                for specific_pat in (
+                    r"(?i)horas\s+extra(?:ordinaria)?s?",
+                    r"(?i)nocturnidad|horas\s+nocturnas",
+                    r"(?i)vacaciones",
+                    r"(?i)jornada\s+de\s+trabajo|tiempo\s+parcial",
+                ):
+                    if re.search(specific_pat, f"{query} {effective_rerank_query}"):
+                        _pick(
+                            lambda d, pat=specific_pat: d.tipo_contenido == "articulo"
+                            and bool(re.search(pat, f"{d.articulo} {d.text[:500]}")),
+                            1,
+                            terr_cands,
+                        )
+
             _pick(
-                lambda d: d.capa_normativa == "convenio_provincial"
-                and d.tipo_contenido == "tabla_salarial"
-                and self._extract_chunk_year(d) == max_cand_year,
-                max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
+                lambda d: d.tipo_contenido == "articulo",
+                max(0, effective_article_quota - _t_art_count()),
+                terr_cands,
             )
-        _pick(
-            lambda d: d.capa_normativa == "convenio_provincial" and d.tipo_contenido == "tabla_salarial",
-            max(0, QUOTA_PROVINCIAL_TABLES - sum(1 for s in selected if s.tipo_contenido == "tabla_salarial")),
-        )
+
+            max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
+            if area_pattern:
+                if not explicit_years and max_cand_year > 0:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._extract_chunk_year(d) == max_cand_year
+                        and self._doc_matches_area(d, area_pattern),
+                        1,
+                        terr_cands,
+                    )
+                else:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._doc_matches_area(d, area_pattern),
+                        1,
+                        terr_cands,
+                    )
+
+            if _t_tbl_count() == 0:
+                if not explicit_years and max_cand_year > 0:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._extract_chunk_year(d) == max_cand_year,
+                        1,
+                        terr_cands,
+                    )
+                else:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and ("€" in d.text or "euros" in d.text.lower()),
+                        1,
+                        terr_cands,
+                    )
+
+            if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES:
+                _pick(
+                    lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                    and self._matches_role_stem(d, role_stems),
+                    1,
+                    terr_cands,
+                )
+                if not any(
+                    _belongs_to_territory(s, terr_key)
+                    and self._is_classification_level_table(s, include_seniority_tables)
+                    for s in selected
+                ):
+                    _pick(
+                        lambda d: self._is_classification_level_table(d, include_seniority_tables),
+                        1,
+                        terr_cands,
+                    )
+                if needs_dual_cls_tables:
+                    selected_cls_sections = {
+                        s.titulo_o_capitulo.strip()
+                        for s in selected
+                        if _belongs_to_territory(s, terr_key)
+                        and self._is_classification_level_table(s, include_seniority_tables)
+                    }
+                    if selected_cls_sections:
+                        _pick(
+                            lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                            and d.titulo_o_capitulo.strip() not in selected_cls_sections
+                            and self._matches_role_stem(d, role_stems),
+                            1,
+                            terr_cands,
+                        )
+                        cls_count = sum(
+                            1
+                            for s in selected
+                            if _belongs_to_territory(s, terr_key)
+                            and self._is_classification_level_table(s, include_seniority_tables)
+                        )
+                        if cls_count < 2:
+                            _pick(
+                                lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                                and d.titulo_o_capitulo.strip() not in selected_cls_sections,
+                                1,
+                                terr_cands,
+                            )
+                if not any(
+                    _belongs_to_territory(s, terr_key)
+                    and self._is_classification_level_table(s, include_seniority_tables)
+                    for s in selected
+                ):
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and not ("€" in d.text or "euros" in d.text.lower()),
+                        max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+                        terr_cands,
+                    )
+
+            if not explicit_years and max_cand_year > 0:
+                _pick(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._extract_chunk_year(d) == max_cand_year,
+                    max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+                    terr_cands,
+                )
+            _pick(
+                lambda d: d.tipo_contenido == "tabla_salarial",
+                max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+                terr_cands,
+            )
+
+        for terr_key in norm_territorios:
+            _select_for_territory(terr_key)
+
         _pick(lambda d: d.capa_normativa == "aleh_estatal", QUOTA_ALEH_CHUNKS)
         _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", QUOTA_ESTATUTO_CHUNKS)
-        # Rellenar huecos restantes hasta final_top_k con los mejores candidatos globales
-        _pick(lambda _d: True, max(0, final_top_k - len(selected)))
+        _pick(lambda _d: True, max(0, total_budget - len(selected)))
 
         selected.sort(key=lambda d: d.rerank_score or 0.0, reverse=True)
         return selected
+
+    def parallel_hierarchical_retrieve(
+        self,
+        query: str,
+        provincia: Optional[str] = None,
+        top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
+        final_top_k: int = RETRIEVAL_FINAL_TOP_K,
+        use_cohere_rerank: bool = True,
+        rerank_query: Optional[str] = None,
+        role_context: Optional[str] = None,
+    ) -> list[RetrievedDocument]:
+        """Recupera en paralelo de las 3 capas normativas (ET + ALEH + Convenios por territorio) y reordena con Cohere."""
+        territorios = (
+            [t.strip(" _").lower() for t in re.split(r"[,/|]|\s+y\s+", provincia) if t.strip(" _")]
+            if provincia
+            else []
+        )
+        candidates = self.retrieve_state_layer_candidates(
+            query=query,
+            top_k_per_layer=top_k_per_layer,
+            use_cohere_rerank=use_cohere_rerank,
+            role_context=role_context,
+        )
+        for terr in territorios:
+            candidates.extend(
+                self.retrieve_territory_candidates(
+                    query=query,
+                    provincia=terr,
+                    top_k_per_layer=top_k_per_layer,
+                    use_cohere_rerank=use_cohere_rerank,
+                    role_context=role_context,
+                )
+            )
+        return self.rerank_and_select_by_territory(
+            candidates=candidates,
+            query=query,
+            territorios=territorios,
+            final_top_k=final_top_k,
+            use_cohere_rerank=use_cohere_rerank,
+            rerank_query=rerank_query,
+            role_context=role_context,
+        )
 
 
 def build_and_index_corpus(

@@ -71,3 +71,7 @@ class RetrievedDocument(BaseModel):
     tipo_contenido: ContentType
     source_file: str
     text: str
+    matched_territorio: Optional[str] = Field(
+        default=None,
+        description="Territorio canónico de la rama de búsqueda que recuperó el fragmento.",
+    )

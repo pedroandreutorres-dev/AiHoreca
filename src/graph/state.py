@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, TypedDict
+import operator
+from typing import Annotated, Any, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -84,15 +85,14 @@ class QueryAnalysisSchema(BaseModel):
     motivo_clasificacion: str = Field(
         description="Justificación técnica breve de la decisión de enrutamiento, resolución de correferencia y dominio."
     )
-    provincia_detectada_en_turno_actual: Optional[str] = Field(
-        default=None,
+    provincias_detectadas_en_turno_actual: list[str] = Field(
         description=(
-            "Provincia o comunidad autónoma española donde se ubica físicamente el centro de trabajo mencionado en el MENSAJE ACTUAL, "
-            "normalizada en minúsculas y sin tildes. "
-            "Si el usuario menciona un municipio, localidad o comarca (incluso con errores tipográficos), resuelve y devuelve su provincia administrativa oficial. "
-            "REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN: Distingue siempre el lugar geográfico real donde radica el centro de trabajo frente a topónimos "
+            "Lista de provincias o comunidades autónomas españolas donde se ubican físicamente el/los centro(s) de trabajo mencionados en el MENSAJE ACTUAL, "
+            "normalizadas en minúsculas y sin tildes (ej. ['madrid'], ['madrid', 'leon'] en consultas comparativas entre dos lugares, o [] si el mensaje actual no menciona ubicación). "
+            "Si el usuario menciona uno o varios municipios, localidades o comarcas (incluso con errores tipográficos), resuelve y devuelve TODAS sus provincias administrativas oficiales en esta lista. "
+            "REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN: Distingue siempre el lugar geográfico real donde radica cada centro de trabajo frente a topónimos "
             "que formen parte de la denominación comercial del negocio, marca o dirección postal. "
-            "Si existe ambigüedad sobre cuál es la ubicación geográfica real o si el mensaje actual no menciona ubicación, devuelve null."
+            "Si existe ambigüedad sobre la ubicación geográfica real o si el mensaje actual no menciona ubicación, devuelve []."
         ),
     )
     cambio_de_puesto_en_turno_actual: bool = Field(
@@ -257,6 +257,7 @@ class LegalGraphState(TypedDict, total=False):
     motivo_clasificacion: str
     provincia_detectada: Optional[str]
     territorio_normalizado: Optional[str]
+    territorios_normalizados: list[str]
     requiere_convenio_provincial: bool
     requiere_puesto_o_categoria: bool
     datos_completos: bool
@@ -266,7 +267,14 @@ class LegalGraphState(TypedDict, total=False):
     area_funcional_aleh: Optional[str]
     query_busqueda_hibrida: str
 
-    # Resultado de Nodo 3 (Recuperación Híbrida Paralela 3-Capas + Cohere Rerank)
+    # Fan-Out / Fan-In con Send() + Nodo de Verificación / Expansión (Bloque B)
+    branch_docs: Annotated[list[RetrievedDocument], operator.add]
+    branch_timings: Annotated[list[tuple[str, float]], operator.add]
+    retrieval_hop: int
+    missing_cross_refs: list[dict[str, str]]
+    needs_retrieval_expansion: bool
+
+    # Resultado de Nodo 3 + Verificación (Recuperación Híbrida Paralela 3-Capas + Cohere Rerank)
     retrieved_docs: list[RetrievedDocument]
 
     # Resultado de Nodo 4 + 5 (Síntesis Jurídica + Guardrail de Salida con autocorrección)

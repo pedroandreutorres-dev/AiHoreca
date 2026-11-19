@@ -56,22 +56,22 @@ START ──► analyze_and_route
 
 ---
 
-## Bloque B — Grafo Multi-Territorio (`Send`) y Recuperación de 2º Salto (Siguiente)
+## Bloque B — Grafo Multi-Territorio (`Send`) y Recuperación de 2º Salto (Completado)
 
-- [ ] **B1. Tipado `list[str]` + Fan-Out / Fan-In con `Send()` de LangGraph para comparativas**
+- [x] **B1. Tipado `list[str]` + Fan-Out / Fan-In con `Send()` de LangGraph para comparativas**
   - **Archivos:** `src/graph/state.py`, `src/graph/nodes.py`, `src/graph/workflow.py`, `src/retrieval/vector_store.py` (`_build_filter`, `parallel_hierarchical_retrieve`)
   - **Problema:** `territorio_normalizado` es `Optional[str]` (ej. `"madrid,_leon"` en `GD_14`) y `MatchAny` comparte un único `QUOTA_PROVINCIAL_TABLES = 2` entre todas las provincias comparadas, permitiendo que una provincia acapare las tablas de la otra (más crítico cuando un convenio necesita 3 tablas como Baleares).
   - **Cambio:** Añadir `territorios_normalizados: list[str]` (manteniendo compatibilidad con evaluación/memoria) y usar `Send()` para ejecutar en paralelo una rama `retrieve_territory` independiente por cada territorio (con sus propias cuotas completas) + `retrieve_state_layers` compartida (`ET` + `ALEH`), reduciendo con `Annotated[list[RetrievedDocument], operator.add]` y deduplicación por `chunk_id`.
-- [ ] **B2. Nodo `verify_retrieval` + salto condicional `expand_retrieval` (máx. 1 salto)**
+- [x] **B2. Nodo `verify_retrieval` + salto condicional `expand_retrieval` (máx. 1 salto)**
   - **Archivos:** `src/graph/state.py`, `src/graph/nodes.py`, `src/graph/workflow.py`, `src/retrieval/vector_store.py`
   - **Problema:** El grafo pasa directo de retrieval a síntesis aunque un artículo cite expresamente otro artículo/disposición/anexo ausente en `retrieved_docs` (ej. remisión de nocturnidad a `Disposición adicional décima` o de `Art. 24º` a anexos) o cuando la relevancia máxima de Cohere sea baja.
   - **Cambio:** Nodo determinista en CPU que inspecciona remisiones internas explícitas en los primeros fragmentos provinciales; solo si falta una referencia citada y `retrieval_hop < 1`, dispara `expand_retrieval` para traerla sin añadir latencia ni tokens cuando el contexto ya es suficiente.
-- [ ] **Verificación Bloque B:**
+- [x] **Verificación Bloque B:**
   - `python -m src.evaluation.regression --force` (`22/22` pass, verificando especialmente `GD_14_COMPARATIVA_MADRID_LEON` y casos multi-anexo).
 
 ---
 
-## Bloque C — Streaming en Interfaz y Optimización I/O de Memoria
+## Bloque C — Streaming en Interfaz y Optimización I/O de Memoria (Siguiente)
 
 - [ ] **C1. Streaming de progreso nodo a nodo en la interfaz (`graph.stream`)**
   - **Archivos:** `src/graph/workflow.py`, `src/app/` (UI Streamlit)

@@ -356,7 +356,7 @@ class AiHorecaGraphNodes:
             "con los datos conocidos de la sesión y el nuevo dato aportado en `consulta_autocontenida_resuelta`.\n"
             "   - CASO B (Repregunta, seguimiento o cambio de ámbito en conversación activa): Si `pending_clarification_query` es null y el usuario plantea una repregunta, "
             "seguimiento o cambio de ámbito geográfico, el `MENSAJE ACTUAL` prevalece sobre los slots previos. Si el usuario menciona una nueva provincia o solicita comparar "
-            "varias provincias (ej. '¿y en Madrid?', 'compara con Barcelona'), identifica y devuelve las provincias del turno actual en `provincia_detectada_en_turno_actual` "
+            "varias provincias (ej. '¿y en Madrid?', 'compara con Barcelona', 'compara Madrid y León'), identifica y devuelve TODAS las provincias del turno actual en la lista `provincias_detectadas_en_turno_actual` "
             "para actualizar el ámbito de la sesión, heredando de los slots activos únicamente los datos no modificados (puesto, jornada, etc.). "
             "NUNCA arrastres ni vuelvas a incluir preguntas que ya fueron respondidas en turnos anteriores.\n\n"
             "2. GUARDRAIL DE DOMINIO:\n"
@@ -366,9 +366,9 @@ class AiHorecaGraphNodes:
             f"NO incluida en los territorios indexados actuales ({indexed_list_str}).\n"
             "   - Clasifica como 'HOSPITALITY_CORE' si es una consulta laboral aplicable al sector de hostelería/turismo/catering/reparto de comida (incluyendo respuestas breves que aportan un puesto o una provincia cuando había una consulta pendiente).\n\n"
             "3. GATEKEEPER CONTEXTUAL GENERALISTA (PROVINCIA Y PUESTO/CATEGORÍA):\n"
-            "   - `provincia_detectada_en_turno_actual`: Identifica por contexto semántico la **provincia española donde se ubica físicamente el centro de trabajo** mencionado en el `MENSAJE ACTUAL`, en minúsculas y sin tildes.\n"
-            "     * Si el usuario menciona un municipio, localidad o comarca (incluso con errores tipográficos), resuelve y devuelve su provincia administrativa oficial.\n"
-            "     * **REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de negocios, marcas, cadenas o calles que contengan topónimos. Si existe ambigüedad sobre cuál es la ubicación geográfica real o si no se menciona ubicación en este turno, devuelve null.\n"
+            "   - `provincias_detectadas_en_turno_actual`: Identifica por contexto semántico TODAS las **provincias españolas donde se ubican físicamente el/los centro(s) de trabajo** mencionados en el `MENSAJE ACTUAL`, como lista en minúsculas y sin tildes (ej. `['madrid']`, o `['madrid', 'leon']` en comparativas).\n"
+            "     * Si el usuario menciona uno o varios municipios, localidades o comarcas (incluso con errores tipográficos), resuelve y devuelve TODAS sus provincias administrativas oficiales dentro de la lista.\n"
+            "     * **REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de negocios, marcas, cadenas o calles que contengan topónimos. Si existe ambigüedad sobre la ubicación geográfica real o si no se menciona ubicación en este turno, devuelve `[]`.\n"
             "   - `requiere_convenio_provincial`: Marca `True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
             "nocturnidad, horas extra, vacaciones, jornada anual, descansos, licencias/permisos retribuidos, bajas médicas (complemento IT), "
             "categorías/clases de establecimientos del convenio o régimen concreto de un centro de trabajo. "
@@ -408,30 +408,42 @@ class AiHorecaGraphNodes:
             temperature=0.0,
         )
 
-        # 1. Resolución de Provincia con Precedencia Temporal Estricta (100% decidida por el análisis semántico del LLM):
-        #    Prioridad 1: Provincia detectada semánticamente en el mensaje actual.
-        #    Prioridad 2: Slot `active_territorio` heredado de la sesión (solo si no hubo mención en el turno actual).
-        current_turn_prov = _canonicalize_llm_province(analysis.provincia_detectada_en_turno_actual)
-        raw_prov = current_turn_prov if current_turn_prov is not None else slots.active_territorio
+        # 1. Resolución de Provincias (list[str]) con Precedencia Temporal Estricta (Turno Actual > Slots):
+        def _parse_prov_items(raw_items: list[str]) -> list[str]:
+            out_provs: list[str] = []
+            seen_p: set[str] = set()
+            for item in raw_items:
+                for tok in re.split(r"[,/|]|\s+y\s+", str(item or "")):
+                    canon = _canonicalize_llm_province(tok.strip(" _"))
+                    if canon and canon not in seen_p:
+                        seen_p.add(canon)
+                        out_provs.append(canon)
+            return out_provs
+
+        current_turn_provs = _parse_prov_items(list(analysis.provincias_detectadas_en_turno_actual or []))
+        candidate_provs = (
+            current_turn_provs
+            if current_turn_provs
+            else _parse_prov_items([slots.active_territorio] if slots.active_territorio else [])
+        )
+        raw_prov: Optional[str] = (
+            None
+            if not candidate_provs
+            else (candidate_provs[0] if len(candidate_provs) == 1 else ",_".join(candidate_provs))
+        )
 
         intent = analysis.intent
         territorio_norm: Optional[str] = None
+        territorios_norm_list: list[str] = []
 
-        if intent != "OUT_OF_SCOPE":
-            if raw_prov:
-                if raw_prov in self.indexed_territories:
-                    intent = "HOSPITALITY_CORE"
-                    territorio_norm = raw_prov
-                else:
-                    # Comprobar si es una consulta multi-provincia donde todas las mencionadas están indexadas
-                    raw_tokens = [t.strip() for t in re.split(r"[,/|]|\s+y\s+", raw_prov.replace("_", " ")) if t.strip()]
-                    canonical_tokens = [_canonicalize_llm_province(tok) for tok in raw_tokens if tok.strip()]
-                    if canonical_tokens and all(c in self.indexed_territories for c in canonical_tokens):
-                        intent = "HOSPITALITY_CORE"
-                        territorio_norm = raw_prov
-                    else:
-                        intent = "UNSUPPORTED_PROVINCE"
-                        territorio_norm = raw_prov
+        if intent != "OUT_OF_SCOPE" and candidate_provs:
+            if all(c in self.indexed_territories for c in candidate_provs):
+                intent = "HOSPITALITY_CORE"
+                territorio_norm = raw_prov
+                territorios_norm_list = candidate_provs
+            else:
+                intent = "UNSUPPORTED_PROVINCE"
+                territorio_norm = raw_prov
 
         # 2. Resolución de Categoría Profesional ALEH (Turno actual vs Herencia de Slots)
         if analysis.cambio_de_puesto_en_turno_actual or not slots.active_categoria_aleh:
@@ -483,6 +495,7 @@ class AiHorecaGraphNodes:
             "motivo_clasificacion": analysis.motivo_clasificacion,
             "provincia_detectada": raw_prov,
             "territorio_normalizado": territorio_norm,
+            "territorios_normalizados": territorios_norm_list,
             "requiere_convenio_provincial": analysis.requiere_convenio_provincial,
             "requiere_puesto_o_categoria": analysis.requiere_puesto_o_categoria,
             "datos_completos": datos_completos,
@@ -623,24 +636,383 @@ class AiHorecaGraphNodes:
             "node_timings_ms": timings,
         }
 
-    def parallel_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
-        """Nodo 3: Recuperación Híbrida Paralela en 3 Capas + Estratificación Provincial + Cohere Rerank."""
-        t0 = time.perf_counter()
+    @staticmethod
+    def _build_retrieval_queries(state: dict[str, Any]) -> tuple[str, str, Optional[str]]:
+        """Construye de forma uniforme la query enriquecida, query de rerank y contexto del puesto."""
         effective_query = state.get("effective_query") or state.get("query", "")
         enriched_query = state.get("query_busqueda_hibrida") or effective_query
-        provincia = state.get("territorio_normalizado")
         oficio = state.get("oficio_coloquial_detectado")
         cat_aleh = state.get("categoria_profesional_aleh")
         area_aleh = state.get("area_funcional_aleh")
 
         role_parts = [p for p in (oficio, cat_aleh, area_aleh) if p]
         role_context = " | ".join(role_parts) if role_parts else None
-
         rerank_query = (
             f"{effective_query} ({role_context})" if role_context else effective_query
         )
+        return enriched_query, rerank_query, role_context
 
-        # Recuperación jerárquica paralela estratificada (1 sola llamada API de embedding + BM25 CPU + Cohere Rerank)
+    def retrieve_state_layers_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Nodo B1 (Rama Send Estatal): recupera candidatos de Estatuto de los Trabajadores y VI ALEH."""
+        t0 = time.perf_counter()
+        enriched_query, _, role_context = self._build_retrieval_queries(state)
+        docs = self.vector_store.retrieve_state_layer_candidates(
+            query=enriched_query,
+            top_k_per_layer=RETRIEVAL_TOP_K_PER_LAYER,
+            use_cohere_rerank=True,
+            role_context=role_context,
+        )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return {
+            "branch_docs": docs,
+            "branch_timings": [("state_layers", elapsed_ms)],
+        }
+
+    def retrieve_territory_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Nodo B1 (Rama Send Territorial): recupera candidatos estratificados de un único convenio."""
+        t0 = time.perf_counter()
+        enriched_query, _, role_context = self._build_retrieval_queries(state)
+        target_terr = str(state.get("target_territorio") or "").strip().lower()
+        docs: list[RetrievedDocument] = []
+        if target_terr:
+            docs = self.vector_store.retrieve_territory_candidates(
+                query=enriched_query,
+                provincia=target_terr,
+                top_k_per_layer=RETRIEVAL_TOP_K_PER_LAYER,
+                use_cohere_rerank=True,
+                role_context=role_context,
+            )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return {
+            "branch_docs": docs,
+            "branch_timings": [(f"territory:{target_terr or 'none'}", elapsed_ms)],
+        }
+
+    @staticmethod
+    def _doc_matches_territory_key(doc: RetrievedDocument, terr_key: str) -> bool:
+        """Comprueba si un fragmento provincial pertenece al territorio solicitado (incluye autonomías multiprovinciales)."""
+        if doc.capa_normativa != "convenio_provincial":
+            return False
+        t_norm = terr_key.lower().strip()
+        if doc.matched_territorio and doc.matched_territorio.lower().strip() == t_norm:
+            return True
+        doc_t = (doc.territorio or "").lower().strip()
+        if doc_t == t_norm:
+            return True
+        return any(
+            doc_t == comm and t_norm in provs
+            for comm, provs in AUTONOMOUS_COMMUNITY_EXPANSION.items()
+        )
+
+    @staticmethod
+    def _canonicalize_legal_ref(ref_type: str, raw_match: str) -> str:
+        """Normaliza referencias cruzadas internas ('Art. 24º', 'Anexo II', 'Disposición adicional décima')."""
+        flat = re.sub(r"\s+", " ", _normalize_text(raw_match)).strip(" .,:;()")
+        if ref_type == "articulo":
+            m = re.search(r"art(?:iculo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?", flat)
+            if m:
+                suffix = f" {m.group(2)}" if m.group(2) else ""
+                return f"art {m.group(1)}{suffix}"
+        elif ref_type == "anexo":
+            m = re.search(r"anexo\s+([ivxlcdm]+|\d+|unico)\b", flat)
+            if m:
+                return f"anexo {m.group(1)}"
+        elif ref_type == "disposicion":
+            m = re.search(
+                r"disposicion\s+(adicional|transitoria|final)\s+([a-z0-9ºª]+)",
+                flat,
+            )
+            if m:
+                return f"disposicion {m.group(1)} {m.group(2)}"
+        return flat
+
+    @classmethod
+    def _doc_covers_cross_ref(cls, doc: RetrievedDocument, ref: dict[str, str]) -> bool:
+        """Comprueba determinísticamente si la cabecera o línea de título de un fragmento cubre la referencia buscada."""
+        body_clean = doc.text.split("\n\n", 1)[-1].lstrip()
+        first_line = body_clean.splitlines()[0][:140] if body_clean else ""
+        heading_line = (
+            first_line
+            if re.match(r"^(?:#+\s*|\*\*|_+)?(?:art|anexo|disposici[óo]n|tabla)", first_line, flags=re.IGNORECASE)
+            else ""
+        )
+        surface = _normalize_text(f"{doc.titulo_o_capitulo} | {doc.articulo} | {heading_line}")
+        ref_type = ref.get("ref_type", "")
+        ref_label = ref.get("ref_label", "")
+        if not ref_label:
+            return False
+
+        if ref_type == "articulo":
+            surface_art = re.sub(
+                r"\bart(?:iculo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?",
+                lambda m: f"art {m.group(1)}" + (f" {m.group(2)}" if m.group(2) else ""),
+                surface,
+            )
+            return bool(re.search(rf"(?<!\w){re.escape(ref_label)}(?!\w)", surface_art))
+
+        if ref_type == "anexo":
+            roman_arabic = {
+                "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+                "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10",
+            }
+            variants = {ref_label}
+            tok = ref_label.removeprefix("anexo ").strip()
+            if tok in roman_arabic:
+                variants.add(f"anexo {roman_arabic[tok]}")
+            for r_k, a_v in roman_arabic.items():
+                if tok == a_v:
+                    variants.add(f"anexo {r_k}")
+            return any(bool(re.search(rf"(?<!\w){re.escape(v)}(?!\w)", surface)) for v in variants)
+
+        return bool(re.search(rf"(?<!\w){re.escape(ref_label)}(?!\w)", surface))
+
+    @classmethod
+    def _extract_missing_cross_refs(
+        cls,
+        selected_docs: list[RetrievedDocument],
+        territorios: list[str],
+        enriched_query: str,
+        role_context: Optional[str],
+    ) -> list[dict[str, str]]:
+        """Detecta remisiones normativas internas ausentes o cobertura territorial baja tras Cohere Rerank."""
+        disp_re = re.compile(
+            r"(?i)disposici[oó]n\s+(?:adicional|transitoria|final)\s+"
+            r"(?:[uú]nica|primera|segunda|tercera|cuarta|quinta|sexta|s[eé]ptima|octava|novena|"
+            r"d[eé]cima|und[eé]cima|duod[eé]cima|decimotercera|decimocuarta|\d+[ªº]?)\b"
+        )
+        anexo_re = re.compile(r"(?i)\banexo\s+(?:[IVXLCDM]+|\d+|[uú]nico)\b")
+        remission_art_re = re.compile(
+            r"(?i)(?:previst[oa]s?|establecid[oa]s?|regulad[oa]s?|dispuest[oa]s?|indicad[oa]s?|"
+            r"recogid[oa]s?|remite(?:n)?|conforme|seg[úu]n(?:\s+lo\s+(?:previsto|dispuesto))?)"
+            r"\s+(?:en\s+(?:el|los)|al|a\s+lo\s+(?:dispuesto|previsto)\s+en\s+el)\s+"
+            r"(art(?:[íi]culo)?\.?\s*\d+(?:\.\d+)*\s*[ºª]?(?:\s+(?:bis|ter|quater))?\b)"
+        )
+        ext_suffix_re = re.compile(
+            r"(?i)^\s*(?:y\s+\d+\s*)?(?:de(?:l| la)?\s+)?(?:"
+            r"estatuto(?:\s+de\s+los\s+trabajadores)?|e\.?t\.?\b|aleh\b|vi\s+aleh|"
+            r"acuerdo\s+laboral\s+estatal|real\s+decreto|ley\b|c[óo]digo\b|"
+            r"constituc|seguridad\s+social|texto\s+refundido|r\.?d\.?\b|directiva|reglamento\s+ue)"
+        )
+        ext_prefix_re = re.compile(
+            r"(?i)\b(?:estatuto\s+de\s+los\s+trabajadores|vi\s+aleh|real\s+decreto)\b"
+        )
+
+        missing_refs: list[dict[str, str]] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+
+        for terr in territorios:
+            terr_docs = [d for d in selected_docs if cls._doc_matches_territory_key(d, terr)]
+            max_terr_score = max(((d.rerank_score or 0.0) for d in terr_docs), default=0.0)
+            if not terr_docs or max_terr_score < 0.20:
+                key = (terr, "low_coverage", enriched_query[:80])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    missing_refs.append(
+                        {
+                            "territorio": terr,
+                            "ref_type": "low_coverage",
+                            "ref_label": enriched_query[:120],
+                            "query_hint": f"{enriched_query} {role_context or ''}".strip(),
+                        }
+                    )
+                if len(missing_refs) >= 3:
+                    break
+                continue
+
+            textual_top = [
+                d
+                for d in terr_docs
+                if d.tipo_contenido in ("articulo", "anexo_o_disposicion")
+                and not any(
+                    tok in _normalize_text(d.articulo)
+                    for tok in ("preambulo", "encabezado", "indice")
+                )
+            ][:2]
+
+            per_terr_added = 0
+            for doc in textual_top:
+                if per_terr_added >= 2 or len(missing_refs) >= 3:
+                    break
+                body_flat = re.sub(r"\s+", " ", doc.text.split("\n\n", 1)[-1])
+
+                candidates_found: list[tuple[str, str, int, int]] = []
+                for m in disp_re.finditer(body_flat):
+                    candidates_found.append(("disposicion", m.group(0), m.start(), m.end()))
+                for m in anexo_re.finditer(body_flat):
+                    candidates_found.append(("anexo", m.group(0), m.start(), m.end()))
+                for m in remission_art_re.finditer(body_flat):
+                    candidates_found.append(("articulo", m.group(1), m.start(1), m.end(1)))
+
+                for ref_type, raw_match, start_pos, end_pos in candidates_found:
+                    if per_terr_added >= 2 or len(missing_refs) >= 3:
+                        break
+                    suffix = body_flat[end_pos : end_pos + 70]
+                    prefix = body_flat[max(0, start_pos - 35) : start_pos]
+                    if ext_suffix_re.search(suffix) or ext_prefix_re.search(prefix):
+                        continue
+                    norm_label = cls._canonicalize_legal_ref(ref_type, raw_match)
+                    if not norm_label:
+                        continue
+                    ref_item = {
+                        "territorio": terr,
+                        "ref_type": ref_type,
+                        "ref_label": norm_label,
+                        "raw_label": raw_match,
+                    }
+                    if any(cls._doc_covers_cross_ref(td, ref_item) for td in terr_docs):
+                        continue
+                    dedup_key = (terr, ref_type, norm_label)
+                    if dedup_key not in seen_keys:
+                        seen_keys.add(dedup_key)
+                        missing_refs.append(ref_item)
+                        per_terr_added += 1
+
+        return missing_refs[:3]
+
+    def verify_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
+        """Nodo B2 (Fan-In + Verificador CPU Determinista): reranquea ramas y detecta remisiones ausentes."""
+        t0 = time.perf_counter()
+        enriched_query, rerank_query, role_context = self._build_retrieval_queries(state)
+        territorios = list(state.get("territorios_normalizados") or [])
+        branch_docs = list(state.get("branch_docs") or [])
+        branch_timings = list(state.get("branch_timings") or [])
+
+        t_rerank0 = time.perf_counter()
+        if branch_docs:
+            selected_docs = self.vector_store.rerank_and_select_by_territory(
+                candidates=branch_docs,
+                query=enriched_query,
+                territorios=territorios,
+                final_top_k=RETRIEVAL_FINAL_TOP_K,
+                use_cohere_rerank=True,
+                rerank_query=rerank_query,
+                role_context=role_context,
+            )
+        else:
+            selected_docs = []
+        rerank_ms = (time.perf_counter() - t_rerank0) * 1000.0
+        max_branch_ms = max((float(ms) for _, ms in branch_timings), default=0.0)
+
+        t_verify0 = time.perf_counter()
+        hop = int(state.get("retrieval_hop") or 0)
+        if hop < 1 and territorios:
+            missing_refs = self._extract_missing_cross_refs(
+                selected_docs=selected_docs,
+                territorios=territorios,
+                enriched_query=enriched_query,
+                role_context=role_context,
+            )
+        else:
+            missing_refs = []
+        verify_ms = round((time.perf_counter() - t_verify0) * 1000.0, 2)
+
+        timings = dict(state.get("node_timings_ms") or {})
+        timings["parallel_retrieval"] = round(max_branch_ms + rerank_ms, 1)
+        timings["verify_retrieval"] = verify_ms
+        models_used = dict(state.get("models_used") or {})
+        models_used["parallel_retrieval"] = "gemini-embedding-001 + Qdrant/bm25 + rerank-multilingual-v3.0"
+        models_used["verify_retrieval"] = "deterministic-cpu-verifier"
+
+        return {
+            "retrieved_docs": selected_docs,
+            "missing_cross_refs": missing_refs,
+            "needs_retrieval_expansion": bool(missing_refs),
+            "node_timings_ms": timings,
+            "models_used": models_used,
+        }
+
+    def expand_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
+        """Nodo B2 (2º Salto Condicional Acotado): recupera remisiones normativas ausentes para ese territorio."""
+        t0 = time.perf_counter()
+        enriched_query, _, _ = self._build_retrieval_queries(state)
+        missing_refs = list(state.get("missing_cross_refs") or [])
+        current_docs: list[RetrievedDocument] = list(state.get("retrieved_docs") or [])
+        branch_docs: list[RetrievedDocument] = list(state.get("branch_docs") or [])
+
+        seen_ids = {d.chunk_id for d in current_docs}
+        added_docs: list[RetrievedDocument] = []
+
+        for ref in missing_refs:
+            if len(added_docs) >= 3:
+                break
+            terr = ref.get("territorio", "").strip().lower()
+            ref_type = ref.get("ref_type", "")
+            raw_or_label = ref.get("raw_label") or ref.get("ref_label", "")
+            if not terr:
+                continue
+
+            found_for_ref: list[RetrievedDocument] = []
+            # Paso A (0 ms): revisar primero si la rama paralela ya había traído el fragmento en branch_docs
+            for bdoc in branch_docs:
+                if bdoc.chunk_id in seen_ids or not self._doc_matches_territory_key(bdoc, terr):
+                    continue
+                if ref_type == "low_coverage" or self._doc_covers_cross_ref(bdoc, ref):
+                    item = bdoc.model_copy()
+                    item.matched_territorio = terr
+                    found_for_ref.append(item)
+                    if len(found_for_ref) >= 2:
+                        break
+
+            # Paso B: búsqueda dirigida en Qdrant solo si no estaba en los candidatos en memoria
+            if not found_for_ref:
+                target_query = (
+                    ref.get("query_hint") or enriched_query
+                    if ref_type == "low_coverage"
+                    else f"{raw_or_label} {terr} {enriched_query[:80]}".strip()
+                )
+                tipo_contenido = "articulo" if ref_type == "articulo" else None
+                hits = self.vector_store.hybrid_search(
+                    query=target_query,
+                    capa_normativa="convenio_provincial",
+                    provincia=terr,
+                    tipo_contenido=tipo_contenido,
+                    top_k=4,
+                    include_vectors=False,
+                )
+                for h in hits:
+                    if h.chunk_id in seen_ids:
+                        continue
+                    if ref_type != "low_coverage" and not self._doc_covers_cross_ref(h, ref):
+                        continue
+                    item = h.model_copy()
+                    item.matched_territorio = terr
+                    found_for_ref.append(item)
+                    if len(found_for_ref) >= 2:
+                        break
+
+            for doc_add in found_for_ref:
+                if doc_add.chunk_id not in seen_ids and len(added_docs) < 3:
+                    added_docs.append(doc_add)
+                    seen_ids.add(doc_add.chunk_id)
+
+        updated_docs = current_docs + added_docs
+        elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        timings = dict(state.get("node_timings_ms") or {})
+        timings["expand_retrieval"] = elapsed_ms
+        models_used = dict(state.get("models_used") or {})
+        models_used["expand_retrieval"] = "targeted-qdrant-hop"
+
+        if added_docs:
+            logger.info(
+                "Expansión B2 (hop 1): recuperados %d fragmentos complementarios para %s.",
+                len(added_docs),
+                [f"{r.get('territorio')}:{r.get('ref_label')}" for r in missing_refs],
+            )
+
+        return {
+            "retrieved_docs": updated_docs,
+            "retrieval_hop": int(state.get("retrieval_hop") or 0) + 1,
+            "needs_retrieval_expansion": False,
+            "node_timings_ms": timings,
+            "models_used": models_used,
+        }
+
+    def parallel_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
+        """Envoltorio retrocompatible: recupera en 3 capas normativas y consolida en una sola llamada."""
+        t0 = time.perf_counter()
+        enriched_query, rerank_query, role_context = self._build_retrieval_queries(state)
+        provincia = state.get("territorio_normalizado")
+
         docs = self.vector_store.parallel_hierarchical_retrieve(
             query=enriched_query,
             provincia=provincia,
