@@ -242,6 +242,105 @@ class AuditReport(BaseModel):
     warnings: list[str] = Field(default_factory=list, description="Advertencias de auditoría.")
 
 
+class StepUsageRecord(BaseModel):
+    """Telemetría exacta de consumo de tokens y llamadas API para un paso del turno (Bloque D)."""
+
+    step: str = Field(description="Identificador del paso o nodo (ej. analyze_and_route, synthesize_response, rerank_cohere).")
+    provider: str = Field(default="gemini_llm", description="Proveedor o subsistema (gemini_llm, gemini_embedding, cohere_rerank).")
+    model: str = Field(default="", description="Nombre exacto del modelo utilizado.")
+    status: str = Field(default="ok", description="Estado del paso: ok, cache_hit, failed_429, failed_503_504, failed_truncated, failed_other.")
+    input_tokens: int = Field(default=0, description="Tokens de entrada reportados por el servidor (prompt_token_count).")
+    output_tokens: int = Field(default=0, description="Tokens de salida reportados por el servidor (candidates_token_count).")
+    thoughts_tokens: int = Field(default=0, description="Tokens de razonamiento interno si el modelo los reporta (thoughts_token_count).")
+    cached_tokens: int = Field(default=0, description="Tokens servidos desde caché de contexto (cached_content_token_count).")
+    total_tokens: int = Field(default=0, description="Total de tokens reportado por el servidor (total_token_count).")
+    api_calls: int = Field(default=0, description="Número real de llamadas HTTP a la API (0 si es cache_hit).")
+    cache_hit: bool = Field(default=False, description="True si el vector/resultado provino de caché single-flight en memoria.")
+    chars: int = Field(default=0, description="Caracteres de entrada enviados (útil para embeddings sin token count).")
+    search_units: int = Field(default=0, description="Unidades de búsqueda reportadas por Cohere Rerank (billed_units.search_units).")
+    docs_reranked: int = Field(default=0, description="Cantidad de documentos reordenados en Cohere.")
+    latency_ms: float = Field(default=0.0, description="Latencia medida de la llamada en milisegundos.")
+    attempt: int = Field(default=1, description="Número de intento dentro del paso.")
+    error_detail: str = Field(default="", description="Detalle conciso en caso de failover o reintento.")
+
+
+class TurnUsageSummary(BaseModel):
+    """Resumen agregado de tokens y llamadas API de un turno completo."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    thoughts_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    embedding_calls: int = 0
+    embedding_cache_hits: int = 0
+    embedding_chars: int = 0
+    cohere_calls: int = 0
+    cohere_search_units: int = 0
+    cohere_docs_reranked: int = 0
+    llm_calls: int = 0
+    llm_failovers: int = 0
+    rate_limit_429_count: int = 0
+    server_503_504_count: int = 0
+    truncated_retries: int = 0
+    steps: list[StepUsageRecord] = Field(default_factory=list)
+
+
+def build_turn_usage_summary(state: dict[str, Any] | None) -> TurnUsageSummary:
+    """Agrega la lista `usage_events` de un estado de grafo en un `TurnUsageSummary` determinista."""
+    raw_events = (state or {}).get("usage_events") or []
+    steps: list[StepUsageRecord] = []
+    summary = TurnUsageSummary()
+
+    for raw in raw_events:
+        if isinstance(raw, StepUsageRecord):
+            rec = raw
+        elif isinstance(raw, dict):
+            try:
+                rec = StepUsageRecord.model_validate(raw)
+            except Exception:
+                continue
+        else:
+            continue
+
+        steps.append(rec)
+        summary.input_tokens += max(0, int(rec.input_tokens or 0))
+        summary.output_tokens += max(0, int(rec.output_tokens or 0))
+        summary.thoughts_tokens += max(0, int(rec.thoughts_tokens or 0))
+        summary.cached_tokens += max(0, int(rec.cached_tokens or 0))
+        ev_total = int(rec.total_tokens or 0)
+        if ev_total <= 0:
+            ev_total = (
+                max(0, int(rec.input_tokens or 0))
+                + max(0, int(rec.output_tokens or 0))
+                + max(0, int(rec.thoughts_tokens or 0))
+            )
+        summary.total_tokens += max(0, ev_total)
+
+        if rec.provider == "gemini_llm":
+            summary.llm_calls += max(0, int(rec.api_calls or 0))
+            if rec.status != "ok":
+                summary.llm_failovers += 1
+            if rec.status == "failed_429":
+                summary.rate_limit_429_count += 1
+            elif rec.status == "failed_503_504":
+                summary.server_503_504_count += 1
+            elif rec.status == "failed_truncated":
+                summary.truncated_retries += 1
+        elif rec.provider == "gemini_embedding":
+            summary.embedding_calls += max(0, int(rec.api_calls or 0))
+            if rec.cache_hit or rec.status == "cache_hit":
+                summary.embedding_cache_hits += 1
+            summary.embedding_chars += max(0, int(rec.chars or 0))
+        elif rec.provider == "cohere_rerank":
+            summary.cohere_calls += max(0, int(rec.api_calls or 0))
+            summary.cohere_search_units += max(0, int(rec.search_units or 0))
+            summary.cohere_docs_reranked += max(0, int(rec.docs_reranked or 0))
+
+    summary.steps = steps
+    return summary
+
+
 class LegalGraphState(TypedDict, total=False):
     """Estado tipado de la máquina de estados en LangGraph para AiHoreca (con soporte Multi-Sesión)."""
 
@@ -288,3 +387,5 @@ class LegalGraphState(TypedDict, total=False):
     final_response: str
     node_timings_ms: dict[str, float]
     models_used: dict[str, str]
+    # Telemetría acumulada de consumo de tokens y llamadas API (Bloque D, reducer operator.add)
+    usage_events: Annotated[list[dict[str, Any]], operator.add]

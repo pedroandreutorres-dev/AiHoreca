@@ -207,12 +207,41 @@ def _format_supported_territories_display(
     return inline, bullets
 
 
+def _extract_genai_usage(response: Any) -> dict[str, int]:
+    """Extrae contadores exactos de usage_metadata de una respuesta google-genai sin estimar ni calcular costes."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thoughts_tokens": 0,
+            "cached_tokens": 0,
+            "total_tokens": 0,
+        }
+    input_tok = int(getattr(meta, "prompt_token_count", 0) or 0)
+    output_tok = int(getattr(meta, "candidates_token_count", 0) or 0)
+    thoughts_tok = int(getattr(meta, "thoughts_token_count", 0) or 0)
+    cached_tok = int(getattr(meta, "cached_content_token_count", 0) or 0)
+    total_tok = int(getattr(meta, "total_token_count", 0) or 0)
+    if total_tok <= 0 and (input_tok or output_tok or thoughts_tok):
+        total_tok = input_tok + output_tok + thoughts_tok
+    return {
+        "input_tokens": input_tok,
+        "output_tokens": output_tok,
+        "thoughts_tokens": thoughts_tok,
+        "cached_tokens": cached_tok,
+        "total_tokens": total_tok,
+    }
+
+
 def _call_structured_llm(
     prompt: str,
     schema: Type[T],
     preferred_model: str,
     system_instruction: str,
     temperature: float = 0.0,
+    usage_out: Optional[list[dict[str, Any]]] = None,
+    step_name: str = "llm_call",
 ) -> tuple[T, str]:
     """Ejecuta una llamada estructurada (JSON Schema Pydantic) con failover multi-modelo y reintento acotado ante 503/504."""
     client = get_genai_client()
@@ -242,12 +271,22 @@ def _call_structured_llm(
 
     last_error: Optional[Exception] = None
     max_rounds = 1 + len(_TRANSIENT_RETRY_BACKOFFS)
+    attempt_idx = 0
 
     for round_idx in range(max_rounds):
         quota_failed_in_call: set[str] = set()
         transient_failed_in_call: set[str] = set()
 
         for model_name in round_models:
+            attempt_idx += 1
+            t_attempt = time.perf_counter()
+            attempt_usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thoughts_tokens": 0,
+                "cached_tokens": 0,
+                "total_tokens": 0,
+            }
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -259,6 +298,7 @@ def _call_structured_llm(
                         response_schema=schema,
                     ),
                 )
+                attempt_usage = _extract_genai_usage(response)
                 if response.parsed is not None and isinstance(response.parsed, schema):
                     parsed_obj = response.parsed
                 else:
@@ -272,15 +312,54 @@ def _call_structured_llm(
                         raise ValueError(
                             f"Generación truncada prematuramente en {model_name} (len={len(md_body)})."
                         )
+                elapsed_ms = round((time.perf_counter() - t_attempt) * 1000, 1)
+                if usage_out is not None:
+                    usage_out.append(
+                        {
+                            "step": step_name,
+                            "provider": "gemini_llm",
+                            "model": model_name,
+                            "status": "ok",
+                            "api_calls": 1,
+                            "latency_ms": elapsed_ms,
+                            "attempt": attempt_idx,
+                            **attempt_usage,
+                        }
+                    )
                 _MODEL_COOLDOWN_UNTIL.pop(model_name, None)
                 return parsed_obj, model_name
             except Exception as exc:
                 last_error = exc
                 err_str = str(exc)
+                elapsed_ms = round((time.perf_counter() - t_attempt) * 1000, 1)
                 is_quota_err = any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED"))
                 is_transient_err = any(
                     code in err_str for code in ("503", "504", "UNAVAILABLE", "DEADLINE_EXCEEDED")
                 )
+                is_truncated_err = "truncada prematuramente" in err_str.lower()
+                fail_status = (
+                    "failed_429"
+                    if is_quota_err
+                    else (
+                        "failed_503_504"
+                        if is_transient_err
+                        else ("failed_truncated" if is_truncated_err else "failed_other")
+                    )
+                )
+                if usage_out is not None:
+                    usage_out.append(
+                        {
+                            "step": step_name,
+                            "provider": "gemini_llm",
+                            "model": model_name,
+                            "status": fail_status,
+                            "api_calls": 1,
+                            "latency_ms": elapsed_ms,
+                            "attempt": attempt_idx,
+                            "error_detail": err_str[:160],
+                            **attempt_usage,
+                        }
+                    )
                 if is_quota_err:
                     _MODEL_QUOTA_COOLDOWN_UNTIL[model_name] = time.time() + _QUOTA_COOLDOWN_SECONDS
                     quota_failed_in_call.add(model_name)
@@ -400,12 +479,15 @@ class AiHorecaGraphNodes:
             f"TERRITORIOS SOPORTADOS EN ÍNDICE QDRANT: {indexed_list_str}"
         )
 
+        step_usage: list[dict[str, Any]] = []
         analysis, model_used = _call_structured_llm(
             prompt=prompt,
             schema=QueryAnalysisSchema,
             preferred_model=GEMINI_LITE_MODEL,
             system_instruction=system_instruction,
             temperature=0.0,
+            usage_out=step_usage,
+            step_name="analyze_and_route",
         )
 
         # 1. Resolución de Provincias (list[str]) con Precedencia Temporal Estricta (Turno Actual > Slots):
@@ -506,6 +588,7 @@ class AiHorecaGraphNodes:
             "query_busqueda_hibrida": analysis.query_busqueda_hibrida or effective_query,
             "node_timings_ms": timings,
             "models_used": models_used,
+            "usage_events": step_usage,
         }
 
     def block_out_of_scope_node(self, state: LegalGraphState) -> LegalGraphState:
@@ -656,16 +739,19 @@ class AiHorecaGraphNodes:
         """Nodo B1 (Rama Send Estatal): recupera candidatos de Estatuto de los Trabajadores y VI ALEH."""
         t0 = time.perf_counter()
         enriched_query, _, role_context = self._build_retrieval_queries(state)
+        step_usage: list[dict[str, Any]] = []
         docs = self.vector_store.retrieve_state_layer_candidates(
             query=enriched_query,
             top_k_per_layer=RETRIEVAL_TOP_K_PER_LAYER,
             use_cohere_rerank=True,
             role_context=role_context,
+            usage_out=step_usage,
         )
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return {
             "branch_docs": docs,
             "branch_timings": [("state_layers", elapsed_ms)],
+            "usage_events": step_usage,
         }
 
     def retrieve_territory_node(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -674,6 +760,7 @@ class AiHorecaGraphNodes:
         enriched_query, _, role_context = self._build_retrieval_queries(state)
         target_terr = str(state.get("target_territorio") or "").strip().lower()
         docs: list[RetrievedDocument] = []
+        step_usage: list[dict[str, Any]] = []
         if target_terr:
             docs = self.vector_store.retrieve_territory_candidates(
                 query=enriched_query,
@@ -681,11 +768,13 @@ class AiHorecaGraphNodes:
                 top_k_per_layer=RETRIEVAL_TOP_K_PER_LAYER,
                 use_cohere_rerank=True,
                 role_context=role_context,
+                usage_out=step_usage,
             )
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return {
             "branch_docs": docs,
             "branch_timings": [(f"territory:{target_terr or 'none'}", elapsed_ms)],
+            "usage_events": step_usage,
         }
 
     @staticmethod
@@ -878,6 +967,7 @@ class AiHorecaGraphNodes:
         branch_timings = list(state.get("branch_timings") or [])
 
         t_rerank0 = time.perf_counter()
+        step_usage: list[dict[str, Any]] = []
         if branch_docs:
             selected_docs = self.vector_store.rerank_and_select_by_territory(
                 candidates=branch_docs,
@@ -887,6 +977,7 @@ class AiHorecaGraphNodes:
                 use_cohere_rerank=True,
                 rerank_query=rerank_query,
                 role_context=role_context,
+                usage_out=step_usage,
             )
         else:
             selected_docs = []
@@ -919,6 +1010,7 @@ class AiHorecaGraphNodes:
             "needs_retrieval_expansion": bool(missing_refs),
             "node_timings_ms": timings,
             "models_used": models_used,
+            "usage_events": step_usage,
         }
 
     def expand_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
@@ -931,6 +1023,7 @@ class AiHorecaGraphNodes:
 
         seen_ids = {d.chunk_id for d in current_docs}
         added_docs: list[RetrievedDocument] = []
+        step_usage: list[dict[str, Any]] = []
 
         for ref in missing_refs:
             if len(added_docs) >= 3:
@@ -968,6 +1061,8 @@ class AiHorecaGraphNodes:
                     tipo_contenido=tipo_contenido,
                     top_k=4,
                     include_vectors=False,
+                    usage_out=step_usage,
+                    step_name=f"embed_expand_{terr}",
                 )
                 for h in hits:
                     if h.chunk_id in seen_ids:
@@ -1005,6 +1100,7 @@ class AiHorecaGraphNodes:
             "needs_retrieval_expansion": False,
             "node_timings_ms": timings,
             "models_used": models_used,
+            "usage_events": step_usage,
         }
 
     def parallel_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
@@ -1116,12 +1212,16 @@ class AiHorecaGraphNodes:
             f"{retry_correction_block}"
         )
 
+        step_usage: list[dict[str, Any]] = []
+        step_name = f"synthesize_retry_{retry_count}" if retry_count > 0 else "synthesize_response"
         synthesis, model_used = _call_structured_llm(
             prompt=prompt,
             schema=LegalSynthesisSchema,
             preferred_model=GEMINI_REASONING_MODEL,
             system_instruction=system_instruction,
             temperature=0.0,
+            usage_out=step_usage,
+            step_name=step_name,
         )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -1139,6 +1239,7 @@ class AiHorecaGraphNodes:
             "audit_needs_retry": False,
             "node_timings_ms": timings,
             "models_used": models_used,
+            "usage_events": step_usage,
         }
 
     def audit_output_node(self, state: LegalGraphState) -> LegalGraphState:

@@ -227,12 +227,12 @@ class AiHorecaVectorStore:
         cache: dict[str, Any],
         inflight: dict[str, threading.Event],
         compute_fn: Callable[[], Any],
-    ) -> Any:
+    ) -> tuple[Any, bool]:
         """Caché single-flight thread-safe para compartir embeddings entre ramas `Send()` concurrentes."""
         while True:
             with self._embed_lock:
                 if key in cache:
-                    return cache[key]
+                    return cache[key], True
                 wait_evt = inflight.get(key)
                 if wait_evt is None:
                     own_evt = threading.Event()
@@ -247,29 +247,56 @@ class AiHorecaVectorStore:
                     oldest_key = next(iter(cache))
                     cache.pop(oldest_key, None)
                 cache[key] = vec
-            return vec
+            return vec, False
         finally:
             with self._embed_lock:
                 inflight.pop(key, None)
                 own_evt.set()
 
-    def _get_query_dense_vec(self, query: str) -> list[float]:
+    def _get_query_dense_vec(
+        self,
+        query: str,
+        usage_out: Optional[list[dict[str, Any]]] = None,
+        step_name: str = "embed_query",
+    ) -> list[float]:
         """Obtiene o calcula el embedding denso de una consulta evitando llamadas duplicadas en paralelo."""
-        return self._singleflight_query_vector(
+        t0 = time.perf_counter()
+        vec, from_cache = self._singleflight_query_vector(
             key=query,
             cache=self._dense_query_cache,
             inflight=self._dense_inflight,
             compute_fn=lambda: self._embed_dense_batch([query], task_type="RETRIEVAL_QUERY")[0],
         )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if usage_out is not None:
+            usage_out.append(
+                {
+                    "step": step_name,
+                    "provider": "gemini_embedding",
+                    "model": EMBEDDING_MODEL,
+                    "status": "cache_hit" if from_cache else "ok",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "thoughts_tokens": 0,
+                    "cached_tokens": 0,
+                    "total_tokens": 0,
+                    "api_calls": 0 if from_cache else 1,
+                    "cache_hit": from_cache,
+                    "chars": len(query or ""),
+                    "latency_ms": elapsed_ms,
+                }
+            )
+        return vec
 
     def _get_query_sparse_vec(self, query: str) -> models.SparseVector:
         """Obtiene o calcula el vector BM25 disperso de una consulta con caché single-flight en CPU."""
-        return self._singleflight_query_vector(
+        vec, _ = self._singleflight_query_vector(
             key=query,
             cache=self._sparse_query_cache,
             inflight=self._sparse_inflight,
             compute_fn=lambda: self._embed_sparse_batch([query])[0],
         )
+        return vec
 
     def index_chunks(
         self,
@@ -456,12 +483,14 @@ class AiHorecaVectorStore:
         dense_query_vec: Optional[list[float]] = None,
         sparse_query_vec: Optional[models.SparseVector] = None,
         include_vectors: bool = True,
+        usage_out: Optional[list[dict[str, Any]]] = None,
+        step_name: str = "embed_hybrid_search",
     ) -> list[RetrievedDocument]:
         """Ejecuta búsqueda híbrida nativa en Qdrant (Prefetch Dense + Prefetch BM25 -> Fusión RRF)."""
         d_vec = (
             dense_query_vec
             if dense_query_vec is not None
-            else self._embed_dense_batch([query], task_type="RETRIEVAL_QUERY")[0]
+            else self._get_query_dense_vec(query, usage_out=usage_out, step_name=step_name)
         )
         s_vec = (
             sparse_query_vec
@@ -674,10 +703,15 @@ class AiHorecaVectorStore:
         top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
         use_cohere_rerank: bool = True,
         role_context: Optional[str] = None,
+        usage_out: Optional[list[dict[str, Any]]] = None,
     ) -> list[RetrievedDocument]:
         """Rama paralela B1: recupera candidatos de Estatuto de los Trabajadores y VI ALEH."""
         search_query = self._build_search_query(query, role_context)
-        d_vec = self._get_query_dense_vec(search_query)
+        d_vec = self._get_query_dense_vec(
+            search_query,
+            usage_out=usage_out,
+            step_name="embed_state_layers",
+        )
         s_vec = self._get_query_sparse_vec(search_query)
         include_vectors = not self._will_use_cohere(use_cohere_rerank)
 
@@ -715,11 +749,16 @@ class AiHorecaVectorStore:
         top_k_per_layer: int = RETRIEVAL_TOP_K_PER_LAYER,
         use_cohere_rerank: bool = True,
         role_context: Optional[str] = None,
+        usage_out: Optional[list[dict[str, Any]]] = None,
     ) -> list[RetrievedDocument]:
         """Rama paralela B1 por territorio: recupera articulado, tablas estratificadas y anexos de un único convenio."""
         norm_p = provincia.lower().strip()
         search_query = self._build_search_query(query, role_context)
-        d_vec = self._get_query_dense_vec(search_query)
+        d_vec = self._get_query_dense_vec(
+            search_query,
+            usage_out=usage_out,
+            step_name=f"embed_territory_{norm_p}",
+        )
         s_vec = self._get_query_sparse_vec(search_query)
         include_vectors = not self._will_use_cohere(use_cohere_rerank)
 
@@ -871,6 +910,7 @@ class AiHorecaVectorStore:
         use_cohere_rerank: bool = True,
         rerank_query: Optional[str] = None,
         role_context: Optional[str] = None,
+        usage_out: Optional[list[dict[str, Any]]] = None,
     ) -> list[RetrievedDocument]:
         """Ejecuta 1 sola llamada Cohere Rerank sobre candidatos deduplicados y aplica cuotas independientes por territorio."""
         if not candidates:
@@ -888,6 +928,7 @@ class AiHorecaVectorStore:
 
         effective_rerank_query = (rerank_query or query).strip()
         if self._will_use_cohere(use_cohere_rerank):
+            t_rerank = time.perf_counter()
             try:
                 co_client = cohere.ClientV2(api_key=os.getenv("COHERE_API_KEY", "").strip())
                 rerank_resp = co_client.rerank(
@@ -896,6 +937,23 @@ class AiHorecaVectorStore:
                     documents=[c.text for c in unique_candidates],
                     top_n=len(unique_candidates),
                 )
+                elapsed_rerank_ms = round((time.perf_counter() - t_rerank) * 1000, 1)
+                meta = getattr(rerank_resp, "meta", None)
+                billed = getattr(meta, "billed_units", None)
+                search_units = int(getattr(billed, "search_units", None) or 1)
+                if usage_out is not None:
+                    usage_out.append(
+                        {
+                            "step": "rerank_cohere",
+                            "provider": "cohere_rerank",
+                            "model": COHERE_RERANK_MODEL,
+                            "status": "ok",
+                            "api_calls": 1,
+                            "search_units": search_units,
+                            "docs_reranked": len(unique_candidates),
+                            "latency_ms": elapsed_rerank_ms,
+                        }
+                    )
                 reranked_all: list[RetrievedDocument] = []
                 for item in rerank_resp.results:
                     doc = unique_candidates[item.index].model_copy()
@@ -903,6 +961,21 @@ class AiHorecaVectorStore:
                     reranked_all.append(doc)
                 candidates = reranked_all
             except Exception as exc:
+                elapsed_rerank_ms = round((time.perf_counter() - t_rerank) * 1000, 1)
+                if usage_out is not None:
+                    usage_out.append(
+                        {
+                            "step": "rerank_cohere",
+                            "provider": "cohere_rerank",
+                            "model": COHERE_RERANK_MODEL,
+                            "status": "failed_other",
+                            "api_calls": 1,
+                            "search_units": 0,
+                            "docs_reranked": len(unique_candidates),
+                            "latency_ms": elapsed_rerank_ms,
+                            "error_detail": str(exc)[:180],
+                        }
+                    )
                 logger.warning(
                     "Aviso: fallo o clave ausente en Cohere Rerank (%s). Usando ordenación RRF híbrida.",
                     exc,

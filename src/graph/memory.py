@@ -27,7 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config import CONVERSATIONS_TXT_PATH, LOGS_DIR, SESSIONS_DB_PATH, TURNS_CSV_PATH
-from src.graph.state import LegalGraphState, SessionContextSlots, SessionTurnRecord
+from src.graph.state import (
+    LegalGraphState,
+    SessionContextSlots,
+    SessionTurnRecord,
+    build_turn_usage_summary,
+)
 
 
 class SessionMemoryStore:
@@ -92,6 +97,7 @@ class SessionMemoryStore:
                     audit_json TEXT NOT NULL,
                     timings_json TEXT NOT NULL,
                     models_json TEXT NOT NULL DEFAULT '{}',
+                    usage_json TEXT NOT NULL DEFAULT '{}',
                     user_feedback TEXT NOT NULL DEFAULT 'SIN_VOTO',
                     feedback_at TEXT,
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
@@ -109,6 +115,7 @@ class SessionMemoryStore:
             migrations = [
                 ("oficio_detectado", "TEXT"),
                 ("models_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("usage_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ("user_feedback", "TEXT NOT NULL DEFAULT 'SIN_VOTO'"),
                 ("feedback_at", "TEXT"),
             ]
@@ -371,15 +378,23 @@ class SessionMemoryStore:
                 ),
             )
 
+            usage_summary = build_turn_usage_summary(state)
+            usage_payload = {
+                **usage_summary.model_dump(),
+                "retrieval_hop": int(state.get("retrieval_hop") or 0),
+                "audit_retry_count": int(state.get("audit_retry_count") or 0),
+                "territorios_normalizados": list(state.get("territorios_normalizados") or []),
+                "provincia_detectada": state.get("provincia_detectada"),
+            }
             conn.execute(
                 """
                 INSERT INTO session_turns (
                     session_id, turn_index, timestamp, user_query, effective_query,
                     intent, route_decision, territorio, oficio_detectado,
                     categoria_aleh, area_funcional_aleh, assistant_summary,
-                    final_response, audit_json, timings_json, models_json,
+                    final_response, audit_json, timings_json, models_json, usage_json,
                     user_feedback, feedback_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SIN_VOTO', NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SIN_VOTO', NULL)
                 """,
                 (
                     sid,
@@ -398,6 +413,7 @@ class SessionMemoryStore:
                     json.dumps(state.get("audit_report") or {}, ensure_ascii=False),
                     json.dumps(state.get("node_timings_ms") or {}, ensure_ascii=False),
                     json.dumps(state.get("models_used") or {}, ensure_ascii=False),
+                    json.dumps(usage_payload, ensure_ascii=False),
                 ),
             )
 
@@ -472,6 +488,7 @@ class SessionMemoryStore:
                        t.audit_json,
                        t.timings_json,
                        t.models_json,
+                       t.usage_json,
                        t.user_feedback,
                        t.feedback_at
                 FROM session_turns t
@@ -528,6 +545,19 @@ class SessionMemoryStore:
             "total_latency_ms",
             "model_router",
             "model_synthesis",
+            "input_tokens",
+            "output_tokens",
+            "thoughts_tokens",
+            "cached_tokens",
+            "total_tokens",
+            "llm_calls",
+            "llm_failovers",
+            "embedding_calls",
+            "embedding_cache_hits",
+            "cohere_calls",
+            "cohere_search_units",
+            "retrieval_hop",
+            "audit_retry_count",
             "user_feedback",
             "feedback_at",
             "user_query",
@@ -542,6 +572,12 @@ class SessionMemoryStore:
                 audit_dict = json.loads(r["audit_json"] or "{}")
                 timings_dict = json.loads(r["timings_json"] or "{}")
                 models_dict = json.loads(r["models_json"] or "{}")
+                try:
+                    usage_dict = json.loads(r["usage_json"] or "{}")
+                except Exception:
+                    usage_dict = {}
+                if not isinstance(usage_dict, dict):
+                    usage_dict = {}
 
                 passed_int = 1 if audit_dict.get("passed", True) else 0
                 verified_cnt = len(audit_dict.get("verified_numbers") or []) + len(
@@ -566,6 +602,19 @@ class SessionMemoryStore:
                         total_ms,
                         models_dict.get("analyze_and_route", ""),
                         models_dict.get("synthesize_response") or models_dict.get("legal_synthesis_and_audit", ""),
+                        int(usage_dict.get("input_tokens") or 0),
+                        int(usage_dict.get("output_tokens") or 0),
+                        int(usage_dict.get("thoughts_tokens") or 0),
+                        int(usage_dict.get("cached_tokens") or 0),
+                        int(usage_dict.get("total_tokens") or 0),
+                        int(usage_dict.get("llm_calls") or 0),
+                        int(usage_dict.get("llm_failovers") or 0),
+                        int(usage_dict.get("embedding_calls") or 0),
+                        int(usage_dict.get("embedding_cache_hits") or 0),
+                        int(usage_dict.get("cohere_calls") or 0),
+                        int(usage_dict.get("cohere_search_units") or 0),
+                        int(usage_dict.get("retrieval_hop") or 0),
+                        int(usage_dict.get("audit_retry_count") or 0),
                         r["user_feedback"] or "SIN_VOTO",
                         r["feedback_at"] or "",
                         r["user_query"],

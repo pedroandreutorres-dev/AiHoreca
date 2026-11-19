@@ -146,6 +146,7 @@ def _prepare_initial_state(
         "audit_needs_retry": False,
         "node_timings_ms": {},
         "models_used": {},
+        "usage_events": [],
     }
     return store, sid, initial_state
 

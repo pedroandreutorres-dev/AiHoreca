@@ -248,6 +248,48 @@ def _render_turn_xray_panel(telemetry: TurnExecutionPayload) -> None:
                     st.code(doc.text, language="markdown")
 
         with tab_perf:
+            tu = telemetry.token_usage
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Tokens Totales", f"{tu.total_tokens:,}")
+            m2.metric("Entrada (Input)", f"{tu.input_tokens:,}")
+            m3.metric("Salida (Output)", f"{tu.output_tokens:,}")
+            m4.metric("Embeddings (Calls / Hit)", f"{tu.embedding_calls} / {tu.embedding_cache_hits}")
+            m5.metric("Cohere Search Units", f"{tu.cohere_search_units} ({tu.cohere_calls} calls)")
+
+            if tu.thoughts_tokens or tu.cached_tokens or tu.llm_failovers:
+                st.caption(
+                    f"Thoughts: `{tu.thoughts_tokens:,}` tok | "
+                    f"Context Cache: `{tu.cached_tokens:,}` tok | "
+                    f"Llamadas LLM: `{tu.llm_calls}` | "
+                    f"Failovers LLM: `{tu.llm_failovers}` "
+                    f"(429=`{tu.rate_limit_429_count}`, 503/504=`{tu.server_503_504_count}`, trunc=`{tu.truncated_retries}`)"
+                )
+
+            if tu.steps:
+                st.markdown("#### Consumo Paso a Paso por Nodo / Proveedor")
+                step_rows = []
+                for idx, step in enumerate(tu.steps, start=1):
+                    step_rows.append(
+                        {
+                            "#": idx,
+                            "Paso": step.step,
+                            "Proveedor": step.provider,
+                            "Modelo": step.model,
+                            "Estado": step.status,
+                            "Input Tok": step.input_tokens,
+                            "Output Tok": step.output_tokens,
+                            "Thoughts Tok": step.thoughts_tokens,
+                            "Total Tok": step.total_tokens,
+                            "API Calls": step.api_calls,
+                            "Cache Hit": step.cache_hit,
+                            "Chars": step.chars,
+                            "Cohere Units": step.search_units,
+                            "Docs": step.docs_reranked,
+                            "Latencia (ms)": step.latency_ms,
+                        }
+                    )
+                st.dataframe(step_rows, use_container_width=True, hide_index=True)
+
             st.markdown("#### Desglose de Latencia por Nodo (ms)")
             st.json(telemetry.node_timings_ms)
             st.markdown("#### Modelos Utilizados en cada Etapa")

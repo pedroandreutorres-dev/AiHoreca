@@ -35,7 +35,13 @@ from src.config import (
 from src.evaluation.evaluator import audit_corpus_and_index_stats
 from src.graph.memory import SessionMemoryStore
 from src.graph.nodes import _format_supported_territories_display, get_indexed_territories
-from src.graph.state import AuditReport, LegalCitation, SessionContextSlots
+from src.graph.state import (
+    AuditReport,
+    LegalCitation,
+    SessionContextSlots,
+    TurnUsageSummary,
+    build_turn_usage_summary,
+)
 from src.graph.workflow import build_aihoreca_graph, run_legal_query, stream_legal_query
 from src.retrieval.schemas import RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
@@ -83,6 +89,7 @@ class TurnExecutionPayload(BaseModel):
     node_timings_ms: dict[str, float] = Field(default_factory=dict)
     total_latency_ms: float = 0.0
     models_used: dict[str, str] = Field(default_factory=dict)
+    token_usage: TurnUsageSummary = Field(default_factory=TurnUsageSummary)
     final_response: str
 
 
@@ -291,6 +298,7 @@ class AiHorecaEngineService:
             node_timings_ms=timings,
             total_latency_ms=total_ms,
             models_used=state_out.get("models_used") or {},
+            token_usage=build_turn_usage_summary(state_out),
             final_response=state_out.get("final_response", ""),
         )
 

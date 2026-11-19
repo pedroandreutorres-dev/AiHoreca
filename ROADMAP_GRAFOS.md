@@ -83,3 +83,20 @@ START ──► analyze_and_route
   - **Cambio:** Pasar a escritura incremental por turno o diferir la regeneración completa al proceso batch diario (`audit_runner`).
 - [x] **Verificación Bloque C:**
   - Confirmar renderizado progresivo por nodos en Streamlit, integridad de `sessions/*.db` y `logs/`, y ejecución completa de `python -m src.evaluation.regression --quick` (`22/22`).
+
+---
+
+## Bloque D — Telemetría Exacta de Tokens, Uso de APIs y Auditoría Operativa (Completado)
+
+- [x] **D1. Captura paso a paso de tokens `usage_metadata` y llamadas API (`state`, `nodes`, `vector_store`, `workflow`)**
+  - **Archivos:** `src/graph/state.py`, `src/retrieval/vector_store.py`, `src/graph/nodes.py`, `src/graph/workflow.py`
+  - **Cambio:** Definición de `StepUsageRecord`, `TurnUsageSummary`, `build_turn_usage_summary()` y acumulador `usage_events` (`operator.add`). Captura exacta de `prompt_token_count`, `candidates_token_count`, `thoughts_token_count`, `cached_content_token_count`, `total_token_count`, intentos fallidos/truncados/failover (`429`/`503-504`), llamadas y *cache hits* single-flight de `gemini-embedding-001`, y `meta.billed_units.search_units` + `docs_reranked` de Cohere Rerank (sin tablas ni cálculos de costes/precios).
+- [x] **D2. Persistencia SQLite retrocompatible y exportación en logs planos (`memory`, `service`, `ui`)**
+  - **Archivos:** `src/graph/memory.py`, `src/app/service.py`, `src/app/ui.py`
+  - **Cambio:** Migración automática de `session_turns` (`usage_json`), exportación de contadores de tokens/APIs/reintentos/saltos en `turnos_metricas.csv`, exposición en `TurnExecutionPayload.token_usage` y tabla paso a paso en la pestaña de rendimiento de Streamlit (*Rayos-X*).
+- [x] **D3. Auditoría diaria ampliada paso a paso y migración segura del histórico (`audit_runner`)**
+  - **Archivo:** `src/app/audit_runner.py`
+  - **Cambio:** Informe diario con totales, media global/RAG y P95 de tokens, desglose por modelo (incluyendo failovers), desglose por etapa, eficiencia del grafo (cortocircuitos, autocorrecciones A1, saltos B2, multi-territorio, ahorro caché de embeddings), Top-5 consultas por consumo, ranking de demanda no cubierta (`UNSUPPORTED_PROVINCE`), detalle paso a paso por cada turno en el informe Markdown y en `data/logs/sesiones/*.txt`, y migración atómica de cabecera en `historico_metricas.csv`.
+- [x] **Verificación Bloque D:**
+  - `6/6` pruebas unitarias deterministas aisladas (`StepUsageRecord`/`TurnUsageSummary`, failovers LLM, single-flight cache + Cohere `search_units`, migración SQLite/`historico_metricas.csv`, informe completo sin costes), `1` ejecución real en vivo confirmando `usage_metadata` + cache hit + `search_units`, `py_compile` limpio y `python -m src.evaluation.regression --quick` (`22/22`).
+

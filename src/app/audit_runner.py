@@ -27,6 +27,7 @@ from typing import Any
 
 from src.app.telemetry_sync import HuggingFaceTelemetrySync, get_hf_telemetry_config
 from src.graph.memory import SessionMemoryStore
+from src.graph.state import TurnUsageSummary
 from src.config import (
     AUDIT_CURSOR_PATH,
     AUDIT_REPORTS_DIR,
@@ -53,6 +54,19 @@ FEEDBACK_NEGATIVE = "KO"
 FEEDBACK_NONE = "SIN_VOTO"
 
 _REPORT_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_informe_auditoria\.md$")
+_UNSUPPORTED_PROV_SUMMARY_RE = re.compile(r"Rechazó consulta fuera de cobertura \(([^)]+)\)")
+
+
+def _parse_json_dict(raw: Any) -> dict[str, Any]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 _ARCHIVE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|sin_fecha)_(.+)\.txt$")
 
 
@@ -93,10 +107,32 @@ def _save_cursor(cursor_path: Path, data: dict[str, Any]) -> None:
 
 
 def _turn_metrics(t: sqlite3.Row) -> dict[str, Any]:
-    audit = json.loads(t["audit_json"] or "{}")
-    timings = json.loads(t["timings_json"] or "{}")
+    row_keys = set(t.keys())
+    audit = _parse_json_dict(t["audit_json"] if "audit_json" in row_keys else "{}")
+    timings = _parse_json_dict(t["timings_json"] if "timings_json" in row_keys else "{}")
+    models = _parse_json_dict(t["models_json"] if "models_json" in row_keys else "{}")
+    usage_raw = _parse_json_dict(t["usage_json"] if "usage_json" in row_keys else "{}")
+    try:
+        usage = TurnUsageSummary.model_validate(usage_raw) if usage_raw else TurnUsageSummary()
+    except Exception:
+        usage = TurnUsageSummary()
+
+    territorios_norm = usage_raw.get("territorios_normalizados") or []
+    if not isinstance(territorios_norm, list):
+        territorios_norm = []
+    if not territorios_norm and t["territorio"]:
+        territorios_norm = [p.strip() for p in str(t["territorio"]).split(",") if p.strip()]
+
     return {
         "audit": audit,
+        "timings": timings,
+        "models": models,
+        "usage": usage,
+        "has_usage_telemetry": bool(usage.steps or usage.total_tokens or usage.embedding_calls or usage.cohere_calls),
+        "retrieval_hop": int(usage_raw.get("retrieval_hop") or 0),
+        "audit_retry_count": int(usage_raw.get("audit_retry_count") or 0),
+        "territorios_norm": territorios_norm,
+        "provincia_detectada": usage_raw.get("provincia_detectada"),
         "latency_ms": round(sum(float(v) for v in timings.values()), 1),
         "unverified": audit.get("unverified_numbers") or [],
         "passed": bool(audit.get("passed", True)),
@@ -157,7 +193,8 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
 
             for t in turns:
                 m = _turn_metrics(t)
-                models = json.loads(t["models_json"] or "{}")
+                models = m["models"]
+                u: TurnUsageSummary = m["usage"]
                 v_count = len(m["audit"].get("verified_numbers") or []) + len(
                     m["audit"].get("derived_numbers") or []
                 )
@@ -165,7 +202,7 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
                 if t["feedback_at"]:
                     feedback_str += f" ({t['feedback_at']})"
 
-                lines.extend([
+                turn_lines = [
                     f"[Turno {t['turn_index']} - {t['timestamp']}]",
                     f"Usuario: {t['user_query']}",
                     f"(Efectiva: {t['effective_query']} | Intención: {t['intent']} | Ruta: {t['route_decision']})",
@@ -177,9 +214,34 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
                     f"Métricas turno: Latencia {m['latency_ms']} ms | Auditoría numérica: "
                     f"{'APROBADO' if m['passed'] else 'CON INCIDENCIAS'} "
                     f"({v_count} verificados, {len(m['unverified'])} no verificados)",
-                    "-" * 80,
-                    "",
-                ])
+                ]
+                if m["has_usage_telemetry"]:
+                    turn_lines.append(
+                        f"Tokens turno: Input {u.input_tokens:,} | Output {u.output_tokens:,} | "
+                        f"Thoughts {u.thoughts_tokens:,} | Cache {u.cached_tokens:,} | Total {u.total_tokens:,}"
+                    )
+                    turn_lines.append(
+                        f"APIs turno: LLM {u.llm_calls} calls (failovers {u.llm_failovers}) | "
+                        f"Embeddings {u.embedding_calls} calls ({u.embedding_cache_hits} cache_hit, {u.embedding_chars:,} chars) | "
+                        f"Cohere {u.cohere_calls} calls ({u.cohere_search_units} search_units, {u.cohere_docs_reranked} docs) | "
+                        f"B2 hops {m['retrieval_hop']} | A1 retries {m['audit_retry_count']}"
+                    )
+                    if u.steps:
+                        turn_lines.append("Detalle paso a paso:")
+                        for s_idx, s in enumerate(u.steps, start=1):
+                            err_part = f" | error={s.error_detail}" if s.error_detail else ""
+                            turn_lines.append(
+                                f"  {s_idx}. [{s.step}] {s.provider}/{s.model or '-'} ({s.status}): "
+                                f"in={s.input_tokens:,}, out={s.output_tokens:,}, thoughts={s.thoughts_tokens:,}, "
+                                f"cache={s.cached_tokens:,}, total={s.total_tokens:,}, api_calls={s.api_calls}, "
+                                f"cache_hit={s.cache_hit}, chars={s.chars}, search_units={s.search_units}, "
+                                f"docs={s.docs_reranked}, latency={s.latency_ms}ms{err_part}"
+                            )
+                else:
+                    turn_lines.append("Tokens turno: sin telemetría detallada (turno previo a Bloque D)")
+
+                turn_lines.extend(["-" * 80, ""])
+                lines.extend(turn_lines)
 
             out_file.write_text("\n".join(lines), encoding="utf-8")
             archived_count += 1
@@ -195,13 +257,43 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
 
 
 def _append_metrics_history(row: dict[str, Any]) -> None:
+    """Añade una fila a `historico_metricas.csv`, migrando la cabecera de forma atómica si hay columnas nuevas."""
     METRICS_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    is_new = not METRICS_HISTORY_PATH.exists()
-    with METRICS_HISTORY_PATH.open("a", encoding="utf-8-sig" if is_new else "utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-        if is_new:
+    target_fields = list(row.keys())
+
+    if not METRICS_HISTORY_PATH.exists():
+        tmp_path = METRICS_HISTORY_PATH.with_suffix(".csv.tmp")
+        with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=target_fields)
             writer.writeheader()
-        writer.writerow(row)
+            writer.writerow(row)
+        tmp_path.replace(METRICS_HISTORY_PATH)
+        return
+
+    with METRICS_HISTORY_PATH.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        existing_fields = list(reader.fieldnames or [])
+        existing_rows = list(reader) if existing_fields != target_fields else []
+
+    if existing_fields == target_fields:
+        with METRICS_HISTORY_PATH.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=target_fields)
+            writer.writerow(row)
+        return
+
+    unified_fields = list(target_fields)
+    for col in existing_fields:
+        if col not in unified_fields:
+            unified_fields.append(col)
+
+    tmp_path = METRICS_HISTORY_PATH.with_suffix(".csv.tmp")
+    with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=unified_fields)
+        writer.writeheader()
+        for old_row in existing_rows:
+            writer.writerow({k: old_row.get(k, "") for k in unified_fields})
+        writer.writerow({k: row.get(k, "") for k in unified_fields})
+    tmp_path.replace(METRICS_HISTORY_PATH)
 
 
 def _export_golden_candidates(candidates: list[dict[str, Any]]) -> int:
@@ -289,11 +381,45 @@ def extract_and_audit_deltas(
     intents_count: dict[str, int] = {}
     routes_count: dict[str, int] = {}
     territorios_count: dict[str, int] = {}
+    unsupported_prov_counts: dict[str, int] = {}
     latencies_ms: list[float] = []
     unverified_total = 0
     flagged: list[dict[str, Any]] = []
 
+    # Acumuladores de tokens, llamadas API, failovers y eficiencia del grafo (Bloque D; sin cálculos de coste)
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_thoughts_tokens = 0
+    total_cached_tokens = 0
+    total_tokens = 0
+    total_llm_calls = 0
+    total_llm_failovers = 0
+    total_429 = 0
+    total_503_504 = 0
+    total_truncated = 0
+    total_other_failovers = 0
+    total_embedding_calls = 0
+    total_embedding_cache_hits = 0
+    total_embedding_chars = 0
+    total_cohere_calls = 0
+    total_cohere_search_units = 0
+    total_cohere_docs_reranked = 0
+
+    turn_tokens_with_usage: list[int] = []
+    rag_tokens_with_usage: list[int] = []
+    model_stats: dict[tuple[str, str], dict[str, Any]] = {}
+    stage_stats: dict[str, dict[str, Any]] = {}
+    per_turn_usage_rows: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+
+    short_circuits_count = 0
+    rag_turns_count = 0
+    a1_retry_turns = 0
+    a1_recovered_turns = 0
+    b2_hop_turns = 0
+    multi_territory_turns = 0
+
     def _flag_entry(t: sqlite3.Row, m: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
+        u_obj: TurnUsageSummary = m["usage"]
         return {
             "turn_id": t["id"],
             "session_id": t["session_id"],
@@ -310,6 +436,7 @@ def extract_and_audit_deltas(
             "feedback_at": t["feedback_at"],
             "unverified": m["unverified"],
             "latency_ms": m["latency_ms"],
+            "total_tokens": u_obj.total_tokens,
             "reasons": reasons,
         }
 
@@ -325,6 +452,7 @@ def extract_and_audit_deltas(
 
     for t in new_turns:
         m = _turn_metrics(t)
+        u: TurnUsageSummary = m["usage"]
         intents_count[t["intent"]] = intents_count.get(t["intent"], 0) + 1
         routes_count[t["route_decision"]] = routes_count.get(t["route_decision"], 0) + 1
         terr = t["territorio"] or "No especificado"
@@ -332,6 +460,128 @@ def extract_and_audit_deltas(
         feedback_count[m["feedback"]] = feedback_count.get(m["feedback"], 0) + 1
         latencies_ms.append(m["latency_ms"])
         unverified_total += len(m["unverified"])
+
+        if t["intent"] == "UNSUPPORTED_PROVINCE":
+            prov_req = m.get("provincia_detectada")
+            if not prov_req and t["assistant_summary"]:
+                pm = _UNSUPPORTED_PROV_SUMMARY_RE.search(t["assistant_summary"])
+                if pm:
+                    prov_req = pm.group(1)
+            prov_label = (prov_req or "Desconocida").strip()
+            unsupported_prov_counts[prov_label] = unsupported_prov_counts.get(prov_label, 0) + 1
+
+        if t["route_decision"] in ("block_out_of_scope", "ask_clarification"):
+            short_circuits_count += 1
+        elif t["route_decision"] == "parallel_retrieve":
+            rag_turns_count += 1
+        if m["audit_retry_count"] > 0:
+            a1_retry_turns += 1
+            if m["passed"]:
+                a1_recovered_turns += 1
+        if m["retrieval_hop"] > 0:
+            b2_hop_turns += 1
+        if len(m["territorios_norm"]) > 1:
+            multi_territory_turns += 1
+
+        total_input_tokens += u.input_tokens
+        total_output_tokens += u.output_tokens
+        total_thoughts_tokens += u.thoughts_tokens
+        total_cached_tokens += u.cached_tokens
+        total_tokens += u.total_tokens
+        total_llm_calls += u.llm_calls
+        total_llm_failovers += u.llm_failovers
+        total_429 += u.rate_limit_429_count
+        total_503_504 += u.server_503_504_count
+        total_truncated += u.truncated_retries
+        total_other_failovers += max(
+            0,
+            u.llm_failovers - u.rate_limit_429_count - u.server_503_504_count - u.truncated_retries,
+        )
+        total_embedding_calls += u.embedding_calls
+        total_embedding_cache_hits += u.embedding_cache_hits
+        total_embedding_chars += u.embedding_chars
+        total_cohere_calls += u.cohere_calls
+        total_cohere_search_units += u.cohere_search_units
+        total_cohere_docs_reranked += u.cohere_docs_reranked
+
+        if m["has_usage_telemetry"]:
+            turn_tokens_with_usage.append(u.total_tokens)
+            if t["route_decision"] == "parallel_retrieve":
+                rag_tokens_with_usage.append(u.total_tokens)
+
+        for step in u.steps:
+            mkey = (step.provider or "-", step.model or "-")
+            ms = model_stats.setdefault(
+                mkey,
+                {
+                    "api_calls": 0,
+                    "ok": 0,
+                    "cache_hits": 0,
+                    "fail_429": 0,
+                    "fail_503_504": 0,
+                    "fail_trunc": 0,
+                    "fail_other": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "thoughts_tokens": 0,
+                    "cached_tokens": 0,
+                    "total_tokens": 0,
+                    "chars": 0,
+                    "search_units": 0,
+                    "docs_reranked": 0,
+                },
+            )
+            ms["api_calls"] += step.api_calls
+            if step.status == "ok":
+                ms["ok"] += 1
+            elif step.status == "cache_hit" or step.cache_hit:
+                ms["cache_hits"] += 1
+            elif step.status == "failed_429":
+                ms["fail_429"] += 1
+            elif step.status == "failed_503_504":
+                ms["fail_503_504"] += 1
+            elif step.status == "failed_truncated":
+                ms["fail_trunc"] += 1
+            else:
+                ms["fail_other"] += 1
+            ms["input_tokens"] += step.input_tokens
+            ms["output_tokens"] += step.output_tokens
+            ms["thoughts_tokens"] += step.thoughts_tokens
+            ms["cached_tokens"] += step.cached_tokens
+            ms["total_tokens"] += step.total_tokens
+            ms["chars"] += step.chars
+            ms["search_units"] += step.search_units
+            ms["docs_reranked"] += step.docs_reranked
+
+            st_stat = stage_stats.setdefault(
+                step.step or "desconocido",
+                {
+                    "events": 0,
+                    "api_calls": 0,
+                    "cache_hits": 0,
+                    "errors": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "thoughts_tokens": 0,
+                    "total_tokens": 0,
+                    "latencies": [],
+                },
+            )
+            st_stat["events"] += 1
+            st_stat["api_calls"] += step.api_calls
+            if step.cache_hit or step.status == "cache_hit":
+                st_stat["cache_hits"] += 1
+            if step.status.startswith("failed_"):
+                st_stat["errors"] += 1
+            st_stat["input_tokens"] += step.input_tokens
+            st_stat["output_tokens"] += step.output_tokens
+            st_stat["thoughts_tokens"] += step.thoughts_tokens
+            st_stat["total_tokens"] += step.total_tokens
+            if step.latency_ms > 0:
+                st_stat["latencies"].append(step.latency_ms)
+
+        per_turn_usage_rows.append((t, m))
+
         reasons = _reasons(m)
         if reasons:
             flagged.append(_flag_entry(t, m, reasons))
@@ -349,6 +599,24 @@ def extract_and_audit_deltas(
     avg_lat = round(sum(latencies_ms) / len(latencies_ms), 1) if latencies_ms else 0.0
     lat_sorted = sorted(latencies_ms)
     p95_lat = lat_sorted[min(len(lat_sorted) - 1, int(len(lat_sorted) * 0.95))] if lat_sorted else 0.0
+
+    avg_tokens_per_turn = (
+        round(sum(turn_tokens_with_usage) / len(turn_tokens_with_usage), 1)
+        if turn_tokens_with_usage
+        else 0.0
+    )
+    avg_tokens_rag = (
+        round(sum(rag_tokens_with_usage) / len(rag_tokens_with_usage), 1)
+        if rag_tokens_with_usage
+        else 0.0
+    )
+    tok_sorted = sorted(turn_tokens_with_usage)
+    p95_tokens_per_turn = (
+        tok_sorted[min(len(tok_sorted) - 1, int(len(tok_sorted) * 0.95))]
+        if tok_sorted
+        else 0
+    )
+
     voted = feedback_count[FEEDBACK_POSITIVE] + feedback_count[FEEDBACK_NEGATIVE]
     satisfaction = f"{round(100 * feedback_count[FEEDBACK_POSITIVE] / voted)}%" if voted else "n/d"
     max_id = max((t["id"] for t in new_turns), default=last_turn_id)
@@ -367,6 +635,15 @@ def extract_and_audit_deltas(
         f"| Satisfacción sobre votados: {satisfaction}",
         f"- **Latencia**: media {avg_lat} ms | P95 {p95_lat} ms",
         f"- **Cifras no verificadas por el auditor numérico**: {unverified_total}",
+        f"- **Consumo de tokens (server `usage_metadata`)**: Entrada `{total_input_tokens:,}` | "
+        f"Salida `{total_output_tokens:,}` | Thoughts `{total_thoughts_tokens:,}` | "
+        f"Cache `{total_cached_tokens:,}` | **Total `{total_tokens:,}`**",
+        f"- **Promedio / P95 por turno con telemetría**: media `{avg_tokens_per_turn:,.1f}` tok/turno | "
+        f"media turnos RAG `{avg_tokens_rag:,.1f}` tok/turno | P95 `{p95_tokens_per_turn:,}` tok/turno",
+        f"- **Llamadas API reales**: LLM `{total_llm_calls}` (failovers `{total_llm_failovers}`: "
+        f"429=`{total_429}`, 503/504=`{total_503_504}`, truncados=`{total_truncated}`, otros=`{total_other_failovers}`) | "
+        f"Embeddings `{total_embedding_calls}` calls (`{total_embedding_cache_hits}` cache_hit, `{total_embedding_chars:,}` chars) | "
+        f"Cohere `{total_cohere_calls}` calls (`{total_cohere_search_units}` search_units, `{total_cohere_docs_reranked}` docs)",
         "",
     ]
 
@@ -379,6 +656,147 @@ def extract_and_audit_deltas(
         for k, v in sorted(territorios_count.items(), key=lambda x: -x[1]):
             md.append(f"| Territorio | {k} | {v} |")
         md.append("")
+
+        embed_total_reqs = total_embedding_calls + total_embedding_cache_hits
+        embed_hit_pct = round(100 * total_embedding_cache_hits / embed_total_reqs, 1) if embed_total_reqs else 0.0
+        short_pct = round(100 * short_circuits_count / n_new, 1)
+        rag_pct = round(100 * rag_turns_count / n_new, 1)
+        md.extend([
+            "### Eficiencia del grafo y fiabilidad API",
+            "",
+            f"- **Cortocircuitos deterministas** (`block_out_of_scope` + `ask_clarification`): {short_circuits_count}/{n_new} ({short_pct}%) | **RAG completo**: {rag_turns_count}/{n_new} ({rag_pct}%)",
+            f"- **Guardrail A1 (autocorrección)**: {a1_retry_turns} turnos con reintento ({a1_recovered_turns} recuperados con auditoría aprobada)",
+            f"- **Expansión B2 (2º salto por remisiones)**: {b2_hop_turns} turnos con salto dirigido | **Consultas multi-territorio**: {multi_territory_turns}",
+            f"- **Caché single-flight de embeddings**: {total_embedding_cache_hits}/{embed_total_reqs} hits ({embed_hit_pct}% ahorro de llamadas `gemini-embedding-001`)",
+            "",
+        ])
+
+        if model_stats:
+            md.extend([
+                "### Consumo por modelo y proveedor",
+                "",
+                "| Proveedor | Modelo | API Calls | OK | Cache Hit | Fallos (429 / 503-504 / Trunc / Otros) | Entrada (tok) | Salida (tok) | Thoughts (tok) | Cache (tok) | Total (tok) | Extra (Chars / Search Units) |",
+                "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|",
+            ])
+            for (prov, mod_name), st_m in sorted(
+                model_stats.items(),
+                key=lambda x: (-x[1]["total_tokens"], -x[1]["api_calls"], x[0][0], x[0][1]),
+            ):
+                fails_str = f"{st_m['fail_429']} / {st_m['fail_503_504']} / {st_m['fail_trunc']} / {st_m['fail_other']}"
+                extra_parts: list[str] = []
+                if st_m["chars"]:
+                    extra_parts.append(f"{st_m['chars']:,} chars")
+                if st_m["search_units"]:
+                    extra_parts.append(f"{st_m['search_units']} units ({st_m['docs_reranked']} docs)")
+                extra_str = ", ".join(extra_parts) if extra_parts else "—"
+                md.append(
+                    f"| `{prov}` | `{mod_name}` | {st_m['api_calls']} | {st_m['ok']} | {st_m['cache_hits']} | "
+                    f"{fails_str} | {st_m['input_tokens']:,} | {st_m['output_tokens']:,} | "
+                    f"{st_m['thoughts_tokens']:,} | {st_m['cached_tokens']:,} | {st_m['total_tokens']:,} | {extra_str} |"
+                )
+            md.append("")
+
+        if stage_stats:
+            md.extend([
+                "### Consumo por etapa / paso del grafo",
+                "",
+                "| Etapa (`step`) | Eventos | API Calls | Cache Hits | Errores | Entrada (tok) | Salida (tok) | Thoughts (tok) | Total (tok) | Latencia media (ms) |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ])
+            for step_key, st_s in sorted(
+                stage_stats.items(),
+                key=lambda x: (-x[1]["total_tokens"], -x[1]["api_calls"], x[0]),
+            ):
+                avg_step_ms = (
+                    round(sum(st_s["latencies"]) / len(st_s["latencies"]), 1)
+                    if st_s["latencies"]
+                    else 0.0
+                )
+                md.append(
+                    f"| `{step_key}` | {st_s['events']} | {st_s['api_calls']} | {st_s['cache_hits']} | "
+                    f"{st_s['errors']} | {st_s['input_tokens']:,} | {st_s['output_tokens']:,} | "
+                    f"{st_s['thoughts_tokens']:,} | {st_s['total_tokens']:,} | {avg_step_ms} |"
+                )
+            md.append("")
+
+        if turn_tokens_with_usage:
+            top_turns = sorted(
+                ((t, m) for t, m in per_turn_usage_rows if m["has_usage_telemetry"]),
+                key=lambda pair: -pair[1]["usage"].total_tokens,
+            )[:5]
+            md.extend([
+                "### Top 5 consultas por consumo total de tokens",
+                "",
+                "| Turn ID | Sesión | Turno | Ruta | Entrada (tok) | Salida (tok) | Total (tok) | LLM Calls | Consulta |",
+                "|---:|---|---:|---|---:|---:|---:|---:|---|",
+            ])
+            for top_t, top_m in top_turns:
+                tu = top_m["usage"]
+                q_prev = top_t["user_query"].replace("|", "/").replace("\n", " ")[:75]
+                md.append(
+                    f"| {top_t['id']} | `{top_t['session_id']}` | {top_t['turn_index']} | `{top_t['route_decision']}` | "
+                    f"{tu.input_tokens:,} | {tu.output_tokens:,} | {tu.total_tokens:,} | {tu.llm_calls} | {q_prev} |"
+                )
+            md.append("")
+
+        if unsupported_prov_counts:
+            md.extend([
+                "### Demanda no cubierta (`UNSUPPORTED_PROVINCE`)",
+                "",
+                "| Provincia / territorio solicitado | Consultas |",
+                "|---|---:|",
+            ])
+            for prov_name, cnt in sorted(unsupported_prov_counts.items(), key=lambda x: (-x[1], x[0])):
+                md.append(f"| {prov_name} | {cnt} |")
+            md.append("")
+
+        md.extend(["### Desglose detallado de tokens paso a paso por consulta", ""])
+        for row_t, row_m in per_turn_usage_rows:
+            u_t: TurnUsageSummary = row_m["usage"]
+            q_prev = row_t["user_query"].replace("\n", " ").strip()
+            if len(q_prev) > 140:
+                q_prev = q_prev[:137] + "…"
+            md.append(
+                f"#### Turno {row_t['turn_index']} · `turn_id={row_t['id']}` · sesión `{row_t['session_id']}` "
+                f"(`{row_t['intent']}` → `{row_t['route_decision']}`)"
+            )
+            md.append(f"- **Pregunta**: \"{q_prev}\"")
+            if row_m["has_usage_telemetry"]:
+                md.append(
+                    f"- **Totales del turno**: Entrada `{u_t.input_tokens:,}` | Salida `{u_t.output_tokens:,}` | "
+                    f"Thoughts `{u_t.thoughts_tokens:,}` | Cache `{u_t.cached_tokens:,}` | "
+                    f"**Total `{u_t.total_tokens:,}`** | LLM `{u_t.llm_calls}` calls (failovers `{u_t.llm_failovers}`) | "
+                    f"Embeddings `{u_t.embedding_calls}` (`{u_t.embedding_cache_hits}` cache_hit, `{u_t.embedding_chars:,}` chars) | "
+                    f"Cohere `{u_t.cohere_calls}` (`{u_t.cohere_search_units}` search_units, `{u_t.cohere_docs_reranked}` docs) | "
+                    f"B2 hops `{row_m['retrieval_hop']}` | A1 retries `{row_m['audit_retry_count']}` | Latencia `{row_m['latency_ms']} ms`"
+                )
+                if u_t.steps:
+                    md.extend([
+                        "",
+                        "| # | Paso | Proveedor | Modelo | Estado | Entrada (tok) | Salida (tok) | Thoughts (tok) | Cache (tok) | Total (tok) | Calls / Hit / Extra | Latencia (ms) |",
+                        "|---:|---|---|---|---|---:|---:|---:|---:|---:|---|---:|",
+                    ])
+                    for st_idx, st_ev in enumerate(u_t.steps, start=1):
+                        extra_items = [f"calls={st_ev.api_calls}"]
+                        if st_ev.cache_hit:
+                            extra_items.append("cache_hit=True")
+                        if st_ev.chars:
+                            extra_items.append(f"{st_ev.chars:,} chars")
+                        if st_ev.search_units:
+                            extra_items.append(f"{st_ev.search_units} units/{st_ev.docs_reranked} docs")
+                        if st_ev.attempt > 1:
+                            extra_items.append(f"intento={st_ev.attempt}")
+                        if st_ev.error_detail:
+                            err_clean = st_ev.error_detail.replace("|", "/").replace("\n", " ")[:45]
+                            extra_items.append(f"err={err_clean}")
+                        md.append(
+                            f"| {st_idx} | `{st_ev.step}` | `{st_ev.provider}` | `{st_ev.model or '-'}` | `{st_ev.status}` | "
+                            f"{st_ev.input_tokens:,} | {st_ev.output_tokens:,} | {st_ev.thoughts_tokens:,} | "
+                            f"{st_ev.cached_tokens:,} | {st_ev.total_tokens:,} | {'; '.join(extra_items)} | {st_ev.latency_ms} |"
+                        )
+            else:
+                md.append("- **Totales del turno**: sin telemetría de tokens registrada (turno previo a Bloque D).")
+            md.append("")
 
     if late_entries:
         md.extend(["### Votos tardíos", "", "| Sesión | Turno | Voto | Fecha voto | Consulta |", "|---|---|---|---|---|"])
@@ -400,7 +818,7 @@ def extract_and_audit_deltas(
                 f"- **Motivos**: {', '.join(e['reasons'])}",
                 f"- **Consulta**: \"{e['query']}\"",
                 f"- **Territorio / oficio**: {e['territorio'] or '—'} / {e['oficio'] or '—'} | "
-                f"**Ruta**: `{e['route']}` | **Latencia**: {e['latency_ms']} ms",
+                f"**Ruta**: `{e['route']}` | **Latencia**: {e['latency_ms']} ms | **Tokens**: {e['total_tokens']:,}",
                 f"- **Feedback**: {_feedback_icon(e['feedback'])}",
                 f"- **Cifras no verificadas**: {e['unverified'] or 'Ninguna'}",
                 f"- **Extracto respuesta**: {resp[:300]}{'…' if len(resp) > 300 else ''}",
@@ -440,6 +858,27 @@ def extract_and_audit_deltas(
         "cifras_no_verificadas": unverified_total,
         "turnos_marcados": len(flagged),
         "reauditoria_completa": int(force_all),
+        "tokens_entrada_total": total_input_tokens,
+        "tokens_salida_total": total_output_tokens,
+        "tokens_thoughts_total": total_thoughts_tokens,
+        "tokens_cached_total": total_cached_tokens,
+        "tokens_total": total_tokens,
+        "tokens_media_turno": avg_tokens_per_turn,
+        "tokens_media_rag": avg_tokens_rag,
+        "tokens_p95_turno": p95_tokens_per_turn,
+        "llm_llamadas": total_llm_calls,
+        "llm_failovers": total_llm_failovers,
+        "rate_limit_429": total_429,
+        "server_503_504": total_503_504,
+        "reintentos_truncamiento": total_truncated,
+        "embeddings_llamadas": total_embedding_calls,
+        "embeddings_cache_hits": total_embedding_cache_hits,
+        "cohere_llamadas": total_cohere_calls,
+        "cohere_search_units": total_cohere_search_units,
+        "cortocircuitos": short_circuits_count,
+        "a1_reintentos": a1_retry_turns,
+        "b2_saltos": b2_hop_turns,
+        "multiterritorio_turnos": multi_territory_turns,
     })
 
     candidates_added = 0
@@ -463,6 +902,24 @@ def extract_and_audit_deltas(
         "satisfaction": satisfaction,
         "avg_latency_ms": avg_lat,
         "golden_candidates_added": candidates_added,
+        "tokens": {
+            "input": total_input_tokens,
+            "output": total_output_tokens,
+            "thoughts": total_thoughts_tokens,
+            "cached": total_cached_tokens,
+            "total": total_tokens,
+            "avg_per_turn": avg_tokens_per_turn,
+            "avg_per_rag_turn": avg_tokens_rag,
+            "p95_per_turn": p95_tokens_per_turn,
+        },
+        "api_calls": {
+            "llm": total_llm_calls,
+            "llm_failovers": total_llm_failovers,
+            "embedding": total_embedding_calls,
+            "embedding_cache_hits": total_embedding_cache_hits,
+            "cohere": total_cohere_calls,
+            "cohere_search_units": total_cohere_search_units,
+        },
     }
 
 
@@ -667,6 +1124,20 @@ def _cli() -> None:
     )
     print(f"- Sesiones archivadas: {result['sessions_archived']}")
     print(f"- Turnos nuevos: {audit.get('new_turns', 0)} | Votos tardíos: {audit.get('late_votes', 0)}")
+    tok = audit.get("tokens") or {}
+    apis = audit.get("api_calls") or {}
+    if tok:
+        print(
+            f"- Tokens: {tok.get('total', 0):,} total "
+            f"(in={tok.get('input', 0):,}, out={tok.get('output', 0):,}, "
+            f"thoughts={tok.get('thoughts', 0):,}, media={tok.get('avg_per_turn', 0):,.1f}/turno)"
+        )
+    if apis:
+        print(
+            f"- APIs: LLM={apis.get('llm', 0)} (failovers={apis.get('llm_failovers', 0)}) | "
+            f"Embeddings={apis.get('embedding', 0)} (cache_hit={apis.get('embedding_cache_hits', 0)}) | "
+            f"Cohere={apis.get('cohere', 0)} ({apis.get('cohere_search_units', 0)} search_units)"
+        )
     if audit.get("report_path"):
         print(f"- Informe: {audit['report_path']}")
         print(f"- Candidatos golden añadidos: {audit.get('golden_candidates_added', 0)}")
