@@ -18,6 +18,7 @@ Implementa:
 
 from __future__ import annotations
 
+from datetime import date
 import json
 import logging
 import re
@@ -87,7 +88,10 @@ _CANONICAL_PROVINCE_MAP: dict[str, str] = {
     "gipuzkoa": "guipuzcoa",
     "la rioja": "la_rioja",
     "las palmas": "las_palmas",
+    "las palmas de gran canaria": "las_palmas",
     "gran canaria": "las_palmas",
+    "lanzarote": "las_palmas",
+    "fuerteventura": "las_palmas",
     "lerida": "lleida",
     "comunidad de madrid": "madrid",
     "principado de asturias": "asturias",
@@ -158,6 +162,7 @@ _PRETTY_TERRITORY_LABELS: dict[str, str] = {
     "guipuzcoa": "Guipúzcoa",
     "jaen": "Jaén",
     "la_rioja": "La Rioja",
+    "las_palmas": "Las Palmas",
     "leon": "León",
     "madrid": "Comunidad de Madrid",
     "malaga": "Málaga",
@@ -1174,6 +1179,8 @@ class AiHorecaGraphNodes:
         docs: list[RetrievedDocument] = state.get("retrieved_docs") or []
         retry_count = int(state.get("audit_retry_count") or 0)
         prev_audit = state.get("audit_report") or {}
+        today = date.today()
+        current_year = today.year
 
         context_blocks: list[str] = []
         for idx, doc in enumerate(docs, start=1):
@@ -1204,7 +1211,10 @@ class AiHorecaGraphNodes:
             "   - **REGLA GENERALISTA DE CIERRE CUANTITATIVO (MONETARIO, TEMPORAL Y PROPORCIONAL)**: Siempre que la normativa en los fragmentos fije una cuantía, duración, límite o regla de proporcionalidad —ya sea en **`€`** (salarios, pluses, horas extra, finiquito), en **`días` / `horas` / `meses`** (vacaciones proporcionales según fecha de inicio/fin o tiempo trabajado, permisos/horas anuales ajustadas a jornada parcial, descansos compensatorios por festivos trabajados) o en **`%`**— y el usuario haya aportado los parámetros necesarios para aplicarla a su caso (en el turno actual o en el historial de la sesión), **es obligatorio ejecutar la operación aritmética completa paso a paso hasta entregar el resultado numérico final** y registrarla en `calculos_derivados` con su fórmula y operandos base. **Está prohibido limitarse a explicar la regla teórica de proporcionalidad o dejar planteados los datos sin calcular el número final**.\n"
             "   - Si el convenio hace depender una condición de un parámetro del centro de trabajo o del contrato que el usuario no ha precisado (como la categoría o clasificación turística del establecimiento, su nivel o modalidad), expón las opciones previstas en los fragmentos recuperados e indícale dónde puede verificar ese dato en la práctica (contrato de trabajo, encabezado de la nómina o clasificación oficial del establecimiento). **Importante:** Cuando se trate de cuantías económicas o fórmulas salariales/horas extras, esta indicación práctica es solo complementaria; NUNCA sustituye el cálculo numérico obligatorio de todas las opciones en tabla (Reglas 3 y 4).\n"
             "3. REGLAS PARA CONSULTAS SALARIALES / RETRIBUTIVAS (CUANDO EL TURNO ACTUAL PIDA SUELDOS O CÁLCULOS):\n"
-            "   - **Año más reciente y tramos plurianuales**: Si el usuario NO pide un año histórico concreto, utiliza siempre las tablas salariales del **año más reciente/vigente** presente en los fragmentos. Si un mismo fragmento normativo contiene tablas salariales para varios periodos o tramos plurianuales sucesivos del convenio en vigor (por ejemplo, tramos 2025-2026, 2026-2027 y 2027-2028), incluye en la tabla comparativa una fila por cada tramo temporal de vigencia para el nivel y categoría aplicables al puesto.\n"
+            f"   - **Año en curso por defecto ({current_year}), tramos plurianuales e incrementos pactados**: Si el usuario NO especifica un año concreto, **asume siempre que consulta por el año actual ({current_year})**.\n"
+            f"     * Si los fragmentos ya incluyen tablas salariales publicadas específicamente para {current_year} (o tramos plurianuales sucesivos del convenio en vigor, p. ej. 2025-2026, 2026-2027 y 2027-2028), utiliza directamente la tabla de {current_year} (y, en convenios plurianuales con varios tramos en el mismo fragmento, muestra una fila por tramo temporal vigente para el nivel y categoría aplicables), **sin volver a sumar porcentajes que ya estén incorporados en dicha tabla**.\n"
+            f"     * **ACTUALIZACIÓN OBLIGATORIA CUANDO NO HAY TABLA PUBLICADA DE {current_year} PERO SÍ INCREMENTO PACTADO**: Si la tabla salarial más reciente publicada en los fragmentos corresponde a un año anterior (ej. {current_year - 1}) **y** otro fragmento recuperado establece un **incremento porcentual fijo y obligatorio aplicable a {current_year}** (por ejemplo, una subida del +4,00% desde el 1 de enero de {current_year} sobre las tablas vigentes a 31 de diciembre de {current_year - 1}), **DEBES indicar siempre la cifra literal de la tabla publicada de origen (citando su año y acuerdo) Y calcular obligatoriamente el importe actualizado para {current_year}** (`Base_Tabla * (1 + Porcentaje/100)`, y su equivalente prorrateado si procede), registrando el cálculo en `calculos_derivados`.\n"
+            f"     * Si la tabla más reciente es anterior a {current_year} y NO consta ningún acuerdo o porcentaje de incremento para {current_year} en los fragmentos recuperados, informa claramente del año de la última tabla publicada disponible sin inventar subidas.\n"
             "   - **Distinción entre Grupo Profesional (VI ALEH) y Nivel Salarial del Convenio**: No confundas ni equipares nunca el número de Grupo Profesional estatal del VI ALEH (ej. Grupo Profesional II) con el Nivel Salarial o Retributivo del convenio provincial/autonómico (ej. Nivel IV en Baleares). Determina siempre el Nivel Salarial y la Categoría del establecimiento buscando literalmente el puesto y el tipo de centro dentro de los Anexos de clasificación del convenio recuperados.\n"
             "   - **Sueldo mensual Sin Prorratear vs. Con Pagas Extras Prorrateadas**: Identifica cuántas **Gratificaciones Extraordinarias (pagas extras)** fija el convenio aplicable (citando su artículo) y presenta una **Tabla Markdown comparativa clara** en **`€ / mes`** mostrando:\n"
             "     * **Sueldo Base Mensual a Jornada Completa (40h)**.\n"
@@ -1234,6 +1244,7 @@ class AiHorecaGraphNodes:
             )
 
         prompt = (
+            f"FECHA ACTUAL DEL SISTEMA: {today.strftime('%d/%m/%Y')} (AÑO EN CURSO: {current_year})\n"
             f"HISTORIAL RECIENTE DE LA CONVERSACIÓN (TURNOS PREVIOS DE ESTA SESIÓN): {json.dumps(history, ensure_ascii=False)}\n"
             f"MENSAJE ACTUAL DEL USUARIO: {raw_query}\n"
             f"CONSULTA AUTOCONTENIDA RESUELTA (OBJETIVO DE ESTE TURNO): {effective_query}\n"
@@ -1416,6 +1427,7 @@ class AiHorecaGraphNodes:
                 pass
 
         auto_derived_floats: set[float] = set()
+        revision_multipliers = {1.0} | {m for m in surcharge_multipliers if 1.0 < m <= 1.25}
         ratios_jornada = [1.0] + [h_val / 40.0 for h_val in query_floats]
         annual_hours_in_corpus = [v for v in corpus_floats if 1500.0 <= v <= 2000.0]
         monthly_divisors_in_corpus = sorted(
@@ -1423,16 +1435,20 @@ class AiHorecaGraphNodes:
         )
         for c_val in corpus_floats:
             if 0.5 <= c_val < 500.0:
+                for rev_mult in revision_multipliers:
+                    auto_derived_floats.add(round(c_val * rev_mult, 2))
                 for mult in (11.0, 12.0, 20.0, 21.0, 22.0, 30.0):
                     auto_derived_floats.add(round(c_val * mult, 2))
             if c_val >= 500.0:
                 for r_jor in ratios_jornada:
                     scaled_val = c_val * r_jor
-                    auto_derived_floats.add(round(scaled_val, 2))
-                    for pagas in (12.0, 14.0, 15.0):
-                        auto_derived_floats.add(round(scaled_val / pagas, 2))
-                        auto_derived_floats.add(round(scaled_val * pagas, 2))
-                        auto_derived_floats.add(round(scaled_val * (pagas / 12.0), 2))
+                    for rev_mult in revision_multipliers:
+                        rev_val = scaled_val * rev_mult
+                        auto_derived_floats.add(round(rev_val, 2))
+                        for pagas in (12.0, 14.0, 15.0):
+                            auto_derived_floats.add(round(rev_val / pagas, 2))
+                            auto_derived_floats.add(round(rev_val * pagas, 2))
+                            auto_derived_floats.add(round(rev_val * (pagas / 12.0), 2))
                 for div_val in annual_hours_in_corpus:
                     for pagas in (12.0, 14.0, 15.0):
                         base_hour = (c_val * pagas) / div_val

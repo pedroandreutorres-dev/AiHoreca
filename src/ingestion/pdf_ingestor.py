@@ -171,12 +171,65 @@ def detect_document_boundaries(
     return boundary
 
 
+def _apply_text_markers(
+    text: str,
+    start_marker: Optional[str] = None,
+    end_marker: Optional[str] = None,
+) -> str:
+    """Recorta texto por marcadores opcionales de inicio/fin al principio de su línea."""
+    result = text
+    if start_marker:
+        match_start = re.search(re.escape(start_marker), result, re.IGNORECASE)
+        if match_start:
+            line_start = result.rfind("\n", 0, match_start.start())
+            result = result[line_start + 1 if line_start != -1 else 0 :]
+    if end_marker:
+        match_end = re.search(re.escape(end_marker), result, re.IGNORECASE)
+        if match_end:
+            line_start = result.rfind("\n", 0, match_end.start())
+            result = result[: line_start if line_start != -1 else 0]
+    return result
+
+
 def _format_plain_page_to_markdown(page_text: str) -> str:
     """Formatea en CPU una página de texto articulado eliminando ruido genérico de boletín oficial."""
-    lines = page_text.splitlines()
+    raw_lines = page_text.splitlines()
+    merged_lines: list[str] = []
+    idx = 0
+    while idx < len(raw_lines):
+        curr = raw_lines[idx].strip()
+        if re.fullmatch(r"(?i)art[íi]culo", curr) and idx + 1 < len(raw_lines):
+            nxt = raw_lines[idx + 1].strip()
+            if re.fullmatch(
+                r"(?i)\d+(?:\s*(?:º|\.º|BIS|TER|QUATER|bis|ter|quater))?\.?(?:\s+.*)?",
+                nxt,
+            ):
+                combined = f"{curr} {nxt}".strip()
+                consumed = 2
+                if idx + 2 < len(raw_lines):
+                    nxt2 = raw_lines[idx + 2].strip()
+                    if (
+                        nxt2
+                        and len(nxt2) <= 60
+                        and nxt2 == nxt2.upper()
+                        and any(ch.isalpha() for ch in nxt2)
+                        and not _BULLETIN_HEADER_NOISE.match(nxt2)
+                        and not re.match(
+                            r"(?i)^(?:art[íi]culo|cap[íi]tulo|t[íi]tulo|anexo|disposici[óo]n)\b",
+                            nxt2,
+                        )
+                    ):
+                        combined = f"{combined} {nxt2}".strip()
+                        consumed = 3
+                merged_lines.append(combined)
+                idx += consumed
+                continue
+        merged_lines.append(raw_lines[idx])
+        idx += 1
+
     cleaned_lines: list[str] = []
 
-    for line in lines:
+    for line in merged_lines:
         stripped = line.strip()
         if not stripped:
             cleaned_lines.append("")
@@ -588,6 +641,11 @@ def extract_hybrid_markdown(
     doc.close()
 
     full_md = "\n\n".join(part for part in markdown_parts if part.strip())
+    full_md = _apply_text_markers(
+        full_md,
+        start_marker=getattr(boundary, "start_marker", None),
+        end_marker=getattr(boundary, "end_marker", None),
+    )
     full_md = _normalize_spanish_thousands(full_md)
     full_md = re.sub(r"\n{3,}", "\n\n", full_md).strip() + "\n"
     return full_md

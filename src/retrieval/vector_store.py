@@ -33,7 +33,7 @@ from src.config import (
     get_qdrant_config,
     load_environment,
 )
-from src.retrieval.chunker import chunk_all_processed_documents
+from src.retrieval.chunker import _canonicalize_territory, chunk_all_processed_documents
 from src.retrieval.schemas import LegalChunk, RetrievedDocument
 
 logger = logging.getLogger(__name__)
@@ -437,19 +437,18 @@ class AiHorecaVectorStore:
                 )
             )
         if provincia:
-            prov_tokens = [p.strip() for p in re.split(r"[,/|]|\s+y\s+", provincia.replace("_", " ")) if p.strip()]
-            norm_provincias = [
-                tok.lower()
-                .strip()
-                .replace("á", "a")
-                .replace("é", "e")
-                .replace("í", "i")
-                .replace("ó", "o")
-                .replace("ú", "u")
-                .replace("ñ", "n")
-                for tok in prov_tokens
-                if tok.strip()
+            prov_tokens = [
+                p.strip(" _")
+                for p in re.split(r"[,/|]|\s+y\s+", provincia)
+                if p.strip(" _")
             ]
+            norm_provincias = list(
+                dict.fromkeys(
+                    canon
+                    for tok in prov_tokens
+                    if (canon := _canonicalize_territory(tok))
+                )
+            )
             if len(norm_provincias) == 1:
                 must_conditions.append(
                     models.FieldCondition(
@@ -718,13 +717,13 @@ class AiHorecaVectorStore:
             body_head = doc.text.split("\n\n", 1)[-1][:350]
             return bool(
                 re.search(
-                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal)|equivalencias?\s+de\s+clasificaci)\b",
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+establecimientos)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
                     f"{surface} {body_head}",
                 )
                 or (
                     "anexo" in doc.titulo_o_capitulo.lower()
                     and re.search(
-                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?))\b",
+                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?)|CLASIFICACI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA))\b",
                         body_head,
                     )
                 )

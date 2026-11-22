@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -89,6 +89,14 @@ class DocumentManifestEntry(DocumentBoundary):
     expected_years: list[int] = Field(
         default_factory=list,
         description="Años de vigencia esperados en las tablas salariales de este documento (ej. [2025, 2026]).",
+    )
+    start_marker: Optional[str] = Field(
+        default=None,
+        description="Marcador textual opcional donde comienza el texto útil en start_page.",
+    )
+    end_marker: Optional[str] = Field(
+        default=None,
+        description="Marcador textual opcional donde termina el texto útil en end_page (excluye anuncios posteriores en boletines completos).",
     )
 
 

@@ -18,6 +18,7 @@ from typing import Iterable, Optional
 import pymupdf
 
 from src.config import BOUNDARIES_CACHE_PATH, PROCESSED_DATA_DIR, RAW_DATA_DIR
+from src.ingestion.pdf_ingestor import _apply_text_markers
 from src.ingestion.schemas import (
     CorpusValidationReport,
     DocumentManifestEntry,
@@ -324,6 +325,12 @@ def _check_decimal_parity(
     doc.close()
 
     normalized_pdf_text = _normalize_pdf_text_for_decimals("\n".join(pdf_chunks))
+    if manifest_entry and (manifest_entry.start_marker or manifest_entry.end_marker):
+        normalized_pdf_text = _apply_text_markers(
+            normalized_pdf_text,
+            start_marker=manifest_entry.start_marker,
+            end_marker=manifest_entry.end_marker,
+        )
     pdf_decimals = _SPANISH_DECIMAL_RE.findall(normalized_pdf_text)
     pdf_count = len(pdf_decimals)
     if pdf_count == 0:

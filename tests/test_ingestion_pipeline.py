@@ -17,7 +17,10 @@ from pathlib import Path
 import pymupdf
 
 from src.config import BOUNDARIES_CACHE_PATH, PROCESSED_DATA_DIR, RAW_DATA_DIR
+from src.graph.nodes import AiHorecaGraphNodes, _canonicalize_llm_province
+from src.graph.state import LegalCitation, LegalSynthesisSchema
 from src.ingestion.pdf_ingestor import (
+    _apply_text_markers,
     _clean_gemini_markdown_output,
     _extract_double_column_page_text,
     _format_plain_page_to_markdown,
@@ -28,7 +31,11 @@ from src.ingestion.pdf_ingestor import (
 )
 from src.ingestion.schemas import DocumentManifestEntry
 from src.ingestion.validator import _extract_table_header_years, validate_corpus, validate_document
-from src.retrieval.chunker import chunk_all_processed_documents, chunk_markdown_document
+from src.retrieval.chunker import (
+    _canonicalize_territory,
+    chunk_all_processed_documents,
+    chunk_markdown_document,
+)
 from src.retrieval.schemas import RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
 
@@ -174,6 +181,48 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         finally:
             text_doc.close()
             scanned_doc.close()
+
+    def test_apply_text_markers_trims_prefix_and_trailing_local_notices(self) -> None:
+        raw = (
+            "Resolución administrativa previa\n"
+            "EL DIRECTOR GENERAL DE TRABAJO.\n"
+            "ACUERDO PARA LA MEJORA DE LAS CONDICIONES DE TRABAJO\n"
+            "PRIMERO. Incremento del 4,00% en 2026.\n"
+            "III. ADMINISTRACIÓN LOCAL\n"
+            "EXCMO. CABILDO INSULAR DE FUERTEVENTURA\n"
+            "12.345,67 €\n"
+        )
+        trimmed = _apply_text_markers(
+            raw,
+            start_marker="ACUERDO PARA LA MEJORA DE LAS CONDICIONES DE TRABAJO",
+            end_marker="III. ADMINISTRACIÓN LOCAL",
+        )
+        self.assertTrue(trimmed.startswith("ACUERDO PARA LA MEJORA"))
+        self.assertIn("4,00%", trimmed)
+        self.assertNotIn("Resolución administrativa previa", trimmed)
+        self.assertNotIn("CABILDO", trimmed)
+        self.assertNotIn("12.345,67", trimmed)
+
+    def test_format_plain_page_rejoins_split_article_headers(self) -> None:
+        raw = (
+            "Texto previo del artículo 10.\n"
+            "ARTÍCULO\n"
+            "11.\n"
+            "GRATIFICACIONES\n"
+            "EXTRAORDINARIAS.\n"
+            "Las empresas abonarán dos pagas extras.\n"
+            "ARTÍCULO\n"
+            "6.\n"
+            "COMPENSACIÓN\n"
+        )
+        md = _format_plain_page_to_markdown(raw)
+        self.assertIn("### ARTÍCULO 11. GRATIFICACIONES", md)
+        self.assertIn("### ARTÍCULO 6. COMPENSACIÓN", md)
+
+    def test_las_palmas_island_aliases_canonicalize_uniformly(self) -> None:
+        for alias in ("Las Palmas", "Las Palmas de Gran Canaria", "Gran Canaria", "Lanzarote", "Fuerteventura"):
+            self.assertEqual(_canonicalize_territory(alias), "las_palmas", msg=alias)
+            self.assertEqual(_canonicalize_llm_province(alias), "las_palmas", msg=alias)
 
 
 class TestRealPdfCanaries(unittest.TestCase):
@@ -390,6 +439,61 @@ class TestManifestAndSilverCorpusInvariants(unittest.TestCase):
                 self.assertEqual(yr, 2026, msg=chunk.chunk_id)
                 years_found.add(yr)
         self.assertEqual(years_found, {2026})
+
+    def test_las_palmas_classification_strict_and_2025_tables(self) -> None:
+        base_path = PROCESSED_DATA_DIR / "convenio_las_palmas.md"
+        tablas_path = PROCESSED_DATA_DIR / "convenio_las_palmas_acuerdo_tablas_2025_2026.md"
+        self.assertTrue(base_path.exists())
+        self.assertTrue(tablas_path.exists())
+
+        base_report = validate_document(base_path, strict=True)
+        tablas_report = validate_document(tablas_path, strict=True)
+        self.assertTrue(base_report.passed, msg=base_report.model_dump_json(indent=2))
+        self.assertEqual(base_report.error_count, 0)
+        self.assertTrue(tablas_report.passed, msg=tablas_report.model_dump_json(indent=2))
+        self.assertEqual(tablas_report.error_count, 0)
+
+        base_chunks = chunk_markdown_document(base_path)
+        level_count = 0
+        for chunk in base_chunks:
+            doc_view = RetrievedDocument(
+                chunk_id=chunk.chunk_id,
+                score=1.0,
+                capa_normativa=chunk.capa_normativa,
+                territorio=chunk.territorio,
+                norma_titulo=chunk.norma_titulo,
+                titulo_o_capitulo=chunk.titulo_o_capitulo,
+                articulo=chunk.articulo,
+                tipo_contenido=chunk.tipo_contenido,
+                source_file=chunk.source_file,
+                text=chunk.text,
+            )
+            if AiHorecaVectorStore._is_classification_level_table(doc_view):
+                level_count += 1
+        self.assertGreaterEqual(level_count, 2)
+
+        tablas_chunks = chunk_markdown_document(tablas_path)
+        years_found: set[int] = set()
+        for chunk in tablas_chunks:
+            if chunk.tipo_contenido != "tabla_salarial":
+                continue
+            doc_view = RetrievedDocument(
+                chunk_id=chunk.chunk_id,
+                score=1.0,
+                capa_normativa=chunk.capa_normativa,
+                territorio=chunk.territorio,
+                norma_titulo=chunk.norma_titulo,
+                titulo_o_capitulo=chunk.titulo_o_capitulo,
+                articulo=chunk.articulo,
+                tipo_contenido=chunk.tipo_contenido,
+                source_file=chunk.source_file,
+                text=chunk.text,
+            )
+            if AiHorecaVectorStore._is_monetary_table(doc_view):
+                yr = AiHorecaVectorStore._extract_chunk_year(doc_view)
+                self.assertEqual(yr, 2025, msg=chunk.chunk_id)
+                years_found.add(yr)
+        self.assertEqual(years_found, {2025})
 
 
 class TestValidatorDefectTraps(unittest.TestCase):
@@ -731,6 +835,78 @@ class TestRetrievalSelectionLogic(unittest.TestCase):
         self.assertIn("tbl_extra_2026", selected_ids)
         self.assertIn("anexo1", selected_ids)
         self.assertIn("anexo2", selected_ids)
+
+    def test_build_filter_preserves_multiword_territories_and_aliases(self) -> None:
+        f_lp = AiHorecaVectorStore._build_filter(provincia="las_palmas")
+        self.assertEqual(f_lp.must[0].match.value, "las_palmas")
+
+        f_lanz = AiHorecaVectorStore._build_filter(provincia="Lanzarote")
+        self.assertEqual(f_lanz.must[0].match.value, "las_palmas")
+
+        f_pair = AiHorecaVectorStore._build_filter(provincia="madrid,_leon")
+        self.assertEqual(f_pair.must[0].match.any, ["madrid", "leon"])
+
+        f_canarias = AiHorecaVectorStore._build_filter(provincia="las_palmas,_santa_cruz_tenerife")
+        self.assertEqual(f_canarias.must[0].match.any, ["las_palmas", "santa_cruz_tenerife"])
+
+    def test_audit_accepts_annual_percentage_revision_and_prorated_and_rejects_hallucination(self) -> None:
+        docs = [
+            self._doc(
+                "lp_tbl_2025",
+                territorio="las_palmas",
+                articulo="TABLAS SALARIALES AÑO 2025",
+                tipo="tabla_salarial",
+                text="| Nivel IV | 1.518,51 |",
+            ),
+            self._doc(
+                "lp_acuerdo_2026",
+                territorio="las_palmas",
+                articulo="Preámbulo / Encabezado (Parte 2/4)",
+                tipo="articulo",
+                text="CUARTO. El incremento salarial para 2026 será de 4,00% sobre las tablas de 2025.",
+            ),
+        ]
+        cite = LegalCitation(
+            norma="Convenio Colectivo de Hostelería de Las Palmas",
+            capa_normativa="convenio_provincial",
+            articulo_o_tabla="Acuerdo Cuarto y Tabla 2025",
+            extracto_clave="1.518,51 € en abril 2025 + 4,00 % en enero 2026.",
+        )
+
+        synth_ok = LegalSynthesisSchema(
+            jerarquia_normativa_aplicada="Convenio Las Palmas sobre mínimos ET.",
+            citas_normativas=[cite],
+            cifras_y_datos_criticos=["1.518,51 €", "4,00%"],
+            respuesta_final_markdown=(
+                "Según la Tabla Salarial 2025 el salario base es 1.518,51 € mensuales; "
+                "aplicando la subida obligatoria del 4,00 % prevista en el Acuerdo Cuarto para 2026, "
+                "el importe actualizado asciende a 1.579,25 € brutos/mes en 14 pagas "
+                "(1.842,46 € brutos/mes prorrateado en 12 pagas)."
+            ),
+        )
+        rep_ok = AiHorecaGraphNodes._audit_numerical_and_citation_fidelity(
+            synthesis=synth_ok,
+            docs=docs,
+            expected_territorio="las_palmas",
+        )
+        self.assertTrue(rep_ok.passed, msg=rep_ok.model_dump_json(indent=2))
+        self.assertEqual(rep_ok.unverified_numbers, [])
+
+        synth_bad = LegalSynthesisSchema(
+            jerarquia_normativa_aplicada="Convenio Las Palmas.",
+            citas_normativas=[cite],
+            cifras_y_datos_criticos=["1.518,51 €"],
+            respuesta_final_markdown=(
+                "Según la Tabla Salarial 2025 corresponde 1.518,51 € y en 2026 pasaría a 1.999,99 €."
+            ),
+        )
+        rep_bad = AiHorecaGraphNodes._audit_numerical_and_citation_fidelity(
+            synthesis=synth_bad,
+            docs=docs,
+            expected_territorio="las_palmas",
+        )
+        self.assertFalse(rep_bad.passed)
+        self.assertIn("1.999,99", rep_bad.unverified_numbers)
 
 
 if __name__ == "__main__":
