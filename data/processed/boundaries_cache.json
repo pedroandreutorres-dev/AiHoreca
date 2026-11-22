@@ -47,5 +47,26 @@
     "start_page": 2,
     "end_page": 65,
     "justificacion": "El documento comienza en la página 2 con el acta de acuerdo y el articulado del XVII Convenio Colectivo de Hostelería de las Illes Balears, extendiéndose hasta la página 65, que contiene las firmas finales de los representantes de la comisión negociadora."
+  },
+  "convenio_malaga.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "malaga",
+    "start_page": 1,
+    "end_page": 37,
+    "justificacion": "Texto articulado completo (Arts. 1-78), disposiciones y Anexos I, II y III (clasificación por grupos salariales) del Convenio de Hostelería de Málaga (BOPMA n.º 162, 23/08/2018). Se omiten las págs. 38-77 (tablas históricas 2018-2022 sustituidas por BOPMA n.º 70, 14/04/2026)."
+  },
+  "convenio_malaga_modificacion_2024.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "malaga",
+    "start_page": 1,
+    "end_page": 4,
+    "justificacion": "Acuerdo de modificación y revisión del Convenio de Hostelería de Málaga (BOPMA n.º 24, 02/02/2024): ampliación de vigencia del Art. 4 hasta 31/12/2027, incrementos salariales 2023-2027 con cláusula IPC y comisión Plan Acredita. Se omiten págs. 5-18 (tablas 2022-2023 ya sustituidas)."
+  },
+  "convenio_malaga_tablas_2025_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "territorio": "malaga",
+    "start_page": 2,
+    "end_page": 19,
+    "justificacion": "Acta de la comisión negociadora y tablas salariales oficiales definitivas 2025 y provisionales 2026 (todas las secciones y conceptos económicos no incluidos en tablas) del Convenio de Hostelería de Málaga (BOPMA n.º 70, 14/04/2026)."
   }
 }

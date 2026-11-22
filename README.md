@@ -6,11 +6,12 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 2. **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI** (áreas funcionales 1ª a 6ª, grupos profesionales y faltas/sanciones).
 3. **Convenios colectivos provinciales y autonómicos** (tablas salariales y condiciones específicas de cada territorio).
 
-**Territorios indexados actualmente (782 fragmentos en Qdrant Cloud):**
+**Territorios indexados actualmente (942 fragmentos en Qdrant Cloud):**
 - **Comunidad de Madrid**
 - **Cataluña** (*Barcelona, Girona, Tarragona y Lleida*)
 - **Islas Baleares** (*Mallorca, Menorca, Ibiza y Formentera*)
 - **León**
+- **Málaga**
 
 ---
 
@@ -59,7 +60,7 @@ AiHoreca/
 │   ├── ingestion/            # Extracción PDF a Markdown y aplicación de erratas
 │   ├── retrieval/            # Chunker e indexación/búsqueda híbrida en Qdrant
 │   ├── graph/                # Flujo en LangGraph, esquemas Pydantic y verificador numérico
-│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (24 casos)
+│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (26 casos)
 │   └── app/                  # Streamlit (streaming y Rayos-X), servicio, CLI y auditor diario
 ├── requirements.txt
 └── README.md
@@ -94,7 +95,7 @@ python -m src.retrieval.vector_store --sync-to-cloud
 ```
 
 ### 3. Ejecución y tests de regresión
-El proyecto cuenta con una batería de **24 casos de prueba (`GD_01`–`GD_24`)** contrastados contra [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) (`100%` en intención, enrutamiento, detección territorial y ausencia de alucinaciones; `0.979` en *faithfulness* y `0.997` en *answer relevancy*):
+El proyecto cuenta con una batería de **26 casos de prueba (`GD_01`–`GD_26`)** con regresión determinista `--quick` al `100%` (`26/26` en intención, enrutamiento, detección territorial y cero alucinaciones numéricas) y línea base semántica RAGAS fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
 
 ```powershell
 # Comprobación rápida determinista en CPU (~5s, sin coste de juez LLM)

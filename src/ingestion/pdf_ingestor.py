@@ -41,8 +41,9 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"b\.?\s*o\.?\s*c\.?\s*m\.?(?:\s+n[úu]m)?|"
     r"bocm-\d+|"
     r"diari\s+oficial\s+de\s+la\s+generalitat|"
-    r"cve-dogc-|cve:\s*boe-|issn\s+\d|"
-    r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fono:\s*\d|"
+    r"cve-dogc-|cve:\s*boe-|cve:\s*\d{8}-\d+-\d+|issn\s+\d|"
+    r"centro\s+de\s+ediciones\s+de\s+la\s+diputaci[óo]n|"
+    r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fonos?:\s*\d|"
     r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*de\s*\d+)?|"
     r"fasc[íi]culo\s+\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
@@ -175,13 +176,16 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
         if re.fullmatch(r"\d{1,5}", stripped):
             continue
 
-        # Formatear encabezados estructurales jurídicos
+        # Formatear encabezados estructurales jurídicos (exigiendo mayúscula inicial para no promocionar frases partidas)
         if re.match(
-            r"(?i)^(?:CAP[ÍI]TULO|T[ÍI]TULO|ANEXO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)",
+            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+(?:presente\s+)?convenio\b)",
             stripped,
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
-        elif re.match(r"(?i)^(?:Art[íi]culo|Art\.)\s*\d+", stripped):
+        elif re.match(
+            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
+            stripped,
+        ):
             cleaned_lines.append(f"\n### {stripped}\n")
         else:
             cleaned_lines.append(stripped)
@@ -211,7 +215,12 @@ def _extract_table_pages_with_gemini(
         "3. Si una celda abarca varias filas (rowspan), repite el valor correspondiente en cada fila para "
         "que todas las filas tengan exactamente el mismo número de columnas y ningún importe salarial "
         "quede desplazado.\n"
-        "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown)."
+        "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown).\n"
+        "5. Conserva siempre encima de cada tabla Markdown sus encabezados descriptivos de sección, "
+        "establecimiento y periodo de vigencia (`## SECCIÓN...`, `### Desde 01/01/2026 hasta 31/12/2026 "
+        "(provisionales)`, `### Conceptos económicos...`), incluye subtítulos diferenciados `### SALARIOS MES` "
+        "y `### SALARIOS HORA` cuando una página contenga ambas modalidades, y formatea los importes españoles "
+        "sin espacio tras el punto de millar (`1.623,07`, nunca `1. 623,07`)."
     )
 
     try:
@@ -241,6 +250,7 @@ def _extract_table_pages_with_gemini(
     text = (response.text or "").strip()
     text = re.sub(r"^```(?:markdown|md)?\s*\n", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n```\s*$", "", text)
+    text = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", text)
     return text.strip()
 
 
@@ -260,7 +270,7 @@ def _page_has_complex_table(page: pymupdf.Page) -> bool:
 
 
 def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
-    """Verifica en CPU si las tablas de la página tienen rejilla vectorial completa sin celdas colapsadas."""
+    """Verifica en CPU si las tablas de la página tienen rejilla vectorial completa sin celdas colapsadas o fusionadas."""
     try:
         finder = page.find_tables()
         if not finder or not finder.tables:
@@ -268,9 +278,16 @@ def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
         for table in finder.tables:
             if table.col_count < 3 or table.row_count < 3:
                 return False
-            for row in table.extract():
+            rows = table.extract()
+            if not rows or any(c is None or not str(c).strip() for c in rows[0]):
+                return False
+            for row in rows:
                 for cell in row:
-                    if cell and len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", cell)) >= 2:
+                    if cell and (
+                        "\n," in cell
+                        or ",\n" in cell
+                        or len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", cell)) >= 2
+                    ):
                         return False
         return True
     except Exception:
@@ -288,14 +305,15 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
         if re.fullmatch(r"[*_#\s]*\d{1,5}[*_#\s]*", stripped):
             continue
         cleaned_lines.append(line)
-    return "\n".join(cleaned_lines).strip()
+    out = "\n".join(cleaned_lines).strip()
+    return re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", out)
 
 
 def extract_hybrid_markdown(
     pdf_path: Path,
     boundary: DocumentBoundary,
     client: Optional[genai.Client] = None,
-    max_table_batch_size: int = 3,
+    max_table_batch_size: int = 2,
 ) -> str:
     """Extrae el documento en el rango [start_page, end_page] combinando CPU (texto/rejillas limpias) y Gemini (tablas complejas)."""
     genai_client = client or get_genai_client()
@@ -345,6 +363,7 @@ def extract_hybrid_markdown(
     doc.close()
 
     full_md = "\n\n".join(part for part in markdown_parts if part.strip())
+    full_md = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", full_md)
     full_md = re.sub(r"\n{3,}", "\n\n", full_md).strip() + "\n"
     return full_md
 

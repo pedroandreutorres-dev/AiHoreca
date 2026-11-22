@@ -43,8 +43,20 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"#*\s*b\s*<mark>o</mark>\s*\*\*<mark>cm</mark>\*\*|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+de\s+\w+\s+de\s+\d{4}|"
     r"===\s*document\s+parser\s+messages\s*===|"
-    r"warning:\s*rapidocr\s+is\s+missing.*"
+    r"warning:\s*rapidocr\s+is\s+missing.*|"
+    r"cve:\s*\d{8}-\d+-\d+.*|"
+    r"centro\s+de\s+ediciones.*|"
+    r"tel[ée]fonos?:\s*\d.*"
     r")$"
+)
+
+_STANDALONE_TABLE_SECTION_RE = re.compile(
+    r"(?i)^#{1,3}\s+\**((?:SECCI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA|SEXTA|S[ÉE]PTIMA|OCTAVA|NOVENA|\d+)|"
+    r"ESTABLECIMIENTOS\s+DE\s+LA\s+SECCI[ÓO]N|"
+    r"TABLAS?\s+SALARIAL(?:ES)?|"
+    r"CONVENIO\s+PROVINCIAL|"
+    r"Conceptos\s+econ[óo]micos\s+no\s+incluidos\s+en\s+las\s+tablas\s+salariales|"
+    r"Desde\s+\d{2}/\d{2}/202\d)[^\n]*?)\**$"
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
@@ -108,6 +120,25 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "tenerife": "santa_cruz_tenerife",
     "bizkaia": "vizcaya",
     "cataluna": "catalunya",
+}
+
+
+_PRETTY_TERRITORY_TITLES: dict[str, str] = {
+    "a_coruna": "A Coruña",
+    "alava": "Álava",
+    "almeria": "Almería",
+    "avila": "Ávila",
+    "caceres": "Cáceres",
+    "cadiz": "Cádiz",
+    "castellon": "Castellón",
+    "ciudad_real": "Ciudad Real",
+    "cordoba": "Córdoba",
+    "guipuzcoa": "Guipúzcoa",
+    "jaen": "Jaén",
+    "la_rioja": "La Rioja",
+    "las_palmas": "Las Palmas",
+    "malaga": "Málaga",
+    "santa_cruz_tenerife": "Santa Cruz de Tenerife",
 }
 
 
@@ -184,7 +215,7 @@ def _infer_document_metadata(
             ["leon"],
         )
 
-    pretty_terr = territorio.replace("_", " ").title()
+    pretty_terr = _PRETTY_TERRITORY_TITLES.get(territorio, territorio.replace("_", " ").title())
     provincias_aplicables = list(AUTONOMOUS_COMMUNITY_EXPANSION.get(territorio, [territorio]))
     return (
         f"Convenio Colectivo de Hostelería de {pretty_terr}",
@@ -249,6 +280,7 @@ def _clean_markdown_lines(raw_text: str) -> list[str]:
         .replace("\u2002", " ")
         .replace("\u00a0", " ")
     )
+    normalized = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", normalized)
     cleaned: list[str] = []
     for line in normalized.splitlines():
         stripped = line.strip()
@@ -317,6 +349,8 @@ def chunk_markdown_document(
 
     raw_text = md_path.read_text(encoding="utf-8")
     lines = _clean_markdown_lines(raw_text)
+    is_table_doc = "tabla" in md_path.stem.lower()
+    in_table_block = False
 
     current_base_chapter = "Disposiciones Generales / Preámbulo"
     current_chapter = current_base_chapter
@@ -339,6 +373,7 @@ def chunk_markdown_document(
 
         chap_match = _CHAPTER_OR_TITLE_RE.match(stripped)
         if chap_match:
+            in_table_block = False
             flush_section()
             chap_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
             lookahead = idx + 1
@@ -367,6 +402,7 @@ def chunk_markdown_document(
             continue
 
         if _TABLE_YEAR_OR_PROVINCE_RE.match(stripped):
+            in_table_block = True
             flush_section()
             sub_ctx = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
             current_chapter = f"{current_base_chapter} | {sub_ctx}"
@@ -375,7 +411,58 @@ def chunk_markdown_document(
             idx += 1
             continue
 
-        art_match = _ARTICLE_START_RE.match(stripped)
+        table_sec_match = (
+            _STANDALONE_TABLE_SECTION_RE.match(stripped)
+            if (is_table_doc or current_base_chapter == "Disposiciones Generales / Preámbulo")
+            else None
+        )
+        if table_sec_match:
+            in_table_block = True
+            flush_section()
+            sec_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
+            lookahead = idx + 1
+            appended_lines = [f"## {sec_title}"]
+            for _ in range(3):
+                while lookahead < len(lines) and not lines[lookahead].strip():
+                    lookahead += 1
+                if lookahead >= len(lines):
+                    break
+                next_str = lines[lookahead].strip()
+                clean_next = re.sub(r"^#{1,4}\s*", "", next_str).strip("* ")
+                if (
+                    not clean_next
+                    or len(clean_next) >= 120
+                    or next_str.startswith("|")
+                    or _CHAPTER_OR_TITLE_RE.match(next_str)
+                    or _DISPOSITION_START_RE.match(next_str)
+                    or _ARTICLE_START_RE.match(clean_next)
+                    or re.match(
+                        r"(?i)^(?:SECCI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA|SEXTA|S[ÉE]PTIMA|OCTAVA|NOVENA|\d+)|ESTABLECIMIENTOS\s+DE\s+LA\s+SECCI[ÓO]N|CONVENIO\s+PROVINCIAL)\b",
+                        clean_next,
+                    )
+                ):
+                    break
+                if next_str.startswith("#") or re.match(
+                    r"(?i)^(?:Desde\s+\d{2}/\d{2}/202\d|Del\s+\d{1,2}\s+de\s+|Salarios\s+|Personal\s+|Conceptos\s+econ[óo]micos|Tablas?\s+salarial)",
+                    clean_next,
+                ):
+                    sec_title = f"{sec_title} | {clean_next}"
+                    appended_lines.append(next_str if next_str.startswith("#") else f"### {clean_next}")
+                    idx = lookahead
+                    lookahead += 1
+                else:
+                    break
+            current_chapter = (
+                sec_title
+                if "tabla" in sec_title.lower()
+                else f"Tablas Salariales | {sec_title}"
+            )
+            current_article = sec_title
+            current_buffer.extend(appended_lines)
+            idx += 1
+            continue
+
+        art_match = None if (is_table_doc and in_table_block) else _ARTICLE_START_RE.match(stripped)
         if art_match:
             flush_section()
             art_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
@@ -399,6 +486,7 @@ def chunk_markdown_document(
 
         disp_match = _DISPOSITION_START_RE.match(stripped)
         if disp_match:
+            in_table_block = False
             flush_section()
             raw_disp = re.sub(r"^#{1,4}\s*", "", stripped).strip()
             inline_bold = re.match(
@@ -418,8 +506,12 @@ def chunk_markdown_document(
             continue
 
         sub_match = _MARKDOWN_SUBHEADING_RE.match(stripped)
-        if sub_match and ("anexo" in current_base_chapter.lower() or "tabla" in current_chapter.lower()):
+        if sub_match and (is_table_doc or "anexo" in current_base_chapter.lower() or "tabla" in current_chapter.lower()):
             sub_title = sub_match.group(1).strip("* ")
+            if is_table_doc and in_table_block and _ARTICLE_START_RE.match(sub_title):
+                current_buffer.append(line)
+                idx += 1
+                continue
             # Si el buffer actual ya tiene suficiente contenido (>600 chars), abrimos sub-sección nueva
             if sum(len(x) for x in current_buffer) >= 600:
                 flush_section()

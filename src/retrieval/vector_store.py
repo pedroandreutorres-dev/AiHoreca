@@ -687,24 +687,43 @@ class AiHorecaVectorStore:
         return any(all(stem in line for stem in role_stems) for line in doc.text.lower().splitlines())
 
     @staticmethod
+    def _is_monetary_table(doc: RetrievedDocument) -> bool:
+        """Determina si un fragmento contiene importes salariales/económicos (con '€'/'euros' o >=4 importes decimales XX,XX)."""
+        if "€" in doc.text or "euros" in doc.text.lower():
+            return True
+        return len(re.findall(r"\b\d{1,3}(?:\.\s?\d{3})*,\d{2}\b", doc.text)) >= 4
+
+    @classmethod
     def _is_classification_level_table(
+        cls,
         doc: RetrievedDocument,
         include_seniority_tables: bool = False,
     ) -> bool:
-        """Identifica tablas de encuadramiento/niveles o categorías sin importes en €, excluyendo antigüedad salvo consulta expresa."""
-        if doc.capa_normativa != "convenio_provincial" or doc.tipo_contenido != "tabla_salarial":
+        """Identifica tablas o anexos de encuadramiento/niveles y categorías sin importes monetarios."""
+        if doc.capa_normativa != "convenio_provincial":
             return False
-        if "€" in doc.text or "euros" in doc.text.lower():
+        if cls._is_monetary_table(doc):
             return False
         surface = f"{doc.titulo_o_capitulo} {doc.articulo}"
         if not include_seniority_tables and ("antigüedad" in surface.lower() or "antiguedad" in surface.lower()):
             return False
-        return bool(
-            re.search(
-                r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
-                surface,
+        if doc.tipo_contenido == "tabla_salarial":
+            return bool(
+                re.search(
+                    r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
+                    surface,
+                )
             )
-        )
+        if doc.tipo_contenido == "anexo_o_disposicion":
+            body_head = doc.text.split("\n\n", 1)[-1][:350]
+            return bool(
+                re.search(
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+profesional|equivalencias?\s+de\s+clasificaci)\b",
+                    f"{surface} {body_head}",
+                )
+                or ("anexo" in doc.titulo_o_capitulo.lower() and re.search(r"\bGRUPO\s+[IVX]+\b", body_head))
+            )
+        return False
 
     @staticmethod
     def _deduplicate_docs(items: list[RetrievedDocument]) -> list[RetrievedDocument]:
@@ -860,7 +879,7 @@ class AiHorecaVectorStore:
                     "capa_normativa": "convenio_provincial",
                     "provincia": norm_p,
                     "tipo_contenido": "anexo_o_disposicion",
-                    "top_k": 2,
+                    "top_k": 4 if is_remuneration_query else 2,
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
                     "include_vectors": include_vectors,
@@ -886,7 +905,7 @@ class AiHorecaVectorStore:
             )
         ]
 
-        euro_tables = [t for t in filtered_tables if "€" in t.text or "euros" in t.text.lower()]
+        euro_tables = [t for t in filtered_tables if self._is_monetary_table(t)]
         level_tables = [t for t in filtered_tables if t not in euro_tables]
         if not explicit_years and euro_tables:
             max_avail_year = max((self._extract_chunk_year(t) for t in euro_tables), default=0)
@@ -897,8 +916,14 @@ class AiHorecaVectorStore:
 
         top_level_candidates: list[RetrievedDocument] = []
         seen_level_sections: set[str] = set()
+        classification_annexes = [
+            a
+            for a in layer_results["prov_anexo"]
+            if self._is_classification_level_table(a, include_seniority_tables)
+        ]
         cls_levels = sorted(
-            (t for t in level_tables if self._is_classification_level_table(t, include_seniority_tables)),
+            [t for t in level_tables if self._is_classification_level_table(t, include_seniority_tables)]
+            + classification_annexes,
             key=lambda t: not self._matches_role_stem(t, role_stems),
         )
         for item in cls_levels:
@@ -1091,14 +1116,17 @@ class AiHorecaVectorStore:
                 return sum(
                     1
                     for s in selected
-                    if _belongs_to_territory(s, terr_key) and s.tipo_contenido == "tabla_salarial"
+                    if _belongs_to_territory(s, terr_key)
+                    and (
+                        s.tipo_contenido == "tabla_salarial"
+                        or self._is_classification_level_table(s, include_seniority_tables)
+                    )
                 )
 
             prov_euro_tables = [
                 d
                 for d in terr_cands
-                if d.tipo_contenido == "tabla_salarial"
-                and ("€" in d.text or "euros" in d.text.lower())
+                if d.tipo_contenido == "tabla_salarial" and self._is_monetary_table(d)
             ]
             distinct_cls_sections = {
                 d.titulo_o_capitulo.strip()
@@ -1152,7 +1180,7 @@ class AiHorecaVectorStore:
                 if not explicit_years and max_cand_year > 0:
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._is_monetary_table(d)
                         and self._extract_chunk_year(d) == max_cand_year
                         and self._doc_matches_area(d, area_pattern),
                         1,
@@ -1161,7 +1189,7 @@ class AiHorecaVectorStore:
                 else:
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._is_monetary_table(d)
                         and self._doc_matches_area(d, area_pattern),
                         1,
                         terr_cands,
@@ -1171,7 +1199,7 @@ class AiHorecaVectorStore:
                 if not explicit_years and max_cand_year > 0:
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and ("€" in d.text or "euros" in d.text.lower())
+                        and self._is_monetary_table(d)
                         and self._extract_chunk_year(d) == max_cand_year,
                         1,
                         terr_cands,
@@ -1179,7 +1207,7 @@ class AiHorecaVectorStore:
                 else:
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and ("€" in d.text or "euros" in d.text.lower()),
+                        and self._is_monetary_table(d),
                         1,
                         terr_cands,
                     )
@@ -1236,7 +1264,7 @@ class AiHorecaVectorStore:
                 ):
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and not ("€" in d.text or "euros" in d.text.lower()),
+                        and not self._is_monetary_table(d),
                         max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
                         terr_cands,
                     )
