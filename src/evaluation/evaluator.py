@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -255,7 +256,8 @@ def evaluate_golden_dataset(
             logger.warning("No se pudo reutilizar caché previa de evaluación (%s). Recomputando...", exc)
 
     vstore = AiHorecaVectorStore()
-    mem = SessionMemoryStore()
+    tmp_mem_dir = tempfile.TemporaryDirectory(prefix="aihoreca_eval_mem_")
+    mem = SessionMemoryStore(db_path=Path(tmp_mem_dir.name) / "eval_sessions.db")
     app = build_aihoreca_graph(vector_store=vstore)
 
     results: list[EvaluationCaseResult] = []
@@ -424,6 +426,7 @@ def evaluate_golden_dataset(
             )
     finally:
         vstore.close()
+        tmp_mem_dir.cleanup()
 
     # Si se evaluó un subconjunto, devolvemos el informe del subconjunto solicitado
     final_summary = _build_summary_report(results)

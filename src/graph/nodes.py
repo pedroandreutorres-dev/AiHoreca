@@ -1369,6 +1369,22 @@ class AiHorecaGraphNodes:
         # Constantes universales de calendario/jornada (12 meses, 11 meses laborables, 14/15 pagas, 30 días, 40h semanales, base 1 y 100%)
         standard_constants = {"1", "11", "12", "14", "15", "30", "40", "100"}
 
+        corpus_inline_products: set[float] = set()
+        for pm in re.finditer(r"\b(\d+(?:[.,]\d+)?)\s*[x×\*]\s*(\d+(?:[.,]\d+)?)\b", combined_corpus, flags=re.IGNORECASE):
+            try:
+                p_a = float(cls._normalize_number_token(pm.group(1)))
+                p_b = float(cls._normalize_number_token(pm.group(2)))
+                if p_a > 0 and p_b > 0:
+                    prod_val = round(p_a * p_b, 4)
+                    corpus_inline_products.add(prod_val)
+                    norm_corpus_numbers.add(
+                        str(int(round(prod_val)))
+                        if abs(prod_val - round(prod_val)) < 1e-6
+                        else f"{prod_val:g}"
+                    )
+            except ValueError:
+                pass
+
         corpus_floats: list[float] = []
         for n_str in norm_corpus_numbers:
             try:
@@ -1402,6 +1418,9 @@ class AiHorecaGraphNodes:
         auto_derived_floats: set[float] = set()
         ratios_jornada = [1.0] + [h_val / 40.0 for h_val in query_floats]
         annual_hours_in_corpus = [v for v in corpus_floats if 1500.0 <= v <= 2000.0]
+        monthly_divisors_in_corpus = sorted(
+            {v for v in (set(corpus_floats) | corpus_inline_products) if 100.0 <= v <= 250.0}
+        )
         for c_val in corpus_floats:
             if 0.5 <= c_val < 500.0:
                 for mult in (11.0, 12.0, 20.0, 21.0, 22.0, 30.0):
@@ -1420,6 +1439,11 @@ class AiHorecaGraphNodes:
                         auto_derived_floats.add(round(base_hour, 2))
                         for rec in surcharge_multipliers:
                             auto_derived_floats.add(round(base_hour * rec, 2))
+                for m_div in monthly_divisors_in_corpus:
+                    base_month_hour = c_val / m_div
+                    auto_derived_floats.add(round(base_month_hour, 2))
+                    for rec in surcharge_multipliers:
+                        auto_derived_floats.add(round(base_month_hour * rec, 2))
 
         # Sumas multiconcepto generales (Salario Base o Prorrateado + subconjuntos de complementos monetarios del corpus)
         import itertools

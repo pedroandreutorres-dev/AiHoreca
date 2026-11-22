@@ -11,6 +11,9 @@ from google import genai
 from google.genai import types
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(Path.home() / ".env")
+
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 QDRANT_STORAGE_DIR = PROJECT_ROOT / "data" / "qdrant_storage"
@@ -36,15 +39,23 @@ AUDIT_REPORTS_DIR = LOGS_DIR / "auditorias"
 AUDIT_CURSOR_PATH = LOGS_DIR / ".sync_cursor.json"
 HF_SQUASH_INTERVAL_DAYS = int(os.getenv("HF_SQUASH_INTERVAL_DAYS", "30"))
 
-GEMINI_LITE_MODEL = "gemini-3.1-flash-lite"
-GEMINI_FAST_MODEL = "gemini-3.5-flash"
-GEMINI_REASONING_MODEL = "gemini-3.5-flash"
-GEMINI_FALLBACK_MODELS = (
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
+def _parse_models_tuple(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    items = tuple(m.strip() for m in (raw or "").split(",") if m.strip())
+    return items or default
+
+
+GEMINI_LITE_MODEL = (os.getenv("GEMINI_LITE_MODEL") or "gemini-3.1-flash-lite").strip()
+GEMINI_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or "gemini-3.5-flash-lite").strip()
+GEMINI_REASONING_MODEL = (os.getenv("GEMINI_REASONING_MODEL") or "gemini-3.5-flash-lite").strip()
+GEMINI_FALLBACK_MODELS = _parse_models_tuple(
+    os.getenv("GEMINI_FALLBACK_MODELS", ""),
+    (
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+    ),
 )
 EMBEDDING_MODEL = "gemini-embedding-001"
 COHERE_RERANK_MODEL = "rerank-multilingual-v3.0"
@@ -76,6 +87,10 @@ def load_environment() -> None:
                 "QDRANT_URL",
                 "QDRANT_API_KEY",
                 "QDRANT_COLLECTION_NAME",
+                "GEMINI_LITE_MODEL",
+                "GEMINI_FAST_MODEL",
+                "GEMINI_REASONING_MODEL",
+                "GEMINI_FALLBACK_MODELS",
             ):
                 if k in st.secrets and not os.getenv(k):
                     os.environ[k] = str(st.secrets[k])

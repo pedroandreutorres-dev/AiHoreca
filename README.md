@@ -59,7 +59,7 @@ AiHoreca/
 │   ├── ingestion/            # Extracción PDF a Markdown y aplicación de erratas
 │   ├── retrieval/            # Chunker e indexación/búsqueda híbrida en Qdrant
 │   ├── graph/                # Flujo en LangGraph, esquemas Pydantic y verificador numérico
-│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (22 casos)
+│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (24 casos)
 │   └── app/                  # Streamlit (streaming y Rayos-X), servicio, CLI y auditor diario
 ├── requirements.txt
 └── README.md
@@ -94,7 +94,7 @@ python -m src.retrieval.vector_store --sync-to-cloud
 ```
 
 ### 3. Ejecución y tests de regresión
-El proyecto cuenta con una batería de **22 casos de prueba (`GD_01`–`GD_22`)** contrastados contra [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) (`100%` en intención, enrutamiento, detección territorial y ausencia de alucinaciones; `0.981` en *faithfulness* y `0.994` en *answer relevancy*):
+El proyecto cuenta con una batería de **24 casos de prueba (`GD_01`–`GD_24`)** contrastados contra [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) (`100%` en intención, enrutamiento, detección territorial y ausencia de alucinaciones; `0.979` en *faithfulness* y `0.997` en *answer relevancy*):
 
 ```powershell
 # Comprobación rápida determinista en CPU (~5s, sin coste de juez LLM)
