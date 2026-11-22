@@ -1,6 +1,7 @@
 {
   "aleh_vi_estatal.pdf": {
     "doc_type": "aleh_estatal",
+    "doc_role": "aleh",
     "territorio": "estatal",
     "start_page": 1,
     "end_page": 16,
@@ -8,6 +9,7 @@
   },
   "convenio_catalunya_bcn.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
     "territorio": "catalunya",
     "start_page": 2,
     "end_page": 85,
@@ -15,6 +17,7 @@
   },
   "convenio_catalunya_bcn_correccion_erratas.pdf": {
     "doc_type": "correccion_erratas",
+    "doc_role": "erratas",
     "territorio": "catalunya",
     "start_page": 1,
     "end_page": 2,
@@ -22,6 +25,7 @@
   },
   "convenio_leon_texto.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
     "territorio": "leon",
     "start_page": 42,
     "end_page": 76,
@@ -29,6 +33,7 @@
   },
   "convenio_madrid.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
     "territorio": "madrid",
     "start_page": 2,
     "end_page": 57,
@@ -36,6 +41,7 @@
   },
   "estatuto_trabajadores_consolidado.pdf": {
     "doc_type": "estatuto_trabajadores",
+    "doc_role": "estatuto",
     "territorio": "estatal",
     "start_page": 9,
     "end_page": 97,
@@ -43,6 +49,7 @@
   },
   "convenio_baleares.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
     "territorio": "baleares",
     "start_page": 2,
     "end_page": 65,
@@ -50,6 +57,7 @@
   },
   "convenio_malaga.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
     "territorio": "malaga",
     "start_page": 1,
     "end_page": 37,
@@ -57,6 +65,7 @@
   },
   "convenio_malaga_modificacion_2024.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "modificacion",
     "territorio": "malaga",
     "start_page": 1,
     "end_page": 4,
@@ -64,6 +73,11 @@
   },
   "convenio_malaga_tablas_2025_2026.pdf": {
     "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "expected_years": [
+      2025,
+      2026
+    ],
     "territorio": "malaga",
     "start_page": 2,
     "end_page": 19,

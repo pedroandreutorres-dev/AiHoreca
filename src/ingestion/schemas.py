@@ -50,6 +50,93 @@ class DocumentBoundary(BaseModel):
     )
 
 
+class DocumentManifestEntry(DocumentBoundary):
+    """Entrada declarativa del manifiesto de ingesta (`boundaries_cache.json`).
+
+    Extiende `DocumentBoundary` con metadatos opcionales de arquitectura de datos
+    (rol documental, familia de maquetación y directivas de extracción por página)
+    manteniendo 100% de retrocompatibilidad con entradas heredadas.
+    """
+
+    doc_role: Literal[
+        "estatuto",
+        "aleh",
+        "completo",
+        "base",
+        "tablas",
+        "modificacion",
+        "erratas",
+    ] = Field(
+        default="completo",
+        description=(
+            "Rol del documento en el corpus: 'estatuto', 'aleh', 'completo' (texto + tablas vigentes), "
+            "'base' (solo articulado sin tablas vigentes), 'tablas' (anexo/tablas salariales), "
+            "'modificacion' o 'erratas'."
+        ),
+    )
+    layout: Literal["single_column", "double_column", "scanned_ocr"] = Field(
+        default="single_column",
+        description="Familia de maquetación del PDF para despachar el adaptador de extracción adecuado.",
+    )
+    force_gemini_pages: list[int] = Field(
+        default_factory=list,
+        description="Lista de páginas (1-indexed respecto al PDF) cuya extracción se fuerza con Gemini Vision.",
+    )
+    skip_pages: list[int] = Field(
+        default_factory=list,
+        description="Lista de páginas (1-indexed respecto al PDF) dentro de [start_page, end_page] a omitir.",
+    )
+    expected_years: list[int] = Field(
+        default_factory=list,
+        description="Años de vigencia esperados en las tablas salariales de este documento (ej. [2025, 2026]).",
+    )
+
+
+ValidationSeverity = Literal["ERROR", "WARNING", "INFO"]
+
+
+class ValidationIssue(BaseModel):
+    """Hallazgo individual emitido por el Gate de Calidad de ingesta."""
+
+    code: str
+    severity: ValidationSeverity
+    message: str
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class DocumentValidationReport(BaseModel):
+    """Resultado de la validación determinista en CPU para un documento Silver `.md`."""
+
+    md_file: str
+    pdf_file: str | None = None
+    doc_role: str = "completo"
+    passed: bool
+    chunks_count: int = 0
+    pdf_decimals_count: int | None = None
+    md_decimals_count: int = 0
+    issues: list[ValidationIssue] = Field(default_factory=list)
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "ERROR")
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "WARNING")
+
+
+class CorpusValidationReport(BaseModel):
+    """Resumen agregado de validación para todo `data/processed/`."""
+
+    strict: bool = False
+    passed: bool
+    total_documents: int
+    total_chunks: int
+    total_errors: int
+    total_warnings: int
+    documents: list[DocumentValidationReport] = Field(default_factory=list)
+
+
 class ErrataPatch(BaseModel):
     """Representa una sustitución individual indicada en una corrección de erratas oficial."""
 

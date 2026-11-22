@@ -84,21 +84,26 @@ Variables necesarias en `.env` (ver [`.env.example`](.env.example)):
 
 ### 2. Añadir o actualizar convenios
 ```powershell
-# 1. Convertir a Markdown los PDFs nuevos colocados en data/raw/
-python -m src.ingestion.pdf_ingestor
+# 1. Convertir a Markdown un PDF nuevo o todo data/raw/ con Gate de Calidad en CPU
+python -m src.ingestion.pdf_ingestor --only convenio_sevilla.pdf --validate
+python -m src.ingestion.validator --file convenio_sevilla.md --strict
 
 # 2. Subir o actualizar un convenio concreto en Qdrant Cloud sin reindexar los demás
-python -m src.retrieval.vector_store --source-file convenio_baleares.md
+python -m src.retrieval.vector_store --source-file convenio_sevilla.md
 
 # (Opcional) Migrar colección local a Qdrant Cloud sin recalcular embeddings
 python -m src.retrieval.vector_store --sync-to-cloud
 ```
 
 ### 3. Ejecución y tests de regresión
-El proyecto cuenta con una batería de **26 casos de prueba (`GD_01`–`GD_26`)** con regresión determinista `--quick` al `100%` (`26/26` en intención, enrutamiento, detección territorial y cero alucinaciones numéricas) y línea base semántica RAGAS fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
+El proyecto cuenta con una suite unitaria/canario en CPU para el motor de ingesta (`tests/test_ingestion_pipeline.py`) y una batería de **26 casos de prueba (`GD_01`–`GD_26`)** con regresión determinista `--quick` al `100%` (`26/26` en intención, enrutamiento, detección territorial y cero alucinaciones numéricas) y línea base semántica RAGAS fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
 
 ```powershell
-# Comprobación rápida determinista en CPU (~5s, sin coste de juez LLM)
+# Gate de Calidad del corpus Markdown Silver + suite de ingesta en CPU (0 tokens API)
+python -m src.ingestion.validator
+python -m unittest discover -s tests -v
+
+# Comprobación rápida determinista RAG en CPU (~5s, sin coste de juez LLM)
 python -m src.evaluation.regression --quick
 
 # Evaluación completa con juez semántico RAGAS

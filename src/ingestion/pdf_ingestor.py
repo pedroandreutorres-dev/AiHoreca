@@ -8,6 +8,7 @@ Escalable a las 50 provincias sin reglas ni expresiones regulares hardcodeadas p
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
@@ -27,7 +28,11 @@ from src.config import (
     RAW_DATA_DIR,
     get_genai_client,
 )
-from src.ingestion.schemas import DocumentBoundary, ErrataPatchList
+from src.ingestion.schemas import (
+    DocumentBoundary,
+    DocumentManifestEntry,
+    ErrataPatchList,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -178,12 +183,12 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
 
         # Formatear encabezados estructurales jurídicos (exigiendo mayúscula inicial para no promocionar frases partidas)
         if re.match(
-            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+(?:presente\s+)?convenio\b)",
+            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+\b(?!\s+del\s+(?:presente\s+)?convenio\b)",
             stripped,
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
         elif re.match(
-            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
+            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+\b(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
@@ -193,35 +198,66 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
     return "\n".join(cleaned_lines)
 
 
-def _extract_table_pages_with_gemini(
+_THOUSANDS_SPACE_RE = re.compile(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b")
+
+_TABLE_EXTRACTION_PROMPT = (
+    "Extrae íntegramente el contenido de estas páginas pertenecientes a un Convenio Colectivo "
+    "de Hostelería en formato GitHub-Flavored Markdown.\n"
+    "REGLAS ESTRICTAS:\n"
+    "1. Ignora cabeceras y pies de página del boletín oficial (números de página, URLs, códigos CVE).\n"
+    "2. Formatea TODAS las tablas salariales o de datos utilizando exclusivamente sintaxis de tabla "
+    "Markdown estándar (`| Columna 1 | Columna 2 | ... |`). Prohibido usar etiquetas HTML `<table>`.\n"
+    "3. Si una celda abarca varias filas (rowspan), repite el valor correspondiente en cada fila para "
+    "que todas las filas tengan exactamente el mismo número de columnas y ningún importe salarial "
+    "quede desplazado.\n"
+    "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown).\n"
+    "5. Conserva siempre encima de cada tabla Markdown sus encabezados descriptivos de sección, "
+    "establecimiento y periodo de vigencia (`## SECCIÓN...`, `### Desde 01/01/2026 hasta 31/12/2026 "
+    "(provisionales)`, `### Conceptos económicos...`), incluye subtítulos diferenciados `### SALARIOS MES` "
+    "y `### SALARIOS HORA` cuando una página contenga ambas modalidades, y formatea los importes españoles "
+    "sin espacio tras el punto de millar (`1.623,07`, nunca `1. 623,07`)."
+)
+
+_SCANNED_OCR_PROMPT = (
+    "Transcribe íntegramente el texto y las tablas de estas páginas escaneadas pertenecientes a un "
+    "Convenio Colectivo de Hostelería en formato GitHub-Flavored Markdown.\n"
+    "REGLAS ESTRICTAS:\n"
+    "1. Ignora cabeceras, pies de página, sellos o marcas laterales del boletín oficial.\n"
+    "2. Reconstruye la estructura con títulos (`##`, `###`) para capítulos, secciones y artículos.\n"
+    "3. Formatea TODAS las tablas con sintaxis Markdown estándar (`| Columna 1 | Columna 2 | ... |`), "
+    "sin HTML `<table>`, repitiendo categorías o celdas combinadas para conservar alineación.\n"
+    "4. Devuelve únicamente el Markdown limpio, sin bloques envolventes (```markdown), y formatea los "
+    "importes españoles sin espacio tras el punto de millar (`1.623,07`, nunca `1. 623,07`)."
+)
+
+
+def _normalize_spanish_thousands(text: str) -> str:
+    """Corrige el artefacto tipográfico `1. 623,07` o `1 .623,07` -> `1.623,07`."""
+    return _THOUSANDS_SPACE_RE.sub(r"\1.\2", text)
+
+
+def _clean_gemini_markdown_output(text: str) -> str:
+    """Elimina cercos ```markdown residuales y normaliza millares españoles."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:markdown|md)?\s*\n", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n```\s*$", "", cleaned)
+    return _normalize_spanish_thousands(cleaned).strip()
+
+
+def _extract_pdf_pages_with_gemini(
     doc: pymupdf.Document,
     page_indices: list[int],
     client: genai.Client,
+    prompt: str,
+    *,
+    allow_text_layout_fallback: bool = True,
 ) -> str:
-    """Recorta en memoria un conjunto de páginas con tablas y las convierte a Markdown vía Gemini."""
+    """Recorta en memoria páginas de un PDF y las transcribe a Markdown vía Gemini."""
     sub_doc = pymupdf.open()
     for p_idx in page_indices:
         sub_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
     pdf_bytes = sub_doc.tobytes()
     sub_doc.close()
-
-    prompt = (
-        "Extrae íntegramente el contenido de estas páginas pertenecientes a un Convenio Colectivo "
-        "de Hostelería en formato GitHub-Flavored Markdown.\n"
-        "REGLAS ESTRICTAS:\n"
-        "1. Ignora cabeceras y pies de página del boletín oficial (números de página, URLs, códigos CVE).\n"
-        "2. Formatea TODAS las tablas salariales o de datos utilizando exclusivamente sintaxis de tabla "
-        "Markdown estándar (`| Columna 1 | Columna 2 | ... |`). Prohibido usar etiquetas HTML `<table>`.\n"
-        "3. Si una celda abarca varias filas (rowspan), repite el valor correspondiente en cada fila para "
-        "que todas las filas tengan exactamente el mismo número de columnas y ningún importe salarial "
-        "quede desplazado.\n"
-        "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown).\n"
-        "5. Conserva siempre encima de cada tabla Markdown sus encabezados descriptivos de sección, "
-        "establecimiento y periodo de vigencia (`## SECCIÓN...`, `### Desde 01/01/2026 hasta 31/12/2026 "
-        "(provisionales)`, `### Conceptos económicos...`), incluye subtítulos diferenciados `### SALARIOS MES` "
-        "y `### SALARIOS HORA` cuando una página contenga ambas modalidades, y formatea los importes españoles "
-        "sin espacio tras el punto de millar (`1.623,07`, nunca `1. 623,07`)."
-    )
 
     try:
         response = _generate_with_fallback(
@@ -233,25 +269,132 @@ def _extract_table_pages_with_gemini(
             config=types.GenerateContentConfig(temperature=0.0),
         )
     except Exception as exc:
-        logger.warning(
-            "  -> Respaldo por texto estructurado activado tras timeout/error en bytes PDF (%s)...",
-            exc,
-        )
-        raw_layout_pages = [
-            f"--- PÁGINA {p_idx + 1} ---\n" + doc[p_idx].get_text("text", sort=True)
-            for p_idx in page_indices
-        ]
-        response = _generate_with_fallback(
-            client=client,
-            contents=prompt + "\n\nTEXTO CON LAYOUT DE PÁGINAS:\n" + "\n\n".join(raw_layout_pages),
-            config=types.GenerateContentConfig(temperature=0.0),
-        )
+        if allow_text_layout_fallback:
+            logger.warning(
+                "  -> Respaldo por texto estructurado activado tras timeout/error en bytes PDF (%s)...",
+                exc,
+            )
+            raw_layout_pages = [
+                f"--- PÁGINA {p_idx + 1} ---\n" + doc[p_idx].get_text("text", sort=True)
+                for p_idx in page_indices
+            ]
+            response = _generate_with_fallback(
+                client=client,
+                contents=prompt + "\n\nTEXTO CON LAYOUT DE PÁGINAS:\n" + "\n\n".join(raw_layout_pages),
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
+        else:
+            logger.warning(
+                "  -> Respaldo por imagen PNG activado tras error en bytes PDF escaneados (%s)...",
+                exc,
+            )
+            image_parts = [
+                types.Part.from_bytes(
+                    data=doc[p_idx].get_pixmap(dpi=200).tobytes("png"),
+                    mime_type="image/png",
+                )
+                for p_idx in page_indices
+            ]
+            response = _generate_with_fallback(
+                client=client,
+                contents=[*image_parts, prompt],
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
 
-    text = (response.text or "").strip()
-    text = re.sub(r"^```(?:markdown|md)?\s*\n", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\n```\s*$", "", text)
-    text = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", text)
-    return text.strip()
+    return _clean_gemini_markdown_output(response.text or "")
+
+
+def _extract_table_pages_with_gemini(
+    doc: pymupdf.Document,
+    page_indices: list[int],
+    client: genai.Client,
+) -> str:
+    """Recorta en memoria un conjunto de páginas con tablas y las convierte a Markdown vía Gemini."""
+    return _extract_pdf_pages_with_gemini(
+        doc=doc,
+        page_indices=page_indices,
+        client=client,
+        prompt=_TABLE_EXTRACTION_PROMPT,
+        allow_text_layout_fallback=True,
+    )
+
+
+def _extract_scanned_pages_with_gemini(
+    doc: pymupdf.Document,
+    page_indices: list[int],
+    client: genai.Client,
+) -> str:
+    """Transcribe mediante OCR multimodal en Gemini páginas escaneadas (imagen sin capa de texto)."""
+    return _extract_pdf_pages_with_gemini(
+        doc=doc,
+        page_indices=page_indices,
+        client=client,
+        prompt=_SCANNED_OCR_PROMPT,
+        allow_text_layout_fallback=False,
+    )
+
+
+def _is_scanned_page(page: pymupdf.Page, min_chars: int = 80) -> bool:
+    """Detecta si una página carece de capa de texto útil y contiene imágenes escaneadas."""
+    text_len = len(page.get_text("text").strip())
+    return text_len < min_chars and bool(page.get_images())
+
+
+def _extract_double_column_page_text(page: pymupdf.Page) -> str:
+    """Extrae texto respetando el orden columna izquierda -> columna derecha en boletines a 2 columnas.
+
+    Mantiene encabezados/pies de ancho completo en su posición relativa y revierte al texto plano
+    si la página no muestra bloques separados en ambas mitades.
+    """
+    blocks = [
+        b
+        for b in page.get_text("blocks")
+        if len(b) >= 7 and b[6] == 0 and str(b[4]).strip()
+    ]
+    if not blocks:
+        return ""
+
+    page_width = float(page.rect.width or 0.0)
+    if page_width <= 0.0:
+        return page.get_text("text")
+
+    mid_x = page_width / 2.0
+    wide_blocks: list[tuple] = []
+    left_blocks: list[tuple] = []
+    right_blocks: list[tuple] = []
+
+    for block in blocks:
+        x0, y0, x1, y1 = float(block[0]), float(block[1]), float(block[2]), float(block[3])
+        block_width = x1 - x0
+        if block_width >= page_width * 0.55 and x0 < mid_x - 15.0 and x1 > mid_x + 15.0:
+            wide_blocks.append(block)
+        elif (x0 + x1) / 2.0 < mid_x:
+            left_blocks.append(block)
+        else:
+            right_blocks.append(block)
+
+    if not left_blocks or not right_blocks:
+        return page.get_text("text")
+
+    left_blocks.sort(key=lambda b: (round(float(b[1]), 1), round(float(b[0]), 1)))
+    right_blocks.sort(key=lambda b: (round(float(b[1]), 1), round(float(b[0]), 1)))
+
+    col_top_y = min(float(left_blocks[0][1]), float(right_blocks[0][1]))
+    col_bottom_y = max(float(left_blocks[-1][3]), float(right_blocks[-1][3]))
+
+    top_wide: list[tuple] = []
+    mid_wide: list[tuple] = []
+    bottom_wide: list[tuple] = []
+    for wb in sorted(wide_blocks, key=lambda b: (round(float(b[1]), 1), round(float(b[0]), 1))):
+        if float(wb[3]) <= col_top_y + 5.0:
+            top_wide.append(wb)
+        elif float(wb[1]) >= col_bottom_y - 5.0:
+            bottom_wide.append(wb)
+        else:
+            mid_wide.append(wb)
+
+    ordered = [*top_wide, *left_blocks, *mid_wide, *right_blocks, *bottom_wide]
+    return "\n".join(str(b[4]).strip() for b in ordered)
 
 
 def _page_has_complex_table(page: pymupdf.Page) -> bool:
@@ -306,24 +449,35 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
             continue
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
-    return re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", out)
+    return _normalize_spanish_thousands(out)
 
 
 def extract_hybrid_markdown(
     pdf_path: Path,
-    boundary: DocumentBoundary,
+    boundary: DocumentBoundary | DocumentManifestEntry,
     client: Optional[genai.Client] = None,
     max_table_batch_size: int = 2,
 ) -> str:
-    """Extrae el documento en el rango [start_page, end_page] combinando CPU (texto/rejillas limpias) y Gemini (tablas complejas)."""
-    genai_client = client or get_genai_client()
+    """Extrae el rango [start_page, end_page] combinando adaptadores CPU (1 col / 2 col / rejilla limpia) y Gemini (tablas complejas / OCR)."""
+    genai_client = client
     doc = pymupdf.open(pdf_path)
+
+    layout = getattr(boundary, "layout", "single_column")
+    force_gemini_pages = set(getattr(boundary, "force_gemini_pages", []) or [])
+    skip_pages = set(getattr(boundary, "skip_pages", []) or [])
 
     start_idx = boundary.start_page - 1
     end_idx = boundary.end_page - 1
 
     markdown_parts: list[str] = []
     pending_table_pages: list[int] = []
+    pending_scanned_pages: list[int] = []
+
+    def _client() -> genai.Client:
+        nonlocal genai_client
+        if genai_client is None:
+            genai_client = get_genai_client()
+        return genai_client
 
     def flush_table_batch() -> None:
         nonlocal pending_table_pages
@@ -335,19 +489,57 @@ def extract_hybrid_markdown(
             human_pages,
         )
         table_md = _extract_table_pages_with_gemini(
-            doc, pending_table_pages, genai_client
+            doc, pending_table_pages, _client()
         )
         markdown_parts.append(table_md)
         pending_table_pages = []
 
+    def flush_scanned_batch() -> None:
+        nonlocal pending_scanned_pages
+        if not pending_scanned_pages:
+            return
+        human_pages = [p + 1 for p in pending_scanned_pages]
+        logger.info(
+            "  -> Transcribiendo lote de páginas escaneadas %s vía Gemini OCR...",
+            human_pages,
+        )
+        scanned_md = _extract_scanned_pages_with_gemini(
+            doc, pending_scanned_pages, _client()
+        )
+        markdown_parts.append(scanned_md)
+        pending_scanned_pages = []
+
     for p_idx in range(start_idx, end_idx + 1):
+        human_page = p_idx + 1
+        if human_page in skip_pages:
+            flush_table_batch()
+            flush_scanned_batch()
+            logger.info("  -> Omitiendo página %d por directiva skip_pages del manifiesto.", human_page)
+            continue
+
         page = doc[p_idx]
+
+        if human_page in force_gemini_pages:
+            flush_scanned_batch()
+            pending_table_pages.append(p_idx)
+            if len(pending_table_pages) >= max_table_batch_size:
+                flush_table_batch()
+            continue
+
+        if layout == "scanned_ocr" or _is_scanned_page(page):
+            flush_table_batch()
+            pending_scanned_pages.append(p_idx)
+            if len(pending_scanned_pages) >= max_table_batch_size:
+                flush_scanned_batch()
+            continue
+
+        flush_scanned_batch()
         if _page_has_complex_table(page):
             if _has_clean_vector_table_grid(page):
                 flush_table_batch()
                 logger.info(
                     "  -> Extrayendo tabla con rejilla vectorial limpia (pág. %d) en CPU (pymupdf4llm)...",
-                    p_idx + 1,
+                    human_page,
                 )
                 markdown_parts.append(_extract_clean_vector_table_page_cpu(doc, p_idx))
             else:
@@ -356,14 +548,19 @@ def extract_hybrid_markdown(
                     flush_table_batch()
         else:
             flush_table_batch()
-            raw_page_text = page.get_text("text")
+            raw_page_text = (
+                _extract_double_column_page_text(page)
+                if layout == "double_column"
+                else page.get_text("text")
+            )
             markdown_parts.append(_format_plain_page_to_markdown(raw_page_text))
 
     flush_table_batch()
+    flush_scanned_batch()
     doc.close()
 
     full_md = "\n\n".join(part for part in markdown_parts if part.strip())
-    full_md = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", full_md)
+    full_md = _normalize_spanish_thousands(full_md)
     full_md = re.sub(r"\n{3,}", "\n\n", full_md).strip() + "\n"
     return full_md
 
@@ -454,14 +651,56 @@ def inspect_all_boundaries(raw_dir: Path = RAW_DATA_DIR) -> dict[str, DocumentBo
     return results
 
 
+def _default_doc_role(doc_type: str) -> str:
+    """Asigna un rol documental por defecto coherente con `doc_type`."""
+    return {
+        "estatuto_trabajadores": "estatuto",
+        "aleh_estatal": "aleh",
+        "correccion_erratas": "erratas",
+    }.get(doc_type, "completo")
+
+
+def _serialize_manifest_entry(entry: DocumentManifestEntry) -> dict:
+    """Serializa una entrada del manifiesto conservando campos clave y directivas no vacías."""
+    raw = entry.model_dump()
+    core_keys = {"doc_type", "doc_role", "territorio", "start_page", "end_page", "justificacion"}
+    return {
+        key: value
+        for key, value in raw.items()
+        if key in core_keys or (key == "layout" and value != "single_column") or bool(value)
+    }
+
+
+def _matches_only_filter(pdf_path: Path, only_files: list[str]) -> bool:
+    """Determina si `pdf_path` coincide con algún token de `--only` (nombre, stem o subcadena)."""
+    name_lower = pdf_path.name.lower()
+    stem_lower = pdf_path.stem.lower()
+    for raw_token in only_files:
+        token = Path(raw_token).name.lower().strip()
+        if not token:
+            continue
+        if token in {name_lower, stem_lower} or token in stem_lower:
+            return True
+    return False
+
+
 def run_ingestion_pipeline(
     raw_dir: Path = RAW_DATA_DIR,
     output_dir: Path = PROCESSED_DATA_DIR,
     skip_existing: bool = True,
+    only_files: Optional[list[str]] = None,
+    validate: bool = False,
+    redetect_boundaries: bool = False,
 ) -> list[Path]:
-    """Ejecuta el pipeline completo de ingesta híbrida (Etapas 1, 2 y 3) para todos los PDFs en raw_dir."""
+    """Ejecuta el pipeline de ingesta híbrida (Etapas 1, 2 y 3) con soporte selectivo `--only` y Gate de Calidad."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    client = get_genai_client()
+    client: Optional[genai.Client] = None
+
+    def _get_client() -> genai.Client:
+        nonlocal client
+        if client is None:
+            client = get_genai_client()
+        return client
 
     cache_path = output_dir / "boundaries_cache.json"
     cached_boundaries: dict[str, dict] = {}
@@ -471,46 +710,63 @@ def run_ingestion_pipeline(
         except Exception:
             cached_boundaries = {}
 
-    boundaries: dict[Path, DocumentBoundary] = {}
-    errata_files: list[tuple[Path, DocumentBoundary]] = []
+    all_pdfs = sorted(raw_dir.glob("*.pdf"))
+    target_pdfs = (
+        [p for p in all_pdfs if _matches_only_filter(p, only_files)]
+        if only_files
+        else all_pdfs
+    )
+    if only_files and not target_pdfs:
+        logger.warning("Ningún PDF en %s coincidió con --only=%s", raw_dir, only_files)
+        return []
+
+    boundaries: dict[Path, DocumentManifestEntry] = {}
+    errata_files: list[tuple[Path, DocumentManifestEntry]] = []
     saved_by_territory: dict[str, Path] = {}
     saved_files: list[Path] = []
     freshly_extracted_paths: set[Path] = set()
 
-    # Etapa 1: Clasificación y detección de límites [start_page, end_page] (con caché en disco)
-    for pdf_path in sorted(raw_dir.glob("*.pdf")):
-        if skip_existing and pdf_path.name in cached_boundaries:
-            boundary = DocumentBoundary.model_validate(cached_boundaries[pdf_path.name])
+    # Etapa 1: Manifiesto declarativo / detección automática de límites (respetando entradas curadas en caché)
+    for pdf_path in target_pdfs:
+        if pdf_path.name in cached_boundaries and not redetect_boundaries:
+            manifest_entry = DocumentManifestEntry.model_validate(
+                cached_boundaries[pdf_path.name]
+            )
             logger.info(
-                "[Etapa 1 - Caché] %s -> tipo=%s, territorio=%s, páginas=%d-%d",
+                "[Etapa 1 - Manifiesto] %s -> rol=%s, layout=%s, territorio=%s, páginas=%d-%d",
                 pdf_path.name,
-                boundary.doc_type,
-                boundary.territorio,
-                boundary.start_page,
-                boundary.end_page,
+                manifest_entry.doc_role,
+                manifest_entry.layout,
+                manifest_entry.territorio,
+                manifest_entry.start_page,
+                manifest_entry.end_page,
             )
         else:
-            boundary = detect_document_boundaries(pdf_path, client=client)
-            cached_boundaries[pdf_path.name] = boundary.model_dump()
+            detected = detect_document_boundaries(pdf_path, client=_get_client())
+            manifest_entry = DocumentManifestEntry(
+                **detected.model_dump(),
+                doc_role=_default_doc_role(detected.doc_type),
+            )
+            cached_boundaries[pdf_path.name] = _serialize_manifest_entry(manifest_entry)
             cache_path.write_text(
                 json.dumps(cached_boundaries, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             logger.info(
-                "[Etapa 1] %s -> tipo=%s, territorio=%s, páginas=%d-%d",
+                "[Etapa 1] %s -> rol=%s, territorio=%s, páginas=%d-%d",
                 pdf_path.name,
-                boundary.doc_type,
-                boundary.territorio,
-                boundary.start_page,
-                boundary.end_page,
+                manifest_entry.doc_role,
+                manifest_entry.territorio,
+                manifest_entry.start_page,
+                manifest_entry.end_page,
             )
-        boundaries[pdf_path] = boundary
-        if boundary.doc_type == "correccion_erratas":
-            errata_files.append((pdf_path, boundary))
+        boundaries[pdf_path] = manifest_entry
+        if manifest_entry.doc_type == "correccion_erratas":
+            errata_files.append((pdf_path, manifest_entry))
 
-    # Etapa 2: Extracción híbrida (PyMuPDF CPU + Gemini en tablas) de los documentos principales
-    for pdf_path, boundary in boundaries.items():
-        if boundary.doc_type == "correccion_erratas":
+    # Etapa 2: Extracción híbrida por familia de formato
+    for pdf_path, manifest_entry in boundaries.items():
+        if manifest_entry.doc_type == "correccion_erratas":
             continue
 
         output_path = output_dir / f"{pdf_path.stem}.md"
@@ -522,12 +778,17 @@ def run_ingestion_pipeline(
             )
         else:
             logger.info(
-                "[Etapa 2] Extrayendo Markdown híbrido de %s (págs. %d-%d)...",
+                "[Etapa 2] Extrayendo Markdown (%s) de %s (págs. %d-%d)...",
+                manifest_entry.layout,
                 pdf_path.name,
-                boundary.start_page,
-                boundary.end_page,
+                manifest_entry.start_page,
+                manifest_entry.end_page,
             )
-            md_text = extract_hybrid_markdown(pdf_path, boundary, client=client)
+            md_text = extract_hybrid_markdown(
+                pdf_path,
+                manifest_entry,
+                client=client,
+            )
             output_path.write_text(md_text, encoding="utf-8")
             freshly_extracted_paths.add(output_path)
             logger.info(
@@ -536,10 +797,14 @@ def run_ingestion_pipeline(
                 len(md_text),
             )
 
-        saved_by_territory[boundary.territorio] = output_path
+        if manifest_entry.territorio not in saved_by_territory or manifest_entry.doc_role in {
+            "completo",
+            "base",
+        }:
+            saved_by_territory[manifest_entry.territorio] = output_path
         saved_files.append(output_path)
 
-    # Etapa 3: Auto-Errata Patcher sobre los convenios correspondientes
+    # Etapa 3: Auto-Errata Patcher (siempre que el convenio matriz esté en esta ejecución)
     for errata_path, errata_boundary in errata_files:
         prelim_target = saved_by_territory.get(errata_boundary.territorio)
         if not prelim_target:
@@ -547,19 +812,21 @@ def run_ingestion_pipeline(
                 if terr in errata_boundary.territorio or errata_boundary.territorio in terr:
                     prelim_target = path_candidate
                     break
-        if skip_existing and (not freshly_extracted_paths or (prelim_target and prelim_target not in freshly_extracted_paths)):
+        if skip_existing and (
+            not freshly_extracted_paths
+            or (prelim_target and prelim_target not in freshly_extracted_paths)
+        ):
             logger.info(
                 "[Etapa 3] Sin convenio matriz recién extraído para '%s'; omitiendo re-evaluación de erratas (%s).",
                 errata_boundary.territorio,
                 errata_path.name,
             )
             continue
-        patch_list = extract_errata_patches(errata_path, client=client)
+        patch_list = extract_errata_patches(errata_path, client=_get_client())
         target_territory = patch_list.territorio or errata_boundary.territorio
         target_md_path = saved_by_territory.get(target_territory)
 
         if not target_md_path:
-            # Búsqueda flexible por subcadena de territorio
             for terr, path_candidate in saved_by_territory.items():
                 if terr in target_territory or target_territory in terr:
                     target_md_path = path_candidate
@@ -582,8 +849,58 @@ def run_ingestion_pipeline(
                 target_territory,
             )
 
+    if validate and saved_files:
+        from src.ingestion.validator import format_validation_summary, validate_document
+
+        reports = [
+            validate_document(md_path, raw_dir=raw_dir)
+            for md_path in saved_files
+            if md_path.exists()
+        ]
+        for rep in reports:
+            logger.info("\n%s", format_validation_summary(rep))
+        if any(not rep.passed for rep in reports):
+            failed_names = [rep.md_file for rep in reports if not rep.passed]
+            raise RuntimeError(
+                f"Gate de Calidad rechazó los documentos con ERROR: {', '.join(failed_names)}"
+            )
+
     return saved_files
 
 
+def _cli() -> None:
+    parser = argparse.ArgumentParser(
+        description="Motor de ingesta híbrida de convenios PDF -> Markdown Silver."
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        help="Procesa únicamente los PDFs indicados (nombre, stem o subcadena; p. ej. --only sevilla).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Fuerza re-extracción en Etapa 2 aunque el .md ya exista (mantiene boundaries_cache.json).",
+    )
+    parser.add_argument(
+        "--redetect-boundaries",
+        action="store_true",
+        help="Re-ejecuta Etapa 1 con Gemini aunque el PDF ya exista en boundaries_cache.json.",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Ejecuta el Gate de Calidad en CPU al terminar y finaliza con código != 0 si hay ERROR.",
+    )
+    args = parser.parse_args()
+    run_ingestion_pipeline(
+        skip_existing=not args.force,
+        only_files=args.only,
+        validate=args.validate,
+        redetect_boundaries=args.redetect_boundaries,
+    )
+
+
 if __name__ == "__main__":
-    run_ingestion_pipeline()
+    _cli()
