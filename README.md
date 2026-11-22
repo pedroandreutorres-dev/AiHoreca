@@ -18,14 +18,14 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 
 ```text
 Consulta ──► 1. Análisis y validación (LangGraph + Gemini)
-                ├─ Fuera del sector o provincia no soportada ──► Aviso determinista (0 tokens de síntesis)
-                ├─ Falta provincia o puesto de trabajo       ──► Solicita el dato necesario al usuario
-                └─ Datos completos (1 o N territorios)
+                ├─ Fuera del sector o provincia no soportada           ──► Aviso determinista de alcance (0 llamadas BBDD)
+                ├─ Sin pregunta normativa o falta provincia/puesto     ──► Bienvenida o solicitud de datos (0 llamadas BBDD)
+                └─ Consulta normativa completa (1 o N territorios)
                         │
                         ▼ (fan-out paralelo con Send)
              2. Búsqueda híbrida paralela (Qdrant Cloud + Cohere Rerank)
                 • Ramas independientes por territorio + capa estatal (ET y VI ALEH)
-                • Vectores densos (gemini-embedding-001, caché single-flight) + BM25 en CPU + cuotas por territorio
+                • Vectores densos (gemini-embedding-001, caché single-flight) + BM25 en CPU + top_k/cuotas adaptativos
                         │
                         ▼
              3. Verificación y ampliación condicional (CPU, máx. 1 salto)
@@ -33,11 +33,11 @@ Consulta ──► 1. Análisis y validación (LangGraph + Gemini)
                         │
                         ▼
              4. Síntesis y guardrail numérico (máx. 1 reintento)
-                • Redacta citando artículo y convenio; verifica en CPU cada cifra (€, %) antes de responder
+                • Resuelve cálculos monetarios/proporcionales en un turno citando artículo y valida cada cifra en CPU
 ```
 
 - **Ingesta y fragmentación (`src/ingestion/`, `src/retrieval/chunker.py`):** Recorta boletines oficiales (BOE, BOCM, DOGC, BOIB, BOP), aplica correcciones de erratas, extrae texto y tablas con rejilla en CPU (`PyMuPDF`/`pymupdf4llm`) —reservando Gemini Multimodal (`temperature=0.0`) para tablas sin bordes— y trocea por artículo, disposición o tabla conservando su cabecera jerárquica.
-- **Recuperación multi-tabla (`src/retrieval/vector_store.py`):** Soporta tanto convenios con tabla salarial única como convenios que separan importes en euros, niveles profesionales y categorías de establecimiento en anexos distintos.
+- **Recuperación multi-tabla adaptativa (`src/retrieval/vector_store.py`):** Soporta convenios con tabla salarial única o separados en varios anexos (importes, niveles y categorías); ajusta `top_k` según la intención limpia del turno y evita inyectar tablas salariales en consultas no retributivas.
 - **Streaming, memoria y RGPD (`src/app/ui.py`, `src/graph/memory.py`, `src/app/telemetry_sync.py`):** Muestra progreso nodo a nodo en Streamlit (`graph.stream`), persiste sesiones en SQLite WAL en $O(1)$ desacoplando en segundo plano la exportación de logs planos y el respaldo opcional en Hugging Face, y purga sesiones inactivas a los 90 días (art. 5.1.e RGPD).
 - **Telemetría de tokens y auditoría (`src/app/audit_runner.py`, `src/app/ui.py`):** Registra por paso los tokens reales reportados por la API (`usage_metadata`), failovers, aciertos de caché de embeddings y `search_units` de Cohere; los expone en vivo en el panel *Rayos-X* y los consolida por consulta, modelo y etapa en el informe diario, transcripciones e `historico_metricas.csv`.
 
@@ -62,7 +62,6 @@ AiHoreca/
 │   ├── evaluation/           # Evaluador RAGAS y tests de regresión (22 casos)
 │   └── app/                  # Streamlit (streaming y Rayos-X), servicio, CLI y auditor diario
 ├── requirements.txt
-├── ROADMAP_GRAFOS.md         # Evolución de la arquitectura del grafo (Bloques A–D)
 └── README.md
 ```
 
