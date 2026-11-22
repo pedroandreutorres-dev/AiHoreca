@@ -82,5 +82,19 @@
     "start_page": 2,
     "end_page": 19,
     "justificacion": "Acta de la comisión negociadora y tablas salariales oficiales definitivas 2025 y provisionales 2026 (todas las secciones y conceptos económicos no incluidos en tablas) del Convenio de Hostelería de Málaga (BOPMA n.º 70, 14/04/2026)."
+  },
+  "convenio_sevilla.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "expected_years": [
+      2025,
+      2026,
+      2027,
+      2028
+    ],
+    "territorio": "sevilla",
+    "start_page": 3,
+    "end_page": 26,
+    "justificacion": "Texto articulado completo (Disposición preliminar y articulado vigente 2025-2028), Anexo I de clasificación por niveles salariales (pág. 22) y tablas salariales oficiales 2025-2028 por tipo de establecimiento (págs. 23-26) del Convenio Colectivo de Hostelería de la Provincia de Sevilla (REGCON 41001465011981, BOP Sevilla n.º 102, 30/05/2025)."
   }
 }

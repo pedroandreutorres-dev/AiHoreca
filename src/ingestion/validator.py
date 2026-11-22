@@ -38,6 +38,7 @@ _ALPHA_WORD_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}")
 _LEVEL_TOKEN_RE = re.compile(r"^(?:[IVXLCDM]+(?:\s*-\s*[A-Z])?|\d{1,2})$")
 _LOWERCASE_HEADING_RE = re.compile(r"^(#{1,6})\s+([a-záéíóúüñ])")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*(?:\s*:?-{2,}:?\s*\|?)?\s*$")
+_YEAR_TOKEN_RE = re.compile(r"\b(202[3-9])\b(?!,\d)")
 
 
 def _load_manifest(cache_path: Path) -> dict[str, DocumentManifestEntry]:
@@ -368,6 +369,16 @@ def _check_decimal_parity(
     return issues, pdf_count, md_count
 
 
+def _extract_table_header_years(chunk_text: str) -> set[int]:
+    """Extrae todos los años explícitos presentes en cabeceras de tablas Markdown multi-año."""
+    years: set[int] = set()
+    for _, headers, _ in _iter_markdown_tables(chunk_text.splitlines()):
+        for cell in headers:
+            for match in _YEAR_TOKEN_RE.findall(_strip_markdown_wrappers(cell)):
+                years.add(int(match))
+    return years
+
+
 def _check_chunks_and_retriever_invariants(
     md_path: Path,
     boundaries_cache_raw: dict[str, dict],
@@ -463,13 +474,19 @@ def _check_chunks_and_retriever_invariants(
             source_file=chunk.source_file,
             text=chunk.text,
         )
+        is_real_table = chunk.tipo_contenido == "tabla_salarial" or (
+            next(iter(_iter_markdown_tables(chunk.text.splitlines())), None) is not None
+        )
         if AiHorecaVectorStore._is_monetary_table(doc_view):
-            monetary_chunks += 1
+            header_years = _extract_table_header_years(chunk.text)
             year = AiHorecaVectorStore._extract_chunk_year(doc_view)
             if year > 0:
                 observed_years.add(year)
-            else:
-                yearless_monetary.append(f"{chunk.chunk_id} ({chunk.articulo[:50]})")
+            observed_years.update(header_years)
+            if is_real_table:
+                monetary_chunks += 1
+                if year == 0 and not header_years:
+                    yearless_monetary.append(f"{chunk.chunk_id} ({chunk.articulo[:50]})")
 
     if yearless_monetary:
         if doc_role == "tablas":

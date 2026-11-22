@@ -27,7 +27,7 @@ from src.ingestion.pdf_ingestor import (
     _page_has_complex_table,
 )
 from src.ingestion.schemas import DocumentManifestEntry
-from src.ingestion.validator import validate_corpus, validate_document
+from src.ingestion.validator import _extract_table_header_years, validate_corpus, validate_document
 from src.retrieval.chunker import chunk_all_processed_documents, chunk_markdown_document
 from src.retrieval.schemas import RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
@@ -103,8 +103,12 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
             [
                 "42",
                 "Boletín Oficial de la Provincia de Málaga Núm. 70 — 14/04/2026",
+                "CVE: BOP-SE-2025-102031",
+                "Nº 102 - viernes 30 de mayo de 2025",
                 "CAPÍTULO II",
                 "Artículo 15. Salario base.",
+                "Artículo 31º. Vacaciones.",
+                "Artículo11º: Manutención.",
                 "Artículo 15 del vigente Estatuto de los Trabajadores regula este punto.",
                 "artículo 34.8 ET permite solicitar adaptación.",
                 "Capítulo décimo sobre disposiciones varias.",
@@ -114,11 +118,15 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         md = _format_plain_page_to_markdown(sample_page)
         self.assertIn("## CAPÍTULO II", md)
         self.assertIn("### Artículo 15. Salario base.", md)
+        self.assertIn("### Artículo 31º. Vacaciones.", md)
+        self.assertIn("### Artículo11º: Manutención.", md)
         self.assertIn("## Anexo I. Clasificación profesional", md)
         self.assertNotIn("### Artículo 15 del vigente Estatuto", md)
         self.assertNotIn("### artículo 34.8 ET", md)
         self.assertNotIn("## Capítulo décimo", md)
         self.assertNotIn("Boletín Oficial de la Provincia", md)
+        self.assertNotIn("CVE: BOP-SE-2025-102031", md)
+        self.assertNotIn("Nº 102 - viernes 30 de mayo de 2025", md)
         self.assertNotRegex(md, r"(?m)^42$")
 
     def test_double_column_extractor_preserves_left_then_right_reading_order(self) -> None:
@@ -287,6 +295,36 @@ class TestManifestAndSilverCorpusInvariants(unittest.TestCase):
         self.assertEqual(malaga_report.error_count, 0)
         self.assertEqual(malaga_report.warning_count, 0)
 
+    def test_sevilla_classification_strict_and_multiyear_tables(self) -> None:
+        sevilla_path = PROCESSED_DATA_DIR / "convenio_sevilla.md"
+        sevilla_report = validate_document(sevilla_path, strict=True)
+        self.assertTrue(sevilla_report.passed, msg=sevilla_report.model_dump_json(indent=2))
+        self.assertEqual(sevilla_report.error_count, 0)
+        self.assertEqual(sevilla_report.warning_count, 0)
+
+        chunks = chunk_markdown_document(sevilla_path)
+        level_count = 0
+        years_found: set[int] = set()
+        for chunk in chunks:
+            doc_view = RetrievedDocument(
+                chunk_id=chunk.chunk_id,
+                score=1.0,
+                capa_normativa=chunk.capa_normativa,
+                territorio=chunk.territorio,
+                norma_titulo=chunk.norma_titulo,
+                titulo_o_capitulo=chunk.titulo_o_capitulo,
+                articulo=chunk.articulo,
+                tipo_contenido=chunk.tipo_contenido,
+                source_file=chunk.source_file,
+                text=chunk.text,
+            )
+            if AiHorecaVectorStore._is_classification_level_table(doc_view):
+                level_count += 1
+            if chunk.tipo_contenido == "tabla_salarial":
+                years_found.update(_extract_table_header_years(chunk.text))
+        self.assertEqual(level_count, 1)
+        self.assertEqual(years_found, {2025, 2026, 2027, 2028})
+
 
 class TestValidatorDefectTraps(unittest.TestCase):
     """Trampas de defectos sintéticos para garantizar que el Gate de Calidad bloquea cada fallo conocido."""
@@ -420,6 +458,61 @@ class TestValidatorDefectTraps(unittest.TestCase):
         rep = self._validate_synthetic(md, manifest_entry=manifest, pdf_text=pdf_text)
         self.assertFalse(rep.passed)
         self.assertIn("DECIMAL_PARITY_LOSS", {i.code for i in rep.issues})
+
+    def test_multi_year_columnar_table_satisfies_expected_years_and_detects_missing_column(
+        self,
+    ) -> None:
+        manifest = {
+            "doc_type": "convenio_hosteleria",
+            "doc_role": "completo",
+            "expected_years": [2025, 2026, 2027, 2028],
+            "territorio": "prueba",
+            "start_page": 1,
+            "end_page": 1,
+            "justificacion": "Test de tabla salarial multi-año en columnas.",
+        }
+        md_ok = (
+            "## TABLAS SALARIALES 2025-2028\n\n"
+            "### Hoteles 5 y 4 estrellas\n\n"
+            "| Niveles | 2025 | 2026 | 2027 | 2028 |\n"
+            "|---|---|---|---|---|\n"
+            "| Nivel 1 | 1.571,85 € | 1.650,44 € | 1.716,46 € | 1.785,11 € |\n"
+        )
+        rep_ok = self._validate_synthetic(md_ok, manifest_entry=manifest)
+        self.assertTrue(rep_ok.passed)
+        self.assertNotIn("MISSING_EXPECTED_YEAR", {i.code for i in rep_ok.issues})
+
+        md_missing = (
+            "## TABLAS SALARIALES 2025-2028\n\n"
+            "### Hoteles 5 y 4 estrellas\n\n"
+            "| Niveles | 2025 | 2026 | 2028 |\n"
+            "|---|---|---|---|\n"
+            "| Nivel 1 | 1.571,85 € | 1.650,44 € | 1.785,11 € |\n"
+        )
+        rep_missing = self._validate_synthetic(md_missing, manifest_entry=manifest)
+        self.assertFalse(rep_missing.passed)
+        self.assertIn("MISSING_EXPECTED_YEAR", {i.code for i in rep_missing.issues})
+
+    def test_prose_monetary_article_without_table_does_not_trigger_strict_missing_year(
+        self,
+    ) -> None:
+        manifest = {
+            "doc_type": "convenio_hosteleria",
+            "doc_role": "completo",
+            "territorio": "prueba",
+            "start_page": 1,
+            "end_page": 1,
+            "justificacion": "Artículo en prosa con cuantías fijas en euros sin tabla.",
+        }
+        md = (
+            "## CAPÍTULO VII\n\n"
+            "### Artículo 38. Seguro colectivo.\n\n"
+            "Las empresas concertarán un seguro con indemnización de 18.000,00 € por muerte "
+            "y 30.000,00 € por invalidez permanente absoluta.\n"
+        )
+        rep = self._validate_synthetic(md, manifest_entry=manifest, strict=True)
+        self.assertTrue(rep.passed, msg=rep.model_dump_json(indent=2))
+        self.assertNotIn("TABLE_MISSING_YEAR", {i.code for i in rep.issues})
 
 
 if __name__ == "__main__":

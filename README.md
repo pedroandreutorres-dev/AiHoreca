@@ -6,12 +6,13 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 2. **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI** (áreas funcionales 1ª a 6ª, grupos profesionales y faltas/sanciones).
 3. **Convenios colectivos provinciales y autonómicos** (tablas salariales y condiciones específicas de cada territorio).
 
-**Territorios indexados actualmente (942 fragmentos en Qdrant Cloud):**
+**Territorios indexados actualmente (1.003 fragmentos en Qdrant Cloud):**
 - **Comunidad de Madrid**
 - **Cataluña** (*Barcelona, Girona, Tarragona y Lleida*)
 - **Islas Baleares** (*Mallorca, Menorca, Ibiza y Formentera*)
 - **León**
 - **Málaga**
+- **Sevilla**
 
 ---
 
@@ -96,7 +97,7 @@ python -m src.retrieval.vector_store --sync-to-cloud
 ```
 
 ### 3. Ejecución y tests de regresión
-El proyecto cuenta con una suite unitaria/canario en CPU para el motor de ingesta (`tests/test_ingestion_pipeline.py`) y una batería de **26 casos de prueba (`GD_01`–`GD_26`)** con regresión determinista `--quick` al `100%` (`26/26` en intención, enrutamiento, detección territorial y cero alucinaciones numéricas) y línea base semántica RAGAS fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
+El proyecto cuenta con una suite unitaria/canario en CPU para el motor de ingesta (`tests/test_ingestion_pipeline.py`) y una batería de **28 casos de prueba (`GD_01`–`GD_28`)** con regresión determinista `--quick` al `100%` (`28/28` en intención, enrutamiento, detección territorial y cero alucinaciones numéricas) y línea base semántica RAGAS fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
 
 ```powershell
 # Gate de Calidad del corpus Markdown Silver + suite de ingesta en CPU (0 tokens API)

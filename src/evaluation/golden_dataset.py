@@ -132,20 +132,20 @@ def get_golden_dataset(include_production: bool = True) -> list[GoldenTestCase]:
             ),
         ),
         GoldenTestCase(
-            case_id="GD_03_UNSUPPORTED_SEVILLA",
+            case_id="GD_03_UNSUPPORTED_TERUEL",
             category="guardrail_routing",
             session_id="eval-unsupported-03",
             reset_session_before=True,
-            query="Trabajo de camarero de sala en un hotel de Sevilla, ¿cuál es mi salario base mensual según convenio?",
+            query="Trabajo de camarero de sala en un hotel de Teruel, ¿cuál es mi salario base mensual según convenio?",
             expected_intent="UNSUPPORTED_PROVINCE",
             expected_route="block_out_of_scope",
-            expected_territorio="sevilla",
+            expected_territorio="teruel",
             expected_layers=[],
             expected_citation_keywords=[],
             expected_numbers_any=[],
             ground_truth_reference=(
-                "Aviso de cobertura territorial MVP: la consulta es de hostelería en Sevilla, pero el MVP solo indexa "
-                "Madrid, Cataluña (Barcelona, Girona, Tarragona, Lleida) y León, negándose a inventar tablas salariales."
+                "Aviso de cobertura territorial: la consulta es de hostelería en Teruel (provincia aún no indexada), "
+                "activando el bloqueo determinista sin inventar tablas salariales ni aplicar convenios de otras provincias."
             ),
         ),
         GoldenTestCase(

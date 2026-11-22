@@ -718,10 +718,16 @@ class AiHorecaVectorStore:
             body_head = doc.text.split("\n\n", 1)[-1][:350]
             return bool(
                 re.search(
-                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+profesional|equivalencias?\s+de\s+clasificaci)\b",
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal)|equivalencias?\s+de\s+clasificaci)\b",
                     f"{surface} {body_head}",
                 )
-                or ("anexo" in doc.titulo_o_capitulo.lower() and re.search(r"\bGRUPO\s+[IVX]+\b", body_head))
+                or (
+                    "anexo" in doc.titulo_o_capitulo.lower()
+                    and re.search(
+                        r"(?i)\b(?:GRUPO\s+[IVX]+|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?))\b",
+                        body_head,
+                    )
+                )
             )
         return False
 

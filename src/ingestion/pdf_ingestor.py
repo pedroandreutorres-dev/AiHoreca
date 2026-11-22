@@ -46,11 +46,12 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"b\.?\s*o\.?\s*c\.?\s*m\.?(?:\s+n[úu]m)?|"
     r"bocm-\d+|"
     r"diari\s+oficial\s+de\s+la\s+generalitat|"
-    r"cve-dogc-|cve:\s*boe-|cve:\s*\d{8}-\d+-\d+|issn\s+\d|"
+    r"cve-dogc-|cve:\s*[a-z0-9-]+|issn\s+\d|"
     r"centro\s+de\s+ediciones\s+de\s+la\s+diputaci[óo]n|"
     r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fonos?:\s*\d|"
     r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*de\s*\d+)?|"
     r"fasc[íi]culo\s+\d+|"
+    r"n[º°o]\.?\s*\d+\s*[-•]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+$|"
     r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
@@ -183,12 +184,12 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
 
         # Formatear encabezados estructurales jurídicos (exigiendo mayúscula inicial para no promocionar frases partidas)
         if re.match(
-            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+\b(?!\s+del\s+(?:presente\s+)?convenio\b)",
+            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?![IVXLCDM0-9])(?!\s+del\s+(?:presente\s+)?convenio\b)",
             stripped,
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
         elif re.match(
-            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+\b(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
+            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
@@ -211,11 +212,12 @@ _TABLE_EXTRACTION_PROMPT = (
     "que todas las filas tengan exactamente el mismo número de columnas y ningún importe salarial "
     "quede desplazado.\n"
     "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown).\n"
-    "5. Conserva siempre encima de cada tabla Markdown sus encabezados descriptivos de sección, "
-    "establecimiento y periodo de vigencia (`## SECCIÓN...`, `### Desde 01/01/2026 hasta 31/12/2026 "
-    "(provisionales)`, `### Conceptos económicos...`), incluye subtítulos diferenciados `### SALARIOS MES` "
-    "y `### SALARIOS HORA` cuando una página contenga ambas modalidades, y formatea los importes españoles "
-    "sin espacio tras el punto de millar (`1.623,07`, nunca `1. 623,07`)."
+    "5. Conserva siempre encima de cada tabla Markdown su propio encabezado `### <Tipo de establecimiento / Sección>` "
+    "y periodo de vigencia (`## SECCIÓN...`, `### Hoteles/Apartamentos 5 y 4 estrellas`, `### Desde 01/01/2026 "
+    "hasta 31/12/2026 (provisionales)`, `### Conceptos económicos...`), evitando agrupar varias sub-tablas sin título "
+    "Markdown propio; incluye subtítulos diferenciados `### SALARIOS MES` y `### SALARIOS HORA` cuando una página "
+    "contenga ambas modalidades, y formatea los importes españoles sin espacio tras el punto de millar "
+    "(`1.623,07`, nunca `1. 623,07`)."
 )
 
 _SCANNED_OCR_PROMPT = (
