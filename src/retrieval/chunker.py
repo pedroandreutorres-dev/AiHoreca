@@ -60,7 +60,7 @@ _STANDALONE_TABLE_SECTION_RE = re.compile(
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)[^\n]*?)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b)[^\n]*?)\**$"
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(

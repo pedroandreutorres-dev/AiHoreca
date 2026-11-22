@@ -98,6 +98,13 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         self.assertFalse(cleaned.endswith("```"))
         self.assertIn("1.850,00", cleaned)
 
+        raw_period = "## TABLA DE RETRIBUCIONES\nDel 1 de enero a 31 de diciembre de 2026\n\n### Horas extra"
+        merged = _clean_gemini_markdown_output(raw_period)
+        self.assertIn(
+            "## TABLA DE RETRIBUCIONES — Del 1 de enero a 31 de diciembre de 2026",
+            merged,
+        )
+
     def test_format_plain_page_promotes_real_articles_and_rejects_inline_citations(self) -> None:
         sample_page = "\n".join(
             [
@@ -105,6 +112,11 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
                 "Boletín Oficial de la Provincia de Málaga Núm. 70 — 14/04/2026",
                 "CVE: BOP-SE-2025-102031",
                 "Nº 102 - viernes 30 de mayo de 2025",
+                "Butlletí Oficial de la Província d´Alacant",
+                "edita excma. diputació provincial d´alacant",
+                "Nº 200 de 18/10/2023",
+                "8879 / 2023",
+                "Real Decreto 713/2010 de 28 de mayo sobre registro.",
                 "CAPÍTULO II",
                 "Artículo 15. Salario base.",
                 "Artículo 31º. Vacaciones.",
@@ -127,6 +139,11 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         self.assertNotIn("Boletín Oficial de la Provincia", md)
         self.assertNotIn("CVE: BOP-SE-2025-102031", md)
         self.assertNotIn("Nº 102 - viernes 30 de mayo de 2025", md)
+        self.assertNotIn("Butlletí Oficial de la Província d´Alacant", md)
+        self.assertNotIn("edita excma. diputació provincial", md)
+        self.assertNotIn("Nº 200 de 18/10/2023", md)
+        self.assertNotIn("8879 / 2023", md)
+        self.assertIn("Real Decreto 713/2010 de 28 de mayo sobre registro.", md)
         self.assertNotRegex(md, r"(?m)^42$")
 
     def test_double_column_extractor_preserves_left_then_right_reading_order(self) -> None:
@@ -325,6 +342,55 @@ class TestManifestAndSilverCorpusInvariants(unittest.TestCase):
         self.assertEqual(level_count, 1)
         self.assertEqual(years_found, {2025, 2026, 2027, 2028})
 
+    def test_alicante_classification_strict_and_2026_tables(self) -> None:
+        base_path = PROCESSED_DATA_DIR / "convenio_alicante.md"
+        tablas_path = PROCESSED_DATA_DIR / "convenio_alicante_tablas_2026.md"
+
+        tablas_report = validate_document(tablas_path, strict=True)
+        self.assertTrue(tablas_report.passed, msg=tablas_report.model_dump_json(indent=2))
+        self.assertEqual(tablas_report.error_count, 0)
+        self.assertEqual(tablas_report.warning_count, 0)
+
+        base_chunks = chunk_markdown_document(base_path)
+        level_count = 0
+        for chunk in base_chunks:
+            doc_view = RetrievedDocument(
+                chunk_id=chunk.chunk_id,
+                score=1.0,
+                capa_normativa=chunk.capa_normativa,
+                territorio=chunk.territorio,
+                norma_titulo=chunk.norma_titulo,
+                titulo_o_capitulo=chunk.titulo_o_capitulo,
+                articulo=chunk.articulo,
+                tipo_contenido=chunk.tipo_contenido,
+                source_file=chunk.source_file,
+                text=chunk.text,
+            )
+            if AiHorecaVectorStore._is_classification_level_table(doc_view):
+                level_count += 1
+        self.assertGreaterEqual(level_count, 2)
+
+        tablas_chunks = chunk_markdown_document(tablas_path)
+        years_found: set[int] = set()
+        for chunk in tablas_chunks:
+            doc_view = RetrievedDocument(
+                chunk_id=chunk.chunk_id,
+                score=1.0,
+                capa_normativa=chunk.capa_normativa,
+                territorio=chunk.territorio,
+                norma_titulo=chunk.norma_titulo,
+                titulo_o_capitulo=chunk.titulo_o_capitulo,
+                articulo=chunk.articulo,
+                tipo_contenido=chunk.tipo_contenido,
+                source_file=chunk.source_file,
+                text=chunk.text,
+            )
+            if AiHorecaVectorStore._is_monetary_table(doc_view):
+                yr = AiHorecaVectorStore._extract_chunk_year(doc_view)
+                self.assertEqual(yr, 2026, msg=chunk.chunk_id)
+                years_found.add(yr)
+        self.assertEqual(years_found, {2026})
+
 
 class TestValidatorDefectTraps(unittest.TestCase):
     """Trampas de defectos sintéticos para garantizar que el Gate de Calidad bloquea cada fallo conocido."""
@@ -513,6 +579,158 @@ class TestValidatorDefectTraps(unittest.TestCase):
         rep = self._validate_synthetic(md, manifest_entry=manifest, strict=True)
         self.assertTrue(rep.passed, msg=rep.model_dump_json(indent=2))
         self.assertNotIn("TABLE_MISSING_YEAR", {i.code for i in rep.issues})
+
+    def test_transposed_single_row_category_headers_not_flagged_as_dropped_column(
+        self,
+    ) -> None:
+        md_transposed = (
+            "## Uniformidad 2026\n\n"
+            "| Personal con esmoquin | Personal cocina | Resto personal |\n"
+            "|---|---|---|\n"
+            "| 25,00 € | 18,42 € | 10,86 € |\n"
+        )
+        rep_ok = self._validate_synthetic(md_transposed, strict=True)
+        self.assertTrue(rep_ok.passed, msg=rep_ok.model_dump_json(indent=2))
+        self.assertNotIn("DROPPED_LABEL_COLUMN", {i.code for i in rep_ok.issues})
+
+        md_years_bad = (
+            "## Tablas 2025-2026\n\n"
+            "| 2025 | 2026 |\n"
+            "|---|---|\n"
+            "| 1.850,00 | 1.920,00 |\n"
+        )
+        rep_bad = self._validate_synthetic(md_years_bad)
+        self.assertFalse(rep_bad.passed)
+        self.assertIn("DROPPED_LABEL_COLUMN", {i.code for i in rep_bad.issues})
+
+
+class TestRetrievalSelectionLogic(unittest.TestCase):
+    """Tests deterministas en CPU para cuotas y selección territorial en rerank_and_select_by_territory."""
+
+    @staticmethod
+    def _doc(
+        chunk_id: str,
+        *,
+        capa: str = "convenio_provincial",
+        territorio: str = "alicante",
+        titulo: str = "CAPITULO V",
+        articulo: str = "",
+        tipo: str = "articulo",
+        text: str = "",
+        rerank_score: float = 0.1,
+    ) -> RetrievedDocument:
+        return RetrievedDocument(
+            chunk_id=chunk_id,
+            score=rerank_score,
+            rerank_score=rerank_score,
+            capa_normativa=capa,
+            territorio=territorio,
+            matched_territorio=territorio if capa == "convenio_provincial" else None,
+            norma_titulo="Convenio Colectivo de Hostelería de Alicante",
+            titulo_o_capitulo=titulo,
+            articulo=articulo,
+            tipo_contenido=tipo,
+            source_file="convenio_alicante.md",
+            text=text,
+        )
+
+    def test_extra_pay_title_first_and_separate_2026_extra_pay_table(self) -> None:
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        candidates = [
+            # Art. 32 tiene mayor score pero solo menciona "gratificaciones extraordinarias de verano, navidad y octubre"
+            self._doc(
+                "art32",
+                articulo="Artículo 32. ESTRUCTURA DEL SALARIO",
+                tipo="articulo",
+                rerank_score=0.95,
+                text=(
+                    "Además del salario base, están las gratificaciones extraordinarias de verano, "
+                    "navidad y octubre."
+                ),
+            ),
+            self._doc(
+                "art39",
+                articulo="Artículo 39. REVISIÓN SALARIAL DURANTE LA VIGENCIA DEL CONVENIO",
+                tipo="articulo",
+                rerank_score=0.90,
+                text="Para el año 2026 el incremento será de un 2%.",
+            ),
+            # Art. 38 lleva la rúbrica específica pero menor score inicial que Art. 32
+            self._doc(
+                "art38",
+                articulo="Artículo 38. GRATIFICACIONES EXTRAORDINARIAS",
+                tipo="articulo",
+                rerank_score=0.60,
+                text=(
+                    "a) VERANO Y NAVIDAD: 10 de julio y 10 de diciembre.\n"
+                    "b) OCTUBRE: cuantía fija el 10 de octubre."
+                ),
+            ),
+            self._doc(
+                "tbl_base_2026",
+                titulo="TABLA DE RETRIBUCIONES — Del 1 de enero a 31 de diciembre de 2026",
+                articulo="Salarios base mensuales",
+                tipo="tabla_salarial",
+                rerank_score=0.92,
+                text=(
+                    "| NIVELES | GRUPOS DE ESTABLECIMIENTOS A | B | C |\n"
+                    "|---|---|---|---|\n"
+                    "| 1 | 1.727,77 | 1.644,83 | 1.499,70 |\n"
+                    "| 4 | 1.461,45 | 1.388,30 | 1.314,25 |"
+                ),
+            ),
+            self._doc(
+                "tbl_extra_2026",
+                titulo="TABLA DE RETRIBUCIONES — Del 1 de enero a 31 de diciembre de 2026",
+                articulo="Valor del plus de nocturnidad por hora trabajada (Art. 34)",
+                tipo="tabla_salarial",
+                rerank_score=0.35,
+                text=(
+                    "| NIVELES | A | B | C |\n|---|---|---|---|\n| 4 | 1,21 | 1,14 | 1,10 |\n\n"
+                    "### Conceptos económicos adicionales\n"
+                    "| Concepto | Importe |\n|---|---|\n"
+                    "| Gratificación Extraordinaria Octubre (Art. 38 letra b) | 1.235,82 |"
+                ),
+            ),
+            self._doc(
+                "anexo1",
+                titulo="ANEXO I",
+                articulo="ANEXO I (Parte 1/2)",
+                tipo="anexo_o_disposicion",
+                rerank_score=0.50,
+                text="GRUPO A: Hoteles y hoteles-apartamentos de 4 estrellas, 4 estrellas superior y 5 estrellas.",
+            ),
+            self._doc(
+                "anexo2",
+                titulo="ANEXO II",
+                articulo="ANEXO II (Parte 1/2)",
+                tipo="tabla_salarial",
+                rerank_score=0.55,
+                text="| NIVEL 4 |\n|---|\n| Cocinero/a |",
+            ),
+            self._doc("aleh1", capa="aleh_estatal", territorio="estatal", articulo="Art. 16 ALEH", rerank_score=0.70, text="Área Funcional 2ª Cocina: Cocinero/a."),
+            self._doc("aleh2", capa="aleh_estatal", territorio="estatal", articulo="Preámbulo ALEH", rerank_score=0.65, text="VI ALEH."),
+            self._doc("et1", capa="estatuto_trabajadores", territorio="estatal", articulo="Art. 26 ET", rerank_score=0.68, text="Del salario."),
+            self._doc("et2", capa="estatuto_trabajadores", territorio="estatal", articulo="Art. 31 ET", rerank_score=0.64, text="Gratificaciones extraordinarias."),
+        ]
+
+        selected = store.rerank_and_select_by_territory(
+            candidates=candidates,
+            query=(
+                "Soy cocinero en un hotel de 4 estrellas en Benidorm (Alicante), "
+                "¿cuál es mi salario base mensual vigente en 2026 y qué pagas extraordinarias me corresponden?"
+            ),
+            territorios=["alicante"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
+        )
+        selected_ids = {d.chunk_id for d in selected}
+        self.assertLessEqual(len(selected), 10)
+        self.assertIn("art38", selected_ids)
+        self.assertIn("tbl_base_2026", selected_ids)
+        self.assertIn("tbl_extra_2026", selected_ids)
+        self.assertIn("anexo1", selected_ids)
+        self.assertIn("anexo2", selected_ids)
 
 
 if __name__ == "__main__":

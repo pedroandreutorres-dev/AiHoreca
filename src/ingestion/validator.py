@@ -175,6 +175,15 @@ def _check_markdown_formatting_and_tables(
         if any(not h for h in norm_headers[1:]):
             split_colspan_lines.append(start_line)
 
+        is_transposed_single_row = (
+            len(body_rows) == 1
+            and bool(norm_headers)
+            and all(
+                _ALPHA_WORD_RE.search(h) and not _YEAR_TOKEN_RE.search(h)
+                for h in norm_headers
+            )
+        )
+
         missing_label_rows = 0
         rows_with_decimals = 0
 
@@ -183,7 +192,7 @@ def _check_markdown_formatting_and_tables(
             if len(row) != expected_cols:
                 bad_pipe_rows.append(row_line_no)
 
-            if len(row) >= 2:
+            if len(row) >= 2 and not is_transposed_single_row:
                 col0_clean = _strip_markdown_wrappers(row[0]).replace("€", "").strip()
                 if _SPANISH_DECIMAL_RE.fullmatch(col0_clean):
                     dropped_col_lines.append(row_line_no)

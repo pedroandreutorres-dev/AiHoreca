@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 _BULLETIN_HEADER_NOISE = re.compile(
     r"(?i)^(?:"
     r"bolet[íi]n\s+oficial\s+de|"
+    r"butllet[íi]\s+oficial\s+de|"
+    r"edita\s+excma\.?\s+diputaci[óo]n?\s+provincial|"
     r"b\.?\s*o\.?\s*c\.?\s*m\.?(?:\s+n[úu]m)?|"
     r"bocm-\d+|"
     r"diari\s+oficial\s+de\s+la\s+generalitat|"
@@ -51,9 +53,11 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fonos?:\s*\d|"
     r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*de\s*\d+)?|"
     r"fasc[íi]culo\s+\d+|"
+    r"n[º°o]\.?\s*\d+\s+de\s+\d{1,2}/\d{2}/\d{4}|"
     r"n[º°o]\.?\s*\d+\s*[-•]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+$|"
+    r"\d{1,5}\s*/\s*20[12]\d$|"
     r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
     r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}\s*\d+|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}"
@@ -212,9 +216,11 @@ _TABLE_EXTRACTION_PROMPT = (
     "que todas las filas tengan exactamente el mismo número de columnas y ningún importe salarial "
     "quede desplazado.\n"
     "4. Devuelve únicamente el Markdown limpio, sin bloques de código envolventes (```markdown).\n"
-    "5. Conserva siempre encima de cada tabla Markdown su propio encabezado `### <Tipo de establecimiento / Sección>` "
-    "y periodo de vigencia (`## SECCIÓN...`, `### Hoteles/Apartamentos 5 y 4 estrellas`, `### Desde 01/01/2026 "
-    "hasta 31/12/2026 (provisionales)`, `### Conceptos económicos...`), evitando agrupar varias sub-tablas sin título "
+    "5. Formatea el título general del bloque o documento (incluyendo su periodo/año de vigencia, p. ej. "
+    "`## TABLA DE RETRIBUCIONES - Del 1 de enero a 31 de diciembre de 2026` o `## SECCIÓN...`) siempre como "
+    "encabezado Markdown nivel 2 (`##`), y coloca encima de cada sub-tabla su propio encabezado nivel 3 (`###`, "
+    "p. ej. `### Salarios base mensuales`, `### Hoteles/Apartamentos 5 y 4 estrellas`, `### Desde 01/01/2026 hasta "
+    "31/12/2026 (provisionales)`, `### Conceptos económicos...`), evitando agrupar varias sub-tablas sin título "
     "Markdown propio; incluye subtítulos diferenciados `### SALARIOS MES` y `### SALARIOS HORA` cuando una página "
     "contenga ambas modalidades, y formatea los importes españoles sin espacio tras el punto de millar "
     "(`1.623,07`, nunca `1. 623,07`)."
@@ -233,16 +239,36 @@ _SCANNED_OCR_PROMPT = (
 )
 
 
+_HEADING_PERIOD_SUBTITLE_RE = re.compile(
+    r"(?im)^(##{1,2}\s+[^\n]+)\n+(?![#|>\-*])"
+    r"(?=(?:del?\s+\d|desde\s+\d|a[ñn]o\s+20[23]\d|vigencia\b|ejercicio\s+20[23]\d|tablas?\s+20[23]\d))"
+    r"([^\n]{4,120}\b20[23]\d\b[^\n]{0,30})$"
+)
+
+
 def _normalize_spanish_thousands(text: str) -> str:
     """Corrige el artefacto tipográfico `1. 623,07` o `1 .623,07` -> `1.623,07`."""
     return _THOUSANDS_SPACE_RE.sub(r"\1.\2", text)
 
 
+def _merge_heading_period_subtitles(text: str) -> str:
+    """Fusiona un subtítulo de vigencia anual inmediatamente posterior a un encabezado ##/###."""
+    return _HEADING_PERIOD_SUBTITLE_RE.sub(
+        lambda m: (
+            m.group(0)
+            if re.search(r"\b20[23]\d\b", m.group(1))
+            else f"{m.group(1).strip()} — {m.group(2).strip()}"
+        ),
+        text,
+    )
+
+
 def _clean_gemini_markdown_output(text: str) -> str:
-    """Elimina cercos ```markdown residuales y normaliza millares españoles."""
+    """Elimina cercos ```markdown residuales, fusiona vigencias en títulos y normaliza millares españoles."""
     cleaned = (text or "").strip()
     cleaned = re.sub(r"^```(?:markdown|md)?\s*\n", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\n```\s*$", "", cleaned)
+    cleaned = _merge_heading_period_subtitles(cleaned)
     return _normalize_spanish_thousands(cleaned).strip()
 
 

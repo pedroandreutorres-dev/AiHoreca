@@ -96,5 +96,35 @@
     "start_page": 3,
     "end_page": 26,
     "justificacion": "Texto articulado completo (Disposición preliminar y articulado vigente 2025-2028), Anexo I de clasificación por niveles salariales (pág. 22) y tablas salariales oficiales 2025-2028 por tipo de establecimiento (págs. 23-26) del Convenio Colectivo de Hostelería de la Provincia de Sevilla (REGCON 41001465011981, BOP Sevilla n.º 102, 30/05/2025)."
+  },
+  "convenio_alicante.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "territorio": "alicante",
+    "start_page": 3,
+    "end_page": 72,
+    "skip_pages": [
+      64,
+      65
+    ],
+    "force_gemini_pages": [
+      60,
+      61,
+      62,
+      63,
+      72
+    ],
+    "justificacion": "Texto consolidado del Convenio de Hostelería de la Provincia de Alicante 2023-2026 (REGCON 03000425011982, BOP Alicante n.º 200, 18/10/2023, Edicto 8879/2023), incluyendo Anexo I de grupos de establecimientos A/B/C (págs. 57-59), Anexo II de niveles retributivos 1-6 (págs. 60-63) y Anexos IV-VII (págs. 66-72). Se omiten págs. 1-2 (resolución administrativa) y págs. 64-65 (Anexo III tablas salariales caducadas de 2023 sustituidas por Edicto 819/2026)."
+  },
+  "convenio_alicante_tablas_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "expected_years": [
+      2026
+    ],
+    "territorio": "alicante",
+    "start_page": 3,
+    "end_page": 4,
+    "justificacion": "Tablas de retribuciones, horas extra, festivos, nocturnidad, gratificación de octubre y conceptos económicos vigentes para el año 2026 del Convenio de Hostelería de la Provincia de Alicante (BOP Alicante n.º 29, 12/02/2026, Edicto 819/2026), omitiendo págs. 1-2 de resolución administrativa."
   }
 }

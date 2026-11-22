@@ -724,7 +724,7 @@ class AiHorecaVectorStore:
                 or (
                     "anexo" in doc.titulo_o_capitulo.lower()
                     and re.search(
-                        r"(?i)\b(?:GRUPO\s+[IVX]+|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?))\b",
+                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?))\b",
                         body_head,
                     )
                 )
@@ -1134,6 +1134,7 @@ class AiHorecaVectorStore:
                 for d in terr_cands
                 if d.tipo_contenido == "tabla_salarial" and self._is_monetary_table(d)
             ]
+            max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
             distinct_cls_sections = {
                 d.titulo_o_capitulo.strip()
                 for d in terr_cands
@@ -1142,22 +1143,47 @@ class AiHorecaVectorStore:
             needs_dual_cls_tables = (
                 is_remuneration_query and bool(prov_euro_tables) and len(distinct_cls_sections) >= 2
             )
-            effective_article_quota = (
-                max(1, QUOTA_PROVINCIAL_ARTICLES - 1) if needs_dual_cls_tables else QUOTA_PROVINCIAL_ARTICLES
+            asks_extra_pay = bool(
+                re.search(
+                    r"(?i)pagas?\s+extra(?:ordinaria)?s?|gratificaci[óo]n(?:es)?\s+extraordinaria",
+                    clean_intent_q,
+                )
+            )
+            extra_pay_table_row_re = re.compile(
+                r"(?i)\|[^\n]*(?:gratificaci[óo]n(?:es)?\s+extraordinaria|paga(?:s)?\s+extraordinaria)[^\n]*\|"
+            )
+            has_separate_extra_pay_table = bool(
+                asks_extra_pay
+                and len(prov_euro_tables) >= 2
+                and any(
+                    extra_pay_table_row_re.search(d.text)
+                    and (explicit_years or max_cand_year == 0 or self._extract_chunk_year(d) == max_cand_year)
+                    for d in prov_euro_tables
+                )
+            )
+            effective_article_quota = max(
+                1,
+                QUOTA_PROVINCIAL_ARTICLES
+                - (1 if needs_dual_cls_tables else 0)
+                - (1 if has_separate_extra_pay_table else 0),
             )
 
             if is_remuneration_query:
+                extra_pay_art_pat = r"(?i)gratificaciones\s+extraordinarias|pagas\s+extra(?:ordinaria)?s?"
+                before_extra_art = _t_art_count()
                 _pick(
                     lambda d: d.tipo_contenido == "articulo"
-                    and bool(
-                        re.search(
-                            r"(?i)gratificaciones\s+extraordinarias|pagas\s+extraordinarias",
-                            f"{d.articulo} {d.text}",
-                        )
-                    ),
+                    and bool(re.search(extra_pay_art_pat, d.articulo)),
                     1,
                     terr_cands,
                 )
+                if _t_art_count() == before_extra_art:
+                    _pick(
+                        lambda d: d.tipo_contenido == "articulo"
+                        and bool(re.search(extra_pay_art_pat, d.text)),
+                        1,
+                        terr_cands,
+                    )
                 for specific_pat in (
                     r"(?i)horas\s+extra(?:ordinaria)?s?",
                     r"(?i)nocturnidad|horas\s+nocturnas",
@@ -1181,7 +1207,6 @@ class AiHorecaVectorStore:
             if not needs_tables:
                 return
 
-            max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
             if area_pattern:
                 if not explicit_years and max_cand_year > 0:
                     _pick(
@@ -1272,6 +1297,25 @@ class AiHorecaVectorStore:
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and not self._is_monetary_table(d),
                         max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+                        terr_cands,
+                    )
+
+            if has_separate_extra_pay_table:
+                if not explicit_years and max_cand_year > 0:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._extract_chunk_year(d) == max_cand_year
+                        and bool(extra_pay_table_row_re.search(d.text)),
+                        1,
+                        terr_cands,
+                    )
+                else:
+                    _pick(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and bool(extra_pay_table_row_re.search(d.text)),
+                        1,
                         terr_cands,
                     )
 
