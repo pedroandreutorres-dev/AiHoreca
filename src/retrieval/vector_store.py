@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 import logging
 import os
 import re
@@ -200,7 +201,11 @@ class AiHorecaVectorStore:
             except Exception as exc:
                 last_err = exc
                 err_str = str(exc)
-                wait_s = 22.0 if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) else 5.0
+                if "PerDay" in err_str or "RequestsPerDay" in err_str:
+                    raise RuntimeError(
+                        f"Cuota diaria agotada en {EMBEDDING_MODEL}: {err_str}"
+                    ) from exc
+                wait_s = 25.0 if ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str) else 5.0
                 logger.warning(
                     "Ventana TPM (30k tokens/min) de Free Tier alcanzada en %s (intento %d/8). Esperando %.0fs...",
                     EMBEDDING_MODEL,
@@ -308,50 +313,41 @@ class AiHorecaVectorStore:
         """Indexa de forma incremental los LegalChunk en Qdrant (permite actualizar solo documentos específicos)."""
         self.ensure_collection(recreate=recreate)
 
-        target_chunks = chunks
-        if replace_source_files and not recreate:
-            logger.info(
-                "Actualización incremental: eliminando puntos previos de %s...",
-                replace_source_files,
-            )
-            self.qdrant.delete(
-                collection_name=self.collection_name,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key="source_file",
-                                match=models.MatchAny(any=replace_source_files),
-                            )
-                        ]
-                    )
-                ),
-            )
-            target_set = set(replace_source_files)
-            target_chunks = [c for c in chunks if c.source_file in target_set]
+        replace_mode = bool(replace_source_files and not recreate)
+        if replace_mode:
+            target_set = set(replace_source_files or [])
+            pending_chunks = [c for c in chunks if c.source_file in target_set]
+            existing_count = 0
+        else:
+            existing_ids = self._get_all_existing_ids()
+            pending_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
+            existing_count = len(existing_ids)
 
-        existing_ids = self._get_all_existing_ids()
-        pending_chunks = [c for c in target_chunks if c.chunk_id not in existing_ids]
         if not pending_chunks:
+            count_now = (
+                self.qdrant.count(collection_name=self.collection_name).count
+                if replace_mode
+                else existing_count
+            )
             logger.info(
                 "La colección '%s' ya contiene los %d chunks indexados.",
                 self.collection_name,
-                len(existing_ids),
+                count_now,
             )
-            return len(existing_ids)
+            return count_now
 
         logger.info(
-            "Chunks ya presentes en Qdrant: %d | Chunks pendientes de indexar: %d",
-            len(existing_ids),
+            "Chunks ya presentes en Qdrant: %s | Chunks pendientes de indexar: %d",
+            "reemplazo atómico" if replace_mode else str(existing_count),
             len(pending_chunks),
         )
 
-        # Agrupar en lotes acotados tanto por número de ítems (<=40) como por caracteres (<=55.000 chars ~ 14k tokens < 30k TPM)
+        # Agrupar en lotes acotados por número de ítems (<=25) y caracteres (<=24.000 chars ~ <=14k tokens incluso en tablas numéricas densas < 30k TPM)
         batches: list[list[LegalChunk]] = []
         current_batch: list[LegalChunk] = []
         current_chars = 0
-        max_batch_chars = 55000
-        max_items = min(batch_size, 40)
+        max_batch_chars = 24000
+        max_items = min(batch_size, 25)
 
         for ch in pending_chunks:
             ch_len = len(ch.text)
@@ -368,6 +364,7 @@ class AiHorecaVectorStore:
 
         processed_so_far = 0
         total_pending = len(pending_chunks)
+        staged_points: list[models.PointStruct] = []
         for b_idx, batch in enumerate(batches, start=1):
             batch_texts = [c.text for c in batch]
             logger.info(
@@ -397,11 +394,39 @@ class AiHorecaVectorStore:
                     )
                 )
 
-            self.qdrant.upsert(
-                collection_name=self.collection_name,
-                points=points,
-            )
+            if replace_mode:
+                staged_points.extend(points)
+            else:
+                self.qdrant.upsert(
+                    collection_name=self.collection_name,
+                    points=points,
+                )
             processed_so_far += len(batch)
+
+        if replace_mode and staged_points:
+            logger.info(
+                "Actualización atómica: eliminando puntos previos de %s y subiendo %d puntos...",
+                replace_source_files,
+                len(staged_points),
+            )
+            self.qdrant.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="source_file",
+                                match=models.MatchAny(any=replace_source_files),
+                            )
+                        ]
+                    )
+                ),
+            )
+            for idx in range(0, len(staged_points), 30):
+                self.qdrant.upsert(
+                    collection_name=self.collection_name,
+                    points=staged_points[idx : idx + 30],
+                )
 
         final_count = self.qdrant.count(collection_name=self.collection_name).count
         logger.info(
@@ -573,6 +598,177 @@ class AiHorecaVectorStore:
             years.append(2000 + int(m.group(1)))
         return max(years) if years else 0
 
+    _SPANISH_MONTHS: dict[str, int] = {
+        "ene": 1, "enero": 1,
+        "feb": 2, "febrero": 2,
+        "mar": 3, "marzo": 3,
+        "abr": 4, "abril": 4,
+        "may": 5, "mayo": 5,
+        "jun": 6, "junio": 6,
+        "jul": 7, "julio": 7,
+        "ago": 8, "agosto": 8,
+        "sep": 9, "sept": 9, "septiembre": 9, "setiembre": 9,
+        "oct": 10, "octubre": 10,
+        "nov": 11, "noviembre": 11,
+        "dic": 12, "diciembre": 12,
+    }
+
+    @classmethod
+    def _extract_chunk_date_span(cls, doc: RetrievedDocument) -> Optional[tuple[date, date]]:
+        """Resuelve el rango exacto de fechas de vigencia [inicio, fin] de una tabla o fragmento."""
+        month_alts = "|".join(sorted(cls._SPANISH_MONTHS.keys(), key=len, reverse=True))
+        month_range_re = re.compile(
+            rf"(?i)\b(\d{{1,2}})\s*(?:de\s+)?({month_alts})\b(?:\s*(?:de\s+)?(202[2-9]|2[2-9]))?"
+            rf"\s*(?:[-–—]|\b(?:al?|hasta(?:\s+el)?)\b)\s*"
+            rf"(?:el\s+)?(\d{{1,2}})\s*(?:de\s+)?({month_alts})\b\s+(?:de\s+)?(202[2-9]|2[2-9])\b"
+        )
+        num_range_re = re.compile(
+            r"(?i)\b(\d{1,2})[/.-](\d{1,2})[/.-](202[2-9]|2[2-9])\b"
+            r"\s*(?:[-–—]|\b(?:al?|hasta(?:\s+el)?)\b)\s*"
+            r"(?:el\s+)?(\d{1,2})[/.-](\d{1,2})[/.-](202[2-9]|2[2-9])\b"
+        )
+
+        def _norm_year(raw_y: str) -> int:
+            y = int(raw_y)
+            return y + 2000 if y < 100 else y
+
+        def _collect_ranges(surface: str) -> list[tuple[date, date]]:
+            found: list[tuple[date, date]] = []
+            for m in month_range_re.finditer(surface):
+                d1, m1_s, y1_s, d2, m2_s, y2_s = m.groups()
+                m1 = cls._SPANISH_MONTHS.get(m1_s.lower(), 0)
+                m2 = cls._SPANISH_MONTHS.get(m2_s.lower(), 0)
+                y2 = _norm_year(y2_s)
+                y1 = _norm_year(y1_s) if y1_s else (y2 - 1 if m1 > m2 else y2)
+                try:
+                    dt1, dt2 = date(y1, m1, int(d1)), date(y2, m2, int(d2))
+                    if dt1 <= dt2:
+                        found.append((dt1, dt2))
+                except ValueError:
+                    continue
+            for m in num_range_re.finditer(surface):
+                d1, m1_s, y1_s, d2, m2_s, y2_s = m.groups()
+                try:
+                    dt1 = date(_norm_year(y1_s), int(m1_s), int(d1))
+                    dt2 = date(_norm_year(y2_s), int(m2_s), int(d2))
+                    if dt1 <= dt2:
+                        found.append((dt1, dt2))
+                except ValueError:
+                    continue
+            return found
+
+        header_surface = f"{doc.titulo_o_capitulo} | {doc.articulo}"
+        body = doc.text.split("\n\n", 1)[-1] if "\n\n" in doc.text else doc.text
+
+        ranges = _collect_ranges(header_surface) or _collect_ranges(body)
+        if ranges:
+            return min(r[0] for r in ranges), max(r[1] for r in ranges)
+
+        pipe_header_years: list[int] = []
+        for line in body.splitlines()[:8]:
+            if "|" in line:
+                for ym in re.finditer(r"(?<!\d)(2\.?02[2-9])(?!\d|,\d)", line):
+                    pipe_header_years.append(int(ym.group(1).replace(".", "")))
+        if len(set(pipe_header_years)) >= 2:
+            return date(min(pipe_header_years), 1, 1), date(max(pipe_header_years), 12, 31)
+
+        yr = cls._extract_chunk_year(doc)
+        if yr > 0:
+            return date(yr, 1, 1), date(yr, 12, 31)
+
+        year_range = re.search(
+            r"\b(202[2-9])\s*[-–—/]\s*(202[2-9])\b",
+            f"{header_surface}\n{body[:350]}",
+        )
+        if year_range:
+            y1, y2 = int(year_range.group(1)), int(year_range.group(2))
+            if y1 <= y2:
+                return date(y1, 1, 1), date(y2, 12, 31)
+        return None
+
+    @classmethod
+    def _select_preferred_monetary_tables(
+        cls,
+        docs: list[RetrievedDocument],
+        explicit_years: list[int],
+        reference_date: Optional[date] = None,
+    ) -> set[str]:
+        """Selecciona los IDs de tablas monetarias preferentes según la fecha de vigencia o años consultados."""
+        if not docs:
+            return set()
+        today = reference_date or date.today()
+        raw_spans = [(d, cls._extract_chunk_date_span(d)) for d in docs]
+
+        # Normaliza erratas tipográficas de boletín del tipo `01/01/YYYY - 31/01/YYYY` cuando
+        # no existe ninguna tabla posterior dentro de ese mismo año natural YYYY.
+        spans: list[tuple[RetrievedDocument, Optional[tuple[date, date]]]] = []
+        for d, sp in raw_spans:
+            if (
+                sp is not None
+                and sp[0] == date(sp[0].year, 1, 1)
+                and sp[1] == date(sp[0].year, 1, 31)
+                and not any(
+                    other_sp is not None
+                    and other_sp[0].year == sp[0].year
+                    and other_sp[0] > sp[1]
+                    for _, other_sp in raw_spans
+                )
+            ):
+                spans.append((d, (sp[0], date(sp[0].year, 12, 31))))
+            else:
+                spans.append((d, sp))
+
+        if not explicit_years:
+            active_today = {
+                d.chunk_id
+                for d, sp in spans
+                if sp is not None and sp[0] <= today <= sp[1]
+            }
+            if active_today:
+                return active_today
+
+            past_spans = [
+                (d, sp)
+                for d, sp in spans
+                if sp is not None and sp[0].year <= today.year
+            ]
+            if past_spans:
+                max_end = max(sp[1] for _, sp in past_spans)
+                return {
+                    d.chunk_id
+                    for d, sp in past_spans
+                    if sp[1].year == max_end.year
+                }
+
+            max_yr = max((cls._extract_chunk_year(d) for d in docs), default=0)
+            return (
+                {d.chunk_id for d in docs if cls._extract_chunk_year(d) == max_yr}
+                if max_yr > 0
+                else set()
+            )
+
+        req_years = set(explicit_years)
+        matching = [
+            (d, sp)
+            for d, sp in spans
+            if sp is not None
+            and any(
+                sp[0] <= date(y, 12, 31) and sp[1] >= date(y, 1, 1)
+                for y in req_years
+            )
+        ]
+        if not matching:
+            return set()
+        if today.year in req_years and len(req_years) == 1:
+            active_in_req = {
+                d.chunk_id
+                for d, sp in matching
+                if sp[0] <= today <= sp[1]
+            }
+            if active_in_req:
+                return active_in_req
+        return {d.chunk_id for d, _ in matching}
+
     @staticmethod
     def _extract_aleh_area_pattern(role_context: Optional[str]) -> Optional[re.Pattern]:
         """Extrae un patrón regex general para el Área Funcional oficial del VI ALEH (1ª a 6ª) si consta en role_context."""
@@ -601,7 +797,7 @@ class AiHorecaVectorStore:
         key = (m.group(1) or m.group(2) or "").lower()
         if key not in area_map:
             return None
-        return re.compile(rf"(?i)[áa]rea\s+funcional\s+(?:{area_map[key]})\b")
+        return re.compile(rf"(?i)(?:[áa]rea\s+funcional|A\.?F\.?)\s+(?:{area_map[key]})\b")
 
     @staticmethod
     def _doc_matches_area(doc: RetrievedDocument, area_pattern: Optional[re.Pattern]) -> bool:
@@ -684,6 +880,115 @@ class AiHorecaVectorStore:
         if not role_stems:
             return False
         return any(all(stem in line for stem in role_stems) for line in doc.text.lower().splitlines())
+
+    _SUBORDINATE_ROLE_RE = re.compile(
+        r"(?i)\b(?:ayudante(?:/a)?|auxiliar|aprendiz|segundo|segunda|2\.?[ºª]|subgobernante|subdirector|sub)\b"
+    )
+    _SUBORDINATE_STEMS = ("ayudant", "auxiliar", "aprendiz", "segund", "pinch")
+
+    @classmethod
+    def _matches_primary_role_stem(cls, doc: RetrievedDocument, role_stems: list[str]) -> bool:
+        """Comprueba coincidencia del puesto principal evitando falsos positivos en filas subordinadas."""
+        if not role_stems:
+            return False
+        allow_subordinate = any(
+            s.startswith(cls._SUBORDINATE_STEMS) for s in role_stems
+        )
+        for raw_line in doc.text.lower().splitlines():
+            if not all(stem in raw_line for stem in role_stems):
+                continue
+            if allow_subordinate:
+                return True
+            cell0 = raw_line.strip("| ").split("|")[0].strip() if "|" in raw_line else raw_line
+            if not cls._SUBORDINATE_ROLE_RE.search(cell0):
+                return True
+        return False
+
+    _QUERY_SUBSECTOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+        (
+            "hospedaje",
+            re.compile(
+                r"(?i)\b(?:hotel(?:es)?|hostal(?:es)?|pensi[óo]n(?:es)?|parador(?:es)?|balneario|hospedaje|alojamiento)\b"
+            ),
+        ),
+        (
+            "apartamentos",
+            re.compile(
+                r"(?i)\b(?:apartamento(?:s)?|aparthotel|camping(?:s)?|vivienda\s+vacacional)\b"
+            ),
+        ),
+        (
+            "colectividades",
+            re.compile(
+                r"(?i)\b(?:catering|colectividades|comedor(?:es)?\s+(?:escolar|hospital|empresa)|club(?:es)?\s+privado|cafeter[íi]a\s+(?:de\s+(?:un\s+)?)?hospital|cafeter[íi]a\s+hospitalaria)\b"
+            ),
+        ),
+        (
+            "lujo_ocio_especial",
+            re.compile(
+                r"(?i)\b(?:casino(?:s)?|campo(?:s)?\s+de\s+golf|sal[óo]n(?:es)?\s+de\s+juegos?|bingo|sala(?:s)?\s+de\s+fiestas?|lujo|5\s+tenedores)\b"
+            ),
+        ),
+        (
+            "restauracion",
+            re.compile(
+                r"(?i)\b(?:restaurante(?:s)?|bar(?:es)?|cafeter[íi]a(?:s)?|taberna|tasca|mes[óo]n|chiringuito|pizzer[íi]a|hamburgueser[íi]a|helader[íi]a|churrer[íi]a|pub|discoteca|ocio\s+nocturno|restauraci[óo]n)\b"
+            ),
+        ),
+    )
+
+    _DOC_SUBSECTOR_INCLUDE: dict[str, re.Pattern[str]] = {
+        "hospedaje": re.compile(
+            r"\b(?:hotel(?:es)?|hostal(?:es)?|pensi[óo]n(?:es)?|hospedaje|alojamiento|h\s*[1-5]\*)\b"
+        ),
+        "apartamentos": re.compile(
+            r"\b(?:apartamento(?:s)?|aptos?|camping(?:s)?|vivienda\s+vacacional)\b"
+        ),
+        "colectividades": re.compile(
+            r"\b(?:colectividades|catering|club(?:es)?\s+privado)\b"
+        ),
+        "lujo_ocio_especial": re.compile(
+            r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|bares?\s+lujo|lujo)\b"
+        ),
+        "restauracion": re.compile(
+            r"\b(?:restauraci[óo]n(?:\s+y\s+ocio)?|restaurantes?|rtes\b|bares?\b|cafet(?:er[íi]as?|\.)?|tabernas?|chiringuitos?|ocio\s+nocturno|clasificaci[óo]n\s+3d)\b"
+        ),
+    }
+
+    _DOC_RESTAURACION_EXCLUDE_RE = re.compile(
+        r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|apartamentos|colectividades|catering)\b"
+    )
+
+    @classmethod
+    def _extract_query_establishment_subsector(cls, clean_query: str) -> Optional[str]:
+        """Detecta el subsector de establecimiento en la consulta limpia (sin role_context)."""
+        for subsector, pat in cls._QUERY_SUBSECTOR_PATTERNS:
+            if pat.search(clean_query):
+                return subsector
+        return None
+
+    @classmethod
+    def _doc_matches_establishment_subsector(
+        cls,
+        doc: RetrievedDocument,
+        subsector: Optional[str],
+    ) -> bool:
+        """Comprueba si una tabla salarial corresponde al subsector del establecimiento consultado."""
+        if not subsector or subsector not in cls._DOC_SUBSECTOR_INCLUDE:
+            return False
+        header_cols = ""
+        for ln in doc.text.splitlines():
+            s = ln.strip()
+            if s.startswith("|") and s.endswith("|"):
+                parts = [p.strip() for p in s.strip("|").split("|")]
+                header_cols = " | ".join(parts[1:]) if len(parts) > 1 else s
+                break
+        surface = f"{doc.titulo_o_capitulo} | {header_cols}".lower()
+        if not cls._DOC_SUBSECTOR_INCLUDE[subsector].search(surface):
+            return False
+        if subsector == "restauracion" and cls._DOC_RESTAURACION_EXCLUDE_RE.search(surface):
+            return False
+        return True
 
     @staticmethod
     def _is_monetary_table(doc: RetrievedDocument) -> bool:
@@ -822,11 +1127,23 @@ class AiHorecaVectorStore:
         include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
         role_stems = self._build_role_stems(role_context)
 
+        topic_boosts: list[str] = []
+        if re.search(r"(?i)pagas?\s+extra|gratificaci[óo]n", query):
+            topic_boosts.append("gratificaciones extraordinarias pagas extraordinarias pagas extras")
+        if re.search(r"(?i)horas?\s+extra|divisor\s+anual", query):
+            topic_boosts.append("horas extraordinarias valor hora normal divisor anual")
+        if re.search(r"(?i)nocturn", query):
+            topic_boosts.append("jornada nocturna horas nocturnas nocturnidad")
+        if re.search(r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria", query):
+            topic_boosts.append("revisión salarial ipc comisión paritaria cláusula garantía")
+        if re.search(r"(?i)jornada|vacaciones|descanso", query):
+            topic_boosts.append("jornada anual vacaciones descanso semanal")
+        if is_remuneration_query and not topic_boosts:
+            topic_boosts.append("gratificaciones extraordinarias pagas extras salario base")
+
         pay_sparse_vec = (
-            self._get_query_sparse_vec(
-                f"{search_query} gratificaciones extraordinarias pagas extras horas extraordinarias nocturnidad jornada anual"
-            )
-            if is_remuneration_query
+            self._get_query_sparse_vec(f"{search_query} {' '.join(topic_boosts)}")
+            if topic_boosts
             else None
         )
 
@@ -838,7 +1155,7 @@ class AiHorecaVectorStore:
                     "capa_normativa": "convenio_provincial",
                     "provincia": norm_p,
                     "tipo_contenido": "articulo",
-                    "top_k": max(top_k_per_layer + 2, 8),
+                    "top_k": max(top_k_per_layer + 4, 10),
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
                     "include_vectors": include_vectors,
@@ -854,7 +1171,7 @@ class AiHorecaVectorStore:
                         "capa_normativa": "convenio_provincial",
                         "provincia": norm_p,
                         "tipo_contenido": "articulo",
-                        "top_k": 5,
+                        "top_k": 6,
                         "dense_query_vec": d_vec,
                         "sparse_query_vec": pay_sparse_vec,
                         "include_vectors": include_vectors,
@@ -876,6 +1193,25 @@ class AiHorecaVectorStore:
                 },
             )
         )
+        if is_remuneration_query:
+            cls_sparse_vec = self._get_query_sparse_vec(
+                f"anexo clasificación empresas establecimientos grupos categorías niveles retributivos {query}"
+            )
+            query_specs.append(
+                (
+                    "prov_cls_tables",
+                    {
+                        "query": search_query,
+                        "capa_normativa": "convenio_provincial",
+                        "provincia": norm_p,
+                        "tipo_contenido": "tabla_salarial",
+                        "top_k": 3,
+                        "dense_query_vec": d_vec,
+                        "sparse_query_vec": cls_sparse_vec,
+                        "include_vectors": include_vectors,
+                    },
+                )
+            )
         query_specs.append(
             (
                 "prov_anexo",
@@ -894,7 +1230,9 @@ class AiHorecaVectorStore:
 
         layer_results = self._run_query_specs(query_specs)
 
-        raw_tables = layer_results["prov_tables"]
+        raw_tables = self._deduplicate_docs(
+            layer_results["prov_tables"] + layer_results.get("prov_cls_tables", [])
+        )
         sibling_provs = {"barcelona", "girona", "tarragona", "lleida"}
         other_siblings = sibling_provs - {norm_p} if norm_p in sibling_provs else set()
         filtered_tables = [
@@ -912,12 +1250,11 @@ class AiHorecaVectorStore:
 
         euro_tables = [t for t in filtered_tables if self._is_monetary_table(t)]
         level_tables = [t for t in filtered_tables if t not in euro_tables]
-        if not explicit_years and euro_tables:
-            max_avail_year = max((self._extract_chunk_year(t) for t in euro_tables), default=0)
-            if max_avail_year > 0:
-                latest_euro = [t for t in euro_tables if self._extract_chunk_year(t) == max_avail_year]
-                older_euro = [t for t in euro_tables if t not in latest_euro]
-                euro_tables = latest_euro + older_euro
+        preferred_euro_ids = self._select_preferred_monetary_tables(euro_tables, explicit_years)
+        if preferred_euro_ids:
+            latest_euro = [t for t in euro_tables if t.chunk_id in preferred_euro_ids]
+            older_euro = [t for t in euro_tables if t.chunk_id not in preferred_euro_ids]
+            euro_tables = latest_euro + older_euro
 
         top_level_candidates: list[RetrievedDocument] = []
         seen_level_sections: set[str] = set()
@@ -1079,6 +1416,7 @@ class AiHorecaVectorStore:
 
         role_stems = self._build_role_stems(role_context)
         area_pattern = self._extract_aleh_area_pattern(role_context)
+        target_subsector = self._extract_query_establishment_subsector(clean_intent_q)
 
         selected: list[RetrievedDocument] = []
         selected_ids: set[str] = set()
@@ -1133,7 +1471,10 @@ class AiHorecaVectorStore:
                 for d in terr_cands
                 if d.tipo_contenido == "tabla_salarial" and self._is_monetary_table(d)
             ]
-            max_cand_year = max((self._extract_chunk_year(d) for d in prov_euro_tables), default=0)
+            preferred_euro_ids = self._select_preferred_monetary_tables(
+                prov_euro_tables,
+                explicit_years,
+            )
             distinct_cls_sections = {
                 d.titulo_o_capitulo.strip()
                 for d in terr_cands
@@ -1156,7 +1497,7 @@ class AiHorecaVectorStore:
                 and len(prov_euro_tables) >= 2
                 and any(
                     extra_pay_table_row_re.search(d.text)
-                    and (explicit_years or max_cand_year == 0 or self._extract_chunk_year(d) == max_cand_year)
+                    and (not preferred_euro_ids or d.chunk_id in preferred_euro_ids)
                     for d in prov_euro_tables
                 )
             )
@@ -1167,32 +1508,48 @@ class AiHorecaVectorStore:
                 - (1 if has_separate_extra_pay_table else 0),
             )
 
+            def _is_normative_text(doc: RetrievedDocument) -> bool:
+                return doc.tipo_contenido in ("articulo", "anexo_o_disposicion")
             if is_remuneration_query:
                 extra_pay_art_pat = r"(?i)gratificaciones\s+extraordinarias|pagas\s+extra(?:ordinaria)?s?"
-                before_extra_art = _t_art_count()
-                _pick(
-                    lambda d: d.tipo_contenido == "articulo"
-                    and bool(re.search(extra_pay_art_pat, d.articulo)),
-                    1,
-                    terr_cands,
+                specific_patterns = (
+                    r"(?i)horas?\s+extra(?:ordinaria)?s?",
+                    r"(?i)nocturnidad|jornada\s+nocturna|horas\s+nocturnas",
+                    r"(?i)vacaciones",
+                    r"(?i)jornada\s+(?:de\s+trabajo|anual|m[áa]xima)|tiempo\s+parcial",
                 )
-                if _t_art_count() == before_extra_art:
+                matched_specific_pats = [
+                    pat
+                    for pat in specific_patterns
+                    if re.search(pat, f"{query} {effective_rerank_query}")
+                ]
+                if asks_extra_pay or not matched_specific_pats:
+                    before_extra = len(selected)
                     _pick(
-                        lambda d: d.tipo_contenido == "articulo"
-                        and bool(re.search(extra_pay_art_pat, d.text)),
+                        lambda d: _is_normative_text(d)
+                        and bool(re.search(extra_pay_art_pat, d.articulo)),
                         1,
                         terr_cands,
                     )
-                for specific_pat in (
-                    r"(?i)horas\s+extra(?:ordinaria)?s?",
-                    r"(?i)nocturnidad|horas\s+nocturnas",
-                    r"(?i)vacaciones",
-                    r"(?i)jornada\s+de\s+trabajo|tiempo\s+parcial",
-                ):
-                    if re.search(specific_pat, f"{query} {effective_rerank_query}"):
+                    if len(selected) == before_extra:
                         _pick(
-                            lambda d, pat=specific_pat: d.tipo_contenido == "articulo"
-                            and bool(re.search(pat, f"{d.articulo} {d.text[:500]}")),
+                            lambda d: _is_normative_text(d)
+                            and bool(re.search(extra_pay_art_pat, d.text)),
+                            1,
+                            terr_cands,
+                        )
+                for pat in matched_specific_pats:
+                    before_spec = len(selected)
+                    _pick(
+                        lambda d, p=pat: _is_normative_text(d)
+                        and bool(re.search(p, d.articulo)),
+                        1,
+                        terr_cands,
+                    )
+                    if len(selected) == before_spec:
+                        _pick(
+                            lambda d, p=pat: _is_normative_text(d)
+                            and bool(re.search(p, f"{d.articulo} {d.text[:500]}")),
                             1,
                             terr_cands,
                         )
@@ -1206,41 +1563,78 @@ class AiHorecaVectorStore:
             if not needs_tables:
                 return
 
-            if area_pattern:
-                if not explicit_years and max_cand_year > 0:
+            def _pick_with_period_preference(base_pred, limit: int = 1) -> None:
+                if limit <= 0:
+                    return
+                rem = limit
+                if preferred_euro_ids:
+                    before_pick = len(selected)
                     _pick(
-                        lambda d: d.tipo_contenido == "tabla_salarial"
-                        and self._is_monetary_table(d)
-                        and self._extract_chunk_year(d) == max_cand_year
-                        and self._doc_matches_area(d, area_pattern),
-                        1,
+                        lambda d: d.chunk_id in preferred_euro_ids and base_pred(d),
+                        limit,
                         terr_cands,
                     )
-                else:
-                    _pick(
+                    rem -= len(selected) - before_pick
+                if rem > 0:
+                    _pick(base_pred, rem, terr_cands)
+
+            if area_pattern:
+                if target_subsector:
+                    if role_stems:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and self._doc_matches_area(d, area_pattern)
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._matches_primary_role_stem(d, role_stems),
+                            1,
+                        )
+                    if _t_tbl_count() == 0:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and self._doc_matches_area(d, area_pattern)
+                            and self._doc_matches_establishment_subsector(d, target_subsector),
+                            1,
+                        )
+                if _t_tbl_count() == 0 and role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._doc_matches_area(d, area_pattern)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                    )
+                    if _t_tbl_count() == 0:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and self._doc_matches_area(d, area_pattern)
+                            and self._matches_role_stem(d, role_stems),
+                            1,
+                        )
+                if _t_tbl_count() == 0:
+                    _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
                         and self._doc_matches_area(d, area_pattern),
                         1,
-                        terr_cands,
                     )
 
+            if _t_tbl_count() == 0 and target_subsector:
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d)
+                    and self._doc_matches_establishment_subsector(d, target_subsector),
+                    1,
+                )
+
             if _t_tbl_count() == 0:
-                if not explicit_years and max_cand_year > 0:
-                    _pick(
-                        lambda d: d.tipo_contenido == "tabla_salarial"
-                        and self._is_monetary_table(d)
-                        and self._extract_chunk_year(d) == max_cand_year,
-                        1,
-                        terr_cands,
-                    )
-                else:
-                    _pick(
-                        lambda d: d.tipo_contenido == "tabla_salarial"
-                        and self._is_monetary_table(d),
-                        1,
-                        terr_cands,
-                    )
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d),
+                    1,
+                )
 
             if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES:
                 _pick(
@@ -1300,35 +1694,16 @@ class AiHorecaVectorStore:
                     )
 
             if has_separate_extra_pay_table:
-                if not explicit_years and max_cand_year > 0:
-                    _pick(
-                        lambda d: d.tipo_contenido == "tabla_salarial"
-                        and self._is_monetary_table(d)
-                        and self._extract_chunk_year(d) == max_cand_year
-                        and bool(extra_pay_table_row_re.search(d.text)),
-                        1,
-                        terr_cands,
-                    )
-                else:
-                    _pick(
-                        lambda d: d.tipo_contenido == "tabla_salarial"
-                        and self._is_monetary_table(d)
-                        and bool(extra_pay_table_row_re.search(d.text)),
-                        1,
-                        terr_cands,
-                    )
-
-            if not explicit_years and max_cand_year > 0:
-                _pick(
+                _pick_with_period_preference(
                     lambda d: d.tipo_contenido == "tabla_salarial"
-                    and self._extract_chunk_year(d) == max_cand_year,
-                    max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
-                    terr_cands,
+                    and self._is_monetary_table(d)
+                    and bool(extra_pay_table_row_re.search(d.text)),
+                    1,
                 )
-            _pick(
+
+            _pick_with_period_preference(
                 lambda d: d.tipo_contenido == "tabla_salarial",
                 max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
-                terr_cands,
             )
 
         for terr_key in norm_territorios:

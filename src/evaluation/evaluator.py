@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import tempfile
 import time
 from collections import Counter
@@ -230,30 +232,88 @@ def _evaluate_ragas_single_pass(
     )
 
 
+def _compute_skippable_case_ids(
+    dataset: list[GoldenTestCase],
+    cached_cases: dict[str, EvaluationCaseResult],
+) -> set[str]:
+    """Determina qué casos en caché son reutilizables preservando cadenas multi-turno íntegras."""
+    chains: list[list[str]] = []
+    active_chain_idx: dict[str, int] = {}
+    for tc in dataset:
+        sid = tc.session_id
+        if tc.reset_session_before or sid not in active_chain_idx:
+            chains.append([tc.case_id])
+            active_chain_idx[sid] = len(chains) - 1
+        else:
+            chains[active_chain_idx[sid]].append(tc.case_id)
+
+    skippable: set[str] = set()
+    for chain in chains:
+        if all(cid in cached_cases for cid in chain):
+            skippable.update(chain)
+    return skippable
+
+
+def _write_checkpoint_atomic(
+    cache_file: Path,
+    report: EvaluationSummaryReport,
+) -> None:
+    """Escribe el checkpoint de evaluación de forma atómica evitando corrupción ante cortes."""
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = cache_file.with_name(f"{cache_file.name}.tmp")
+    tmp_file.write_text(
+        json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(tmp_file, cache_file)
+
+
 def evaluate_golden_dataset(
     force_recompute: bool = False,
     output_path: Optional[Path] = None,
     cases: Optional[list[GoldenTestCase]] = None,
     skip_semantic_judge: bool = False,
+    preserve_other_cached: bool = False,
+    show_progress: bool = False,
 ) -> EvaluationSummaryReport:
     """Ejecuta el benchmark completo sobre los casos del Golden Dataset con caché incremental en disco."""
     cache_file = Path(output_path or EVALUATION_RESULTS_PATH)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
 
     dataset = cases if cases is not None else get_golden_dataset()
-    cached_cases: dict[str, EvaluationCaseResult] = {}
+    disk_cases: dict[str, EvaluationCaseResult] = {}
 
-    if not force_recompute and cache_file.exists():
+    if cache_file.exists():
         try:
             raw_data = json.loads(cache_file.read_text(encoding="utf-8"))
             for item in raw_data.get("cases", []):
                 res = EvaluationCaseResult.model_validate(item)
-                cached_cases[res.case_id] = res
-            if all(tc.case_id in cached_cases for tc in dataset):
-                logger.info("Reutilizando evaluación de %d casos desde caché: %s", len(dataset), cache_file)
-                return _build_summary_report([cached_cases[tc.case_id] for tc in dataset])
+                disk_cases[res.case_id] = res
         except Exception as exc:
-            logger.warning("No se pudo reutilizar caché previa de evaluación (%s). Recomputando...", exc)
+            logger.warning("No se pudo cargar caché previa de evaluación (%s). Ignorando...", exc)
+
+    if not force_recompute:
+        persisted_cases = dict(disk_cases)
+        skippable_ids = _compute_skippable_case_ids(dataset, persisted_cases)
+        if dataset and all(tc.case_id in skippable_ids for tc in dataset):
+            logger.info("Reutilizando evaluación de %d casos desde caché: %s", len(dataset), cache_file)
+            return _build_summary_report([persisted_cases[tc.case_id] for tc in dataset])
+        if show_progress:
+            print(
+                f"[checkpoint] Reanudando evaluación: {len(skippable_ids)}/{len(dataset)} "
+                f"casos reutilizables, {len(dataset) - len(skippable_ids)} pendientes.",
+                file=sys.stderr,
+                flush=True,
+            )
+    else:
+        skippable_ids = set()
+        if preserve_other_cached:
+            target_ids = {tc.case_id for tc in dataset}
+            persisted_cases = {k: v for k, v in disk_cases.items() if k not in target_ids}
+        else:
+            persisted_cases = {}
+
+    ordered_ids = list(dict.fromkeys(list(disk_cases.keys()) + [tc.case_id for tc in dataset]))
 
     vstore = AiHorecaVectorStore()
     tmp_mem_dir = tempfile.TemporaryDirectory(prefix="aihoreca_eval_mem_")
@@ -264,15 +324,27 @@ def evaluate_golden_dataset(
 
     try:
         for idx, tc in enumerate(dataset, start=1):
-            if not force_recompute and tc.case_id in cached_cases:
+            if tc.case_id in skippable_ids:
                 logger.info("[%d/%d] Reutilizando caso en caché: %s", idx, len(dataset), tc.case_id)
-                results.append(cached_cases[tc.case_id])
+                if show_progress:
+                    print(
+                        f"[{idx}/{len(dataset)}] ⏭️ {tc.case_id} (checkpoint)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                results.append(persisted_cases[tc.case_id])
                 continue
 
             if tc.reset_session_before:
                 mem.delete_session(tc.session_id)
 
             logger.info("[%d/%d] Ejecutando caso %s (%s)...", idx, len(dataset), tc.case_id, tc.category)
+            if show_progress:
+                print(
+                    f"[{idx}/{len(dataset)}] ▶ Ejecutando {tc.case_id}...",
+                    file=sys.stderr,
+                    flush=True,
+                )
             state_out = run_legal_query(
                 query=tc.query,
                 session_id=tc.session_id,
@@ -415,15 +487,18 @@ def evaluate_golden_dataset(
                 final_response=final_resp,
             )
             results.append(case_result)
-            cached_cases[case_result.case_id] = case_result
+            persisted_cases[case_result.case_id] = case_result
 
-            # Guardar progreso incremental en disco fusionando con casos previos en caché
-            merged_cases = list(cached_cases.values())
-            partial_summary = _build_summary_report(merged_cases)
-            cache_file.write_text(
-                json.dumps(partial_summary.model_dump(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            # Guardar progreso incremental atómico en disco preservando orden determinista
+            ordered_merged = [persisted_cases[cid] for cid in ordered_ids if cid in persisted_cases]
+            partial_summary = _build_summary_report(ordered_merged)
+            _write_checkpoint_atomic(cache_file, partial_summary)
+            if show_progress:
+                print(
+                    f"[{idx}/{len(dataset)}] 💾 Checkpoint guardado ({len(results)}/{len(dataset)}): {tc.case_id}",
+                    file=sys.stderr,
+                    flush=True,
+                )
     finally:
         vstore.close()
         tmp_mem_dir.cleanup()

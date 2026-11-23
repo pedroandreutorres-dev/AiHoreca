@@ -9,6 +9,7 @@ Escalable a las 50 provincias sin reglas ni expresiones regulares hardcodeadas p
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import logging
 import re
@@ -241,7 +242,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
 
         # Formatear encabezados estructurales jurídicos (exigiendo mayúscula inicial para no promocionar frases partidas)
         if re.match(
-            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?![IVXLCDM0-9])(?!\s+del\s+(?:presente\s+)?convenio\b)",
+            r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?![IVXLCDM0-9])(?!\s*(?:,|(?i:del?\s+(?:presente\s+|vigente\s+|actual\s+|citado\s+)?(?:convenio|estatuto|real\s+decreto|ley)\b|de\s+este\s+convenio\b)))",
             stripped,
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
@@ -276,7 +277,12 @@ _TABLE_EXTRACTION_PROMPT = (
     "31/12/2026 (provisionales)`, `### Conceptos económicos...`), evitando agrupar varias sub-tablas sin título "
     "Markdown propio; incluye subtítulos diferenciados `### SALARIOS MES` y `### SALARIOS HORA` cuando una página "
     "contenga ambas modalidades, y formatea los importes españoles sin espacio tras el punto de millar "
-    "(`1.623,07`, nunca `1. 623,07`)."
+    "(`1.623,07`, nunca `1. 623,07`).\n"
+    "6. NUNCA omitas ni descartes la primera columna izquierda de puestos de trabajo, ocupaciones, "
+    "categorías profesionales, niveles o conceptos económicos, aunque en el PDF su celda de cabecera aparezca "
+    "en blanco o combinada: crea siempre una primera columna explícita (p. ej. `Categoría / Puesto` u "
+    "`Ocupación / Puesto`) y transcribe íntegramente el nombre literal de cada fila y de cada cabecera de "
+    "columna sin recortar letras ni truncar encabezados."
 )
 
 _SCANNED_OCR_PROMPT = (
@@ -325,6 +331,31 @@ def _clean_gemini_markdown_output(text: str) -> str:
     return _normalize_spanish_thousands(cleaned).strip()
 
 
+_SPANISH_DECIMALS_RE = re.compile(r"(?<!\d)\d{1,3}(?:\.\d{3})*,\d{2}\b")
+
+
+def _count_missing_spanish_decimals(pdf_text: str, md_text: str) -> tuple[int, int, list[str]]:
+    """Compara importes decimales españoles `X,XX` entre texto PDF y Markdown extraído."""
+    normalized_pdf = _normalize_spanish_thousands(pdf_text or "")
+    pdf_cnt = Counter(_SPANISH_DECIMALS_RE.findall(normalized_pdf))
+    md_cnt = Counter(_SPANISH_DECIMALS_RE.findall(md_text or ""))
+    missing = pdf_cnt - md_cnt
+    return sum(missing.values()), sum(pdf_cnt.values()), list(missing.elements())[:8]
+
+
+def _warn_if_max_tokens(response: types.GenerateContentResponse, page_indices: list[int]) -> None:
+    """Registra una advertencia si algún candidato de Gemini terminó por límite de tokens."""
+    for cand in getattr(response, "candidates", None) or []:
+        finish_reason = getattr(cand, "finish_reason", None)
+        finish_name = getattr(finish_reason, "name", str(finish_reason or "")).upper()
+        if "MAX_TOKENS" in finish_name:
+            logger.warning(
+                "  -> AVISO: Gemini finalizó por MAX_TOKENS en páginas %s; revisar posible truncamiento.",
+                [p_idx + 1 for p_idx in page_indices],
+            )
+            break
+
+
 def _extract_pdf_pages_with_gemini(
     doc: pymupdf.Document,
     page_indices: list[int],
@@ -340,12 +371,28 @@ def _extract_pdf_pages_with_gemini(
     pdf_bytes = sub_doc.tobytes()
     sub_doc.close()
 
+    raw_layout_pages = (
+        [
+            f"--- PÁGINA {p_idx + 1} ---\n" + doc[p_idx].get_text("text", sort=True)
+            for p_idx in page_indices
+        ]
+        if allow_text_layout_fallback
+        else []
+    )
+    layout_anchor = (
+        "\n\nREFERENCIA LITERAL DEL TEXTO ALINEADO (úsala junto al PDF visual para no omitir ninguna columna "
+        "izquierda de puestos/categorías ni recortar cabeceras o importes):\n"
+        + "\n\n".join(raw_layout_pages)
+        if raw_layout_pages
+        else ""
+    )
+
     try:
         response = _generate_with_fallback(
             client=client,
             contents=[
                 types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-                prompt,
+                prompt + layout_anchor,
             ],
             config=types.GenerateContentConfig(temperature=0.0),
         )
@@ -355,10 +402,6 @@ def _extract_pdf_pages_with_gemini(
                 "  -> Respaldo por texto estructurado activado tras timeout/error en bytes PDF (%s)...",
                 exc,
             )
-            raw_layout_pages = [
-                f"--- PÁGINA {p_idx + 1} ---\n" + doc[p_idx].get_text("text", sort=True)
-                for p_idx in page_indices
-            ]
             response = _generate_with_fallback(
                 client=client,
                 contents=prompt + "\n\nTEXTO CON LAYOUT DE PÁGINAS:\n" + "\n\n".join(raw_layout_pages),
@@ -382,7 +425,60 @@ def _extract_pdf_pages_with_gemini(
                 config=types.GenerateContentConfig(temperature=0.0),
             )
 
-    return _clean_gemini_markdown_output(response.text or "")
+    _warn_if_max_tokens(response, page_indices)
+    md_out = _clean_gemini_markdown_output(response.text or "")
+
+    if allow_text_layout_fallback and raw_layout_pages:
+        layout_joined = "\n".join(raw_layout_pages)
+        missing_total, pdf_total, sample_missing = _count_missing_spanish_decimals(layout_joined, md_out)
+        if pdf_total >= 4 and missing_total > 0:
+            human_pages = [p_idx + 1 for p_idx in page_indices]
+            logger.warning(
+                "  -> Déficit decimal detectado en páginas %s (%d/%d faltantes, ejemplos=%s); "
+                "reintentando con modelo alternativo y refuerzo anti-fusión...",
+                human_pages,
+                missing_total,
+                pdf_total,
+                sample_missing[:5],
+            )
+            repair_addendum = (
+                f"\n\nATENCIÓN CRÍTICA DE AUDITORÍA: En tu intento anterior faltaron {missing_total} de {pdf_total} "
+                f"importes decimales del PDF (ejemplos omitidos: {', '.join(sample_missing[:6])}). "
+                "PROHIBIDO fusionar o eliminar columnas adyacentes aunque compartan importes idénticos "
+                "(p. ej. si 2 o 3 columnas de establecimiento tienen exactamente el mismo importe, debes emitir "
+                "CADA columna por separado). Emite obligatoriamente tantas columnas monetarias por fila como importes "
+                "haya en cada línea de la REFERENCIA LITERAL DEL TEXTO ALINEADO."
+            )
+            retry_models = (
+                (*GEMINI_FALLBACK_MODELS[1:], GEMINI_FALLBACK_MODELS[0])
+                if len(GEMINI_FALLBACK_MODELS) > 1
+                else GEMINI_FALLBACK_MODELS
+            )
+            try:
+                retry_resp = _generate_with_fallback(
+                    client=client,
+                    contents=[
+                        types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                        prompt + layout_anchor + repair_addendum,
+                    ],
+                    config=types.GenerateContentConfig(temperature=0.0),
+                    models=retry_models,
+                )
+                _warn_if_max_tokens(retry_resp, page_indices)
+                retry_md = _clean_gemini_markdown_output(retry_resp.text or "")
+                retry_missing, _, _ = _count_missing_spanish_decimals(layout_joined, retry_md)
+                if retry_missing < missing_total:
+                    logger.info(
+                        "  -> Reintento mejoró paridad en páginas %s: faltantes %d -> %d.",
+                        human_pages,
+                        missing_total,
+                        retry_missing,
+                    )
+                    md_out = retry_md
+            except Exception as exc:
+                logger.warning("  -> Falló el reintento de paridad en páginas %s (%s).", human_pages, exc)
+
+    return md_out
 
 
 def _extract_table_pages_with_gemini(
@@ -590,6 +686,14 @@ def extract_hybrid_markdown(
         markdown_parts.append(scanned_md)
         pending_scanned_pages = []
 
+    def enqueue_table_page(page_obj: pymupdf.Page, page_index: int) -> None:
+        is_dense_page = len(page_obj.get_text("text")) >= 6000
+        if is_dense_page and pending_table_pages:
+            flush_table_batch()
+        pending_table_pages.append(page_index)
+        if is_dense_page or len(pending_table_pages) >= max_table_batch_size:
+            flush_table_batch()
+
     for p_idx in range(start_idx, end_idx + 1):
         human_page = p_idx + 1
         if human_page in skip_pages:
@@ -602,9 +706,7 @@ def extract_hybrid_markdown(
 
         if human_page in force_gemini_pages:
             flush_scanned_batch()
-            pending_table_pages.append(p_idx)
-            if len(pending_table_pages) >= max_table_batch_size:
-                flush_table_batch()
+            enqueue_table_page(page, p_idx)
             continue
 
         if layout == "scanned_ocr" or _is_scanned_page(page):
@@ -624,9 +726,7 @@ def extract_hybrid_markdown(
                 )
                 markdown_parts.append(_extract_clean_vector_table_page_cpu(doc, p_idx))
             else:
-                pending_table_pages.append(p_idx)
-                if len(pending_table_pages) >= max_table_batch_size:
-                    flush_table_batch()
+                enqueue_table_page(page, p_idx)
         else:
             flush_table_batch()
             raw_page_text = (

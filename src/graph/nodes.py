@@ -60,7 +60,7 @@ _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 _MODEL_QUOTA_COOLDOWN_UNTIL: dict[str, float] = {}
 _COOLDOWN_SECONDS = 45.0
 _QUOTA_COOLDOWN_SECONDS = 120.0
-_TRANSIENT_RETRY_BACKOFFS: tuple[float, ...] = (8.0, 12.0)
+_TRANSIENT_RETRY_BACKOFFS: tuple[float, ...] = (8.0, 15.0, 25.0)
 
 AUTONOMOUS_COMMUNITY_EXPANSION: dict[str, list[str]] = {
     "catalunya": ["barcelona", "girona", "tarragona", "lleida", "catalunya"],
@@ -101,6 +101,9 @@ _CANONICAL_PROVINCE_MAP: dict[str, str] = {
     "orense": "ourense",
     "santa cruz de tenerife": "santa_cruz_tenerife",
     "tenerife": "santa_cruz_tenerife",
+    "la palma": "santa_cruz_tenerife",
+    "la gomera": "santa_cruz_tenerife",
+    "el hierro": "santa_cruz_tenerife",
     "bizkaia": "vizcaya",
     "cataluna": "catalunya",
 }
@@ -170,6 +173,12 @@ _PRETTY_TERRITORY_LABELS: dict[str, str] = {
     "vizcaya": "Vizcaya",
 }
 
+_INSULAR_SUBTERRITORIES: dict[str, str] = {
+    "baleares": "Mallorca, Menorca, Ibiza y Formentera",
+    "las_palmas": "Gran Canaria, Lanzarote y Fuerteventura",
+    "santa_cruz_tenerife": "Tenerife, La Palma, La Gomera y El Hierro",
+}
+
 
 def _pretty_territory_label(territory_id: str) -> str:
     """Convierte un identificador canónico de territorio en etiqueta legible."""
@@ -200,7 +209,10 @@ def _format_supported_territories_display(
     for terr in sorted(indexed_territories):
         if terr in AUTONOMOUS_COMMUNITY_EXPANSION or terr in subprovinces_covered:
             continue
-        entries.append(_pretty_territory_label(terr))
+        label = _pretty_territory_label(terr)
+        if terr in _INSULAR_SUBTERRITORIES:
+            label = f"{label} ({_INSULAR_SUBTERRITORIES[terr]})"
+        entries.append(label)
 
     if not entries:
         return "ningún convenio autonómico/provincial indexado", []
@@ -428,7 +440,11 @@ class AiHorecaGraphNodes:
         history = state.get("conversation_history") or []
         slots = SessionContextSlots.model_validate(state.get("session_slots") or {})
 
-        indexed_list_str = ", ".join(sorted(self.indexed_territories))
+        supported_inline, _ = _format_supported_territories_display(self.indexed_territories)
+        indexed_list_str = (
+            f"{', '.join(sorted(self.indexed_territories))} "
+            f"(cobertura legible: {supported_inline.replace('**', '')})"
+        )
 
         system_instruction = (
             "Eres un Arquitecto Jurídico Laboral experto en el Sector de Hostelería y Turismo de España.\n"
@@ -561,7 +577,14 @@ class AiHorecaGraphNodes:
 
         # 4. Decisión determinista de enrutamiento (Acceso a BBDD + Gatekeeper de Provincia y Puesto/Categoría)
         has_pending = bool(slots.pending_clarification_query)
-        requiere_bbdd = bool(analysis.requiere_consulta_normativa_bbdd or has_pending)
+        was_unsupported_reclassified = (
+            analysis.intent == "UNSUPPORTED_PROVINCE" and intent == "HOSPITALITY_CORE"
+        )
+        requiere_bbdd = bool(
+            analysis.requiere_consulta_normativa_bbdd
+            or has_pending
+            or was_unsupported_reclassified
+        )
         missing_prov = bool(analysis.requiere_convenio_provincial and not territorio_norm)
         missing_role = bool(analysis.requiere_puesto_o_categoria and not cat_aleh_resuelta)
 

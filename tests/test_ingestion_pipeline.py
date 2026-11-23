@@ -9,19 +9,32 @@ Coste de tokens LLM = 0. Todos los tests operan determinísticamente sobre:
 
 from __future__ import annotations
 
+from datetime import date
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pymupdf
 
 from src.config import BOUNDARIES_CACHE_PATH, PROCESSED_DATA_DIR, RAW_DATA_DIR
-from src.graph.nodes import AiHorecaGraphNodes, _canonicalize_llm_province
-from src.graph.state import LegalCitation, LegalSynthesisSchema
+from src.evaluation.evaluator import (
+    EvaluationCaseResult,
+    _compute_skippable_case_ids,
+    evaluate_golden_dataset,
+)
+from src.evaluation.golden_dataset import GoldenTestCase
+from src.graph.nodes import (
+    AiHorecaGraphNodes,
+    _canonicalize_llm_province,
+    _format_supported_territories_display,
+)
+from src.graph.state import LegalCitation, LegalSynthesisSchema, QueryAnalysisSchema
 from src.ingestion.pdf_ingestor import (
     _apply_text_markers,
     _clean_gemini_markdown_output,
+    _count_missing_spanish_decimals,
     _extract_double_column_page_text,
     _format_plain_page_to_markdown,
     _has_clean_vector_table_grid,
@@ -36,7 +49,7 @@ from src.retrieval.chunker import (
     chunk_all_processed_documents,
     chunk_markdown_document,
 )
-from src.retrieval.schemas import RetrievedDocument
+from src.retrieval.schemas import LegalChunk, RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
 
 
@@ -132,6 +145,8 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
                 "artículo 34.8 ET permite solicitar adaptación.",
                 "Capítulo décimo sobre disposiciones varias.",
                 "Anexo I. Clasificación profesional",
+                "categorías establecidas en el",
+                "Anexo 1 del vigente Convenio, en concordancia con las funciones ALEH.",
             ]
         )
         md = _format_plain_page_to_markdown(sample_page)
@@ -140,6 +155,7 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         self.assertIn("### Artículo 31º. Vacaciones.", md)
         self.assertIn("### Artículo11º: Manutención.", md)
         self.assertIn("## Anexo I. Clasificación profesional", md)
+        self.assertNotIn("## Anexo 1 del vigente Convenio", md)
         self.assertNotIn("### Artículo 15 del vigente Estatuto", md)
         self.assertNotIn("### artículo 34.8 ET", md)
         self.assertNotIn("## Capítulo décimo", md)
@@ -223,6 +239,22 @@ class TestPdfIngestorHeuristics(unittest.TestCase):
         for alias in ("Las Palmas", "Las Palmas de Gran Canaria", "Gran Canaria", "Lanzarote", "Fuerteventura"):
             self.assertEqual(_canonicalize_territory(alias), "las_palmas", msg=alias)
             self.assertEqual(_canonicalize_llm_province(alias), "las_palmas", msg=alias)
+
+    def test_santa_cruz_tenerife_island_aliases_canonicalize_uniformly(self) -> None:
+        for alias in ("Santa Cruz de Tenerife", "Tenerife", "La Palma", "La Gomera", "El Hierro"):
+            self.assertEqual(_canonicalize_territory(alias), "santa_cruz_tenerife", msg=alias)
+            self.assertEqual(_canonicalize_llm_province(alias), "santa_cruz_tenerife", msg=alias)
+
+    def test_count_missing_spanish_decimals_detects_dropped_amounts(self) -> None:
+        pdf_txt = "Jefe cocina 1.711,30 € 1.689,95 € 1.689,95 € 1.643,30 €"
+        md_ok = "| Jefe cocina | 1.711,30 € | 1.689,95 € | 1.689,95 € | 1.643,30 € |"
+        missing_ok, total_ok, _ = _count_missing_spanish_decimals(pdf_txt, md_ok)
+        self.assertEqual((missing_ok, total_ok), (0, 4))
+
+        md_bad = "| Jefe cocina | 1.711,30 € | 1.689,95 € | 1.643,30 € |"
+        missing_bad, total_bad, sample_bad = _count_missing_spanish_decimals(pdf_txt, md_bad)
+        self.assertEqual((missing_bad, total_bad), (1, 4))
+        self.assertEqual(sample_bad, ["1.689,95"])
 
 
 class TestRealPdfCanaries(unittest.TestCase):
@@ -495,6 +527,66 @@ class TestManifestAndSilverCorpusInvariants(unittest.TestCase):
                 years_found.add(yr)
         self.assertEqual(years_found, {2025})
 
+    def test_santa_cruz_tenerife_strict_tables_and_anexo2_classification(self) -> None:
+        base_path = PROCESSED_DATA_DIR / "convenio_santa_cruz_tenerife.md"
+        tablas_path = PROCESSED_DATA_DIR / "convenio_santa_cruz_tenerife_tablas_2025_2028.md"
+        rev3d_path = PROCESSED_DATA_DIR / "convenio_santa_cruz_tenerife_revision_3d_2025_2027.md"
+        for p in (base_path, tablas_path, rev3d_path):
+            self.assertTrue(p.exists(), msg=str(p))
+            rep = validate_document(p, strict=True)
+            self.assertTrue(rep.passed, msg=rep.model_dump_json(indent=2))
+            self.assertEqual(rep.error_count, 0, msg=p.name)
+            self.assertEqual(rep.warning_count, 0, msg=p.name)
+
+        tablas_txt = tablas_path.read_text(encoding="utf-8")
+        rev3d_txt = rev3d_path.read_text(encoding="utf-8")
+        self.assertIn("1.448,63", tablas_txt)
+        self.assertIn("1.583,97", tablas_txt)
+        self.assertNotIn("1.302,18", tablas_txt)
+        self.assertIn("1.307,24", rev3d_txt)
+        self.assertIn("1.320,04", rev3d_txt)
+
+        tablas_chunks = chunk_markdown_document(tablas_path)
+        anexo2_cls = [
+            c
+            for c in tablas_chunks
+            if AiHorecaVectorStore._is_classification_level_table(
+                RetrievedDocument(
+                    chunk_id=c.chunk_id,
+                    score=1.0,
+                    capa_normativa=c.capa_normativa,
+                    territorio=c.territorio,
+                    norma_titulo=c.norma_titulo,
+                    titulo_o_capitulo=c.titulo_o_capitulo,
+                    articulo=c.articulo,
+                    tipo_contenido=c.tipo_contenido,
+                    source_file=c.source_file,
+                    text=c.text,
+                )
+            )
+        ]
+        self.assertGreaterEqual(len(anexo2_cls), 1)
+        self.assertTrue(any("ANEXO II" in c.titulo_o_capitulo for c in anexo2_cls))
+
+        base_chunks = chunk_markdown_document(base_path)
+        art34_chunks = [c for c in base_chunks if "Artículo 34" in c.articulo]
+        self.assertTrue(art34_chunks)
+        self.assertTrue(
+            all(
+                c.tipo_contenido == "articulo"
+                and c.titulo_o_capitulo == "CAPÍTULO VI. ESTRUCTURA SALARIAL"
+                for c in art34_chunks
+            ),
+            msg=[(c.tipo_contenido, c.titulo_o_capitulo, c.articulo) for c in art34_chunks],
+        )
+
+        rev3d_chunks = chunk_markdown_document(rev3d_path)
+        rev3d_camarero_26_27 = [
+            c for c in rev3d_chunks if "1.320,04" in c.text and "2026" in c.titulo_o_capitulo
+        ]
+        self.assertEqual(len(rev3d_camarero_26_27), 1)
+        self.assertIn("CLASIFICACIÓN 3D. RESTAURACIÓN Y OCIO", rev3d_camarero_26_27[0].titulo_o_capitulo)
+
 
 class TestValidatorDefectTraps(unittest.TestCase):
     """Trampas de defectos sintéticos para garantizar que el Gate de Calidad bloquea cada fallo conocido."""
@@ -707,6 +799,53 @@ class TestValidatorDefectTraps(unittest.TestCase):
         self.assertFalse(rep_bad.passed)
         self.assertIn("DROPPED_LABEL_COLUMN", {i.code for i in rep_bad.issues})
 
+    def test_table_label_parity_loss_catches_dropped_job_title_column(self) -> None:
+        pdf_text = "\n".join(
+            [
+                "ANEXO I Tablas salariales 2026",
+                "Jefe/a recepción 1º 1 1.514,51 € 1.514,51 €",
+                "Recepcionista 2º 3 1.338,56 € 1.338,56 €",
+                "Administrativo/a 2º 3 1.332,74 € 1.332,74 €",
+                "Cocinero/a 2º 4 1.307,24 € 1.307,24 €",
+                "Repostero/a 2º 2 1.411,48 € 1.411,48 €",
+                "Encargado economato 2º 3 1.332,74 € 1.332,74 €",
+                "Camarero/a 2º 4 1.320,04 € 1.320,04 €",
+                "Sumiller 2º 4 1.300,86 € 1.300,86 €",
+                "Gobernante/a 1º 1 1.436,65 € 1.436,65 €",
+                "Mantenimiento especialista 2º 4 1.300,85 € 1.300,85 €",
+            ]
+        )
+        md_dropped_jobs = (
+            "## ANEXO I Tablas salariales 2026\n\n"
+            "| Gr. Prof | Gr. sal | Bares | Restaurantes |\n"
+            "|---|---|---|---|\n"
+            "| 1º | 1 | 1.514,51 € | 1.514,51 € |\n"
+            "| 2º | 3 | 1.338,56 € | 1.338,56 € |\n"
+            "| 2º | 3 | 1.332,74 € | 1.332,74 € |\n"
+            "| 2º | 4 | 1.307,24 € | 1.307,24 € |\n"
+            "| 2º | 2 | 1.411,48 € | 1.411,48 € |\n"
+            "| 2º | 3 | 1.332,74 € | 1.332,74 € |\n"
+            "| 2º | 4 | 1.320,04 € | 1.320,04 € |\n"
+            "| 2º | 4 | 1.300,86 € | 1.300,86 € |\n"
+            "| 1º | 1 | 1.436,65 € | 1.436,65 € |\n"
+            "| 2º | 4 | 1.300,85 € | 1.300,85 € |\n"
+        )
+        rep = self._validate_synthetic(
+            md_dropped_jobs,
+            pdf_text=pdf_text,
+            manifest_entry={
+                "doc_type": "convenio_hosteleria",
+                "doc_role": "tablas",
+                "expected_years": [2026],
+                "territorio": "prueba",
+                "start_page": 1,
+                "end_page": 1,
+                "justificacion": "Trampa sintética por omisión de columna de puestos.",
+            },
+        )
+        self.assertFalse(rep.passed)
+        self.assertIn("TABLE_LABEL_PARITY_LOSS", {i.code for i in rep.issues})
+
 
 class TestRetrievalSelectionLogic(unittest.TestCase):
     """Tests deterministas en CPU para cuotas y selección territorial en rerank_and_select_by_territory."""
@@ -849,6 +988,79 @@ class TestRetrievalSelectionLogic(unittest.TestCase):
         f_canarias = AiHorecaVectorStore._build_filter(provincia="las_palmas,_santa_cruz_tenerife")
         self.assertEqual(f_canarias.must[0].match.any, ["las_palmas", "santa_cruz_tenerife"])
 
+        for isla in ("La Palma", "La Gomera", "El Hierro"):
+            f_isla = AiHorecaVectorStore._build_filter(provincia=isla)
+            self.assertEqual(f_isla.must[0].match.value, "santa_cruz_tenerife", msg=isla)
+
+    def test_date_span_and_preferred_monetary_table_selection(self) -> None:
+        ref = date(2026, 11, 22)
+        d_25_26 = self._doc(
+            "t25_26",
+            territorio="santa_cruz_tenerife",
+            titulo="ANEXO I. Tablas salariales 1 de julio 2025 - 30 de junio 2026",
+            articulo="AF 2ª — Cocina y Economato",
+            tipo="tabla_salarial",
+            text="| Cocinero/a | 1.403,03 € | 1.382,34 € |",
+        )
+        d_26_27 = self._doc(
+            "t26_27",
+            territorio="santa_cruz_tenerife",
+            titulo="ANEXO I. Tablas salariales 1 de julio 2026 - 30 de junio 2027",
+            articulo="AF 2ª — Cocina y Economato",
+            tipo="tabla_salarial",
+            text="| Cocinero/a | 1.448,63 € | 1.427,27 € |",
+        )
+        d_27_28 = self._doc(
+            "t27_28",
+            territorio="santa_cruz_tenerife",
+            titulo="ANEXO I. Tablas salariales 1 de julio 2027 - 30 de junio 2028",
+            articulo="AF 2ª — Cocina y Economato",
+            tipo="tabla_salarial",
+            text="| Cocinero/a | 1.495,71 € | 1.473,66 € |",
+        )
+
+        self.assertEqual(
+            AiHorecaVectorStore._extract_chunk_date_span(d_25_26),
+            (date(2025, 7, 1), date(2026, 6, 30)),
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._extract_chunk_date_span(d_26_27),
+            (date(2026, 7, 1), date(2027, 6, 30)),
+        )
+
+        tenerife_docs = [d_25_26, d_26_27, d_27_28]
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(tenerife_docs, [], reference_date=ref),
+            {"t26_27"},
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(tenerife_docs, [2026], reference_date=ref),
+            {"t26_27"},
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(tenerife_docs, [2025], reference_date=ref),
+            {"t25_26"},
+        )
+
+        d_ultra_25 = self._doc(
+            "lp_25",
+            territorio="las_palmas",
+            titulo="TABLAS SALARIALES AÑO 2025",
+            articulo="Nivel IV",
+            tipo="tabla_salarial",
+            text="| Nivel IV | 1.518,51 € |",
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables([d_ultra_25], [], reference_date=ref),
+            {"lp_25"},
+        )
+
+        area_pat = AiHorecaVectorStore._extract_aleh_area_pattern(
+            "Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)"
+        )
+        self.assertIsNotNone(area_pat)
+        self.assertTrue(AiHorecaVectorStore._doc_matches_area(d_26_27, area_pat))
+
     def test_audit_accepts_annual_percentage_revision_and_prorated_and_rejects_hallucination(self) -> None:
         docs = [
             self._doc(
@@ -907,6 +1119,554 @@ class TestRetrievalSelectionLogic(unittest.TestCase):
         )
         self.assertFalse(rep_bad.passed)
         self.assertIn("1.999,99", rep_bad.unverified_numbers)
+
+    def test_router_rescues_supported_insular_province_reclassified_from_unsupported(self) -> None:
+        inline, _ = _format_supported_territories_display(
+            {"santa_cruz_tenerife", "las_palmas", "baleares"}
+        )
+        for token in (
+            "La Palma",
+            "La Gomera",
+            "El Hierro",
+            "Lanzarote",
+            "Fuerteventura",
+            "Mallorca",
+            "Ibiza",
+        ):
+            self.assertIn(token, inline)
+
+        nodes = AiHorecaGraphNodes.__new__(AiHorecaGraphNodes)
+        nodes.indexed_territories = {"santa_cruz_tenerife", "las_palmas", "madrid"}
+
+        fake_analysis = QueryAnalysisSchema(
+            intent="UNSUPPORTED_PROVINCE",
+            motivo_clasificacion="La Palma no aparece literal",
+            provincias_detectadas_en_turno_actual=["la palma"],
+            cambio_de_puesto_en_turno_actual=True,
+            requiere_consulta_normativa_bbdd=False,
+            requiere_convenio_provincial=True,
+            requiere_puesto_o_categoria=True,
+            oficio_coloquial_detectado="cocinero",
+            categoria_profesional_aleh="Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
+            area_funcional_aleh="Área Funcional 2ª",
+            consulta_autocontenida_resuelta="Salario base de cocinero en hotel de 4 estrellas en La Palma",
+            query_busqueda_hibrida="salario base cocinero hotel 4 estrellas Santa Cruz de Tenerife tablas salariales",
+        )
+
+        with patch(
+            "src.graph.nodes._call_structured_llm",
+            return_value=(fake_analysis, "mock-lite"),
+        ):
+            out = nodes.analyze_and_route_node(
+                {
+                    "query": "Soy cocinero en un hotel de 4 estrellas en La Palma, ¿cuál es mi salario base?",
+                    "conversation_history": [],
+                    "session_slots": {},
+                }
+            )
+
+        self.assertEqual(out["intent"], "HOSPITALITY_CORE")
+        self.assertEqual(out["territorio_normalizado"], "santa_cruz_tenerife")
+        self.assertTrue(out["requiere_consulta_normativa_bbdd"])
+        self.assertTrue(out["datos_completos"])
+        self.assertEqual(out["route_decision"], "parallel_retrieve")
+
+    def test_multi_topic_title_first_and_area_stem_table_priority(self) -> None:
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        candidates = [
+            self._doc(
+                "art23",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 23º. Jornada Nocturna",
+                tipo="articulo",
+                rerank_score=0.96,
+                text="Las horas nocturnas entre 22:00 y 06:00 se retribuyen con un 50% de incremento.",
+            ),
+            self._doc(
+                "art32_extra_mention",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 32º. Salario Bruto Garantizado",
+                tipo="articulo",
+                rerank_score=0.92,
+                text="La estructura salarial contempla gratificaciones extraordinarias y complementos.",
+            ),
+            self._doc(
+                "art19",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 19º. Clasificación de Empresas",
+                tipo="articulo",
+                rerank_score=0.88,
+                text="Clasificación de establecimientos por grupos.",
+            ),
+            self._doc(
+                "art24",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 24º. Horas Extraordinarias",
+                tipo="articulo",
+                rerank_score=0.45,
+                text="Dividiendo el total devengado anual entre 1.829 horas.",
+            ),
+            self._doc(
+                "tbl_parte2_ayudante",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO I. 1 de julio 2026 - 30 de junio 2027 | CLASIFICACIÓN 3",
+                articulo="AF 3ª RESTAURANTE (Parte 2/2)",
+                tipo="tabla_salarial",
+                rerank_score=0.94,
+                text="| Ayudante/a de camarero | 3º | 5 | 1.298,23 € |",
+            ),
+            self._doc(
+                "tbl_3d_camarero",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO I. 1 de julio 2026 - 30 de junio 2027 | CLASIFICACIÓN 3D. RESTAURACIÓN Y OCIO",
+                articulo="AF 3ª: Restaurante, Sala, Bar y Similares",
+                tipo="tabla_salarial",
+                rerank_score=0.72,
+                text="| Camarero/a. | 2º | 4 | 1.320,04 € |",
+            ),
+            self._doc(
+                "anexo2",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO II. CLASIFICACIÓN EMPRESAS",
+                articulo="Tabla de clasificación de empresas",
+                tipo="tabla_salarial",
+                rerank_score=0.80,
+                text="| D | Pensiones | Aptos | Restaurantes | Club |",
+            ),
+            self._doc(
+                "art7",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 7º. Revisión Salarial",
+                tipo="articulo",
+                rerank_score=0.90,
+                text="Cláusula de revisión salarial por IPC.",
+            ),
+            self._doc(
+                "aleh1",
+                capa="aleh_estatal",
+                territorio="estatal",
+                articulo="Art. 15 ALEH",
+                rerank_score=0.70,
+                text="Área Funcional 3ª: Camarero/a.",
+            ),
+            self._doc(
+                "aleh2",
+                capa="aleh_estatal",
+                territorio="estatal",
+                articulo="Art. 16 ALEH",
+                rerank_score=0.66,
+                text="Grupos profesionales VI ALEH.",
+            ),
+            self._doc(
+                "et1",
+                capa="estatuto_trabajadores",
+                territorio="estatal",
+                articulo="Art. 35 ET",
+                rerank_score=0.68,
+                text="Horas extraordinarias.",
+            ),
+            self._doc(
+                "et2",
+                capa="estatuto_trabajadores",
+                territorio="estatal",
+                articulo="Art. 36 ET",
+                rerank_score=0.64,
+                text="Trabajo nocturno.",
+            ),
+        ]
+
+        selected = store.rerank_and_select_by_territory(
+            candidates=candidates,
+            query=(
+                "Trabajo como camarero en un restaurante ordinario en San Sebastián de La Gomera. "
+                "¿Cuál es mi salario base, cómo se retribuye la nocturnidad y cuál es el divisor anual "
+                "para calcular las horas extraordinarias?"
+            ),
+            territorios=["santa_cruz_tenerife"],
+            use_cohere_rerank=False,
+            role_context="camarero | Camarero/a (Área Funcional 3ª Restauración) | Área Funcional 3ª",
+        )
+        selected_ids = {d.chunk_id for d in selected}
+        self.assertIn("art23", selected_ids)
+        self.assertIn("art24", selected_ids)
+        self.assertIn("tbl_3d_camarero", selected_ids)
+        self.assertNotIn("tbl_parte2_ayudante", selected_ids)
+
+    def test_atomic_replace_source_files_fails_fast_on_per_day_quota_without_deleting(self) -> None:
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        store.collection_name = "test_collection"
+        store.qdrant = MagicMock()
+        store.ensure_collection = MagicMock()
+        store._embed_sparse_batch = MagicMock()
+        store.genai_client = MagicMock()
+        store.genai_client.models.embed_content.side_effect = RuntimeError(
+            "429 RESOURCE_EXHAUSTED: EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier"
+        )
+
+        chunk = LegalChunk(
+            chunk_id="00000000-0000-0000-0000-000000000001",
+            source_file="convenio_santa_cruz_tenerife.md",
+            norma_titulo="Convenio Santa Cruz de Tenerife",
+            capa_normativa="convenio_provincial",
+            territorio="santa_cruz_tenerife",
+            provincias_aplicables=["santa_cruz_tenerife"],
+            titulo_o_capitulo="CAPÍTULO VI",
+            articulo="Artículo 34º. Pagas Extraordinarias",
+            tipo_contenido="articulo",
+            chunk_index=0,
+            text="Texto artículo 34º",
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            store.index_chunks(
+                [chunk],
+                replace_source_files=["convenio_santa_cruz_tenerife.md"],
+            )
+
+        self.assertIn("Cuota diaria agotada", str(ctx.exception))
+        # Fail-fast: exactamente 1 intento sin bucle 8x25s
+        self.assertEqual(store.genai_client.models.embed_content.call_count, 1)
+        # Atomicidad: nunca borra ni upserta si fallaron los embeddings
+        store.qdrant.delete.assert_not_called()
+        store.qdrant.upsert.assert_not_called()
+
+    def test_establishment_subsector_disambiguates_hotel_vs_ordinary_restaurant_tables(
+        self,
+    ) -> None:
+        self.assertEqual(
+            AiHorecaVectorStore._extract_query_establishment_subsector(
+                "Trabajo como camarero en un restaurante ordinario en La Gomera"
+            ),
+            "restauracion",
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._extract_query_establishment_subsector(
+                "Soy camarero en un hotel de 4 estrellas en Alicante"
+            ),
+            "hospedaje",
+        )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        common_cands = [
+            self._doc(
+                "art23",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 23º. Jornada Nocturna",
+                tipo="articulo",
+                rerank_score=0.90,
+                text="Trabajo nocturno del 50%.",
+            ),
+            self._doc(
+                "art24",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 24º. Horas Extraordinarias",
+                tipo="articulo",
+                rerank_score=0.88,
+                text="Dividiendo el total devengado anual entre 1.829 horas.",
+            ),
+            self._doc(
+                "art32",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 32º. Salario Bruto Garantizado",
+                tipo="articulo",
+                rerank_score=0.85,
+                text="Salarios brutos garantizados.",
+            ),
+            self._doc(
+                "art7",
+                territorio="santa_cruz_tenerife",
+                articulo="Artículo 7º. Revisión Salarial",
+                tipo="articulo",
+                rerank_score=0.82,
+                text="Revisión salarial.",
+            ),
+            self._doc(
+                "tbl_cls1_hoteles",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO I. Tablas salariales 1 de julio 2026 - 30 de junio 2027 | CLASIFICACIÓN 1. HOTELES Y PENSIONES",
+                articulo="AF 3ª Restaurante, Sala, Bar y Similares (Parte 1/2)",
+                tipo="tabla_salarial",
+                rerank_score=0.95,
+                text=(
+                    "| AF 3ª | Gr. Prof | Gr. sal | H 5* | H 4* | H 3* | Pensiones |\n"
+                    "|---|---|---|---|---|---|---|\n"
+                    "| Camarero/a. | 2º | 4 | 1.455,26 € | 1.455,26 € | 1.433,90 € | 1.369,76 € |"
+                ),
+            ),
+            self._doc(
+                "tbl_cls3_lujo",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO I. Tablas salariales 1 de julio 2026 - 30 de junio 2027 | CLASIFICACIÓN 3. CAMPOS DE GOLF, CASINOS... RESTAURACIÓN",
+                articulo="AF 3ª RESTAURANTE (Parte 1/2)",
+                tipo="tabla_salarial",
+                rerank_score=0.90,
+                text=(
+                    "| AF 3ª | Gr. Prof | Gr. sal | Campos golf | Casinos | Rtesy cafés bares lujo |\n"
+                    "|---|---|---|---|---|---|\n"
+                    "| Camarero/a. | 2º | 4 | 1.455,26 € | 1.455,26 € | 1.455,26 € |"
+                ),
+            ),
+            self._doc(
+                "tbl_cls3d_restauracion",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO I. Tablas salariales 1 de julio 2026 - 30 de junio 2027 | CLASIFICACIÓN 3D. RESTAURACIÓN Y OCIO",
+                articulo="AF 3ª: Restaurante, Sala, Bar y Similares",
+                tipo="tabla_salarial",
+                rerank_score=0.60,
+                text=(
+                    "| Puesto | Gr. Prof | Gr. sal | Bares y Cafet. | Rtes | Sal. recreativos |\n"
+                    "|---|---|---|---|---|---|\n"
+                    "| Camarero/a. | 2º | 4 | 1.320,04 € | 1.320,04 € | 1.320,04 € |"
+                ),
+            ),
+            self._doc(
+                "anexo2",
+                territorio="santa_cruz_tenerife",
+                titulo="ANEXO II. CLASIFICACIÓN EMPRESAS",
+                articulo="Tabla de clasificación de empresas",
+                tipo="tabla_salarial",
+                rerank_score=0.75,
+                text="| D | Pensiones | Aptos | Restaurantes | Club |",
+            ),
+            self._doc("aleh1", capa="aleh_estatal", territorio="estatal", articulo="Art. 15 ALEH", rerank_score=0.70, text="AF 3ª"),
+            self._doc("aleh2", capa="aleh_estatal", territorio="estatal", articulo="Art. 16 ALEH", rerank_score=0.68, text="Grupo II"),
+            self._doc("et1", capa="estatuto_trabajadores", territorio="estatal", articulo="Art. 26 ET", rerank_score=0.69, text="Salario"),
+            self._doc("et2", capa="estatuto_trabajadores", territorio="estatal", articulo="Art. 36 ET", rerank_score=0.67, text="Nocturnidad"),
+        ]
+
+        role_ctx = "camarero | Camarero/a (Área Funcional 3ª Restauración) | Área Funcional 3ª"
+
+        sel_rest = store.rerank_and_select_by_territory(
+            candidates=common_cands,
+            query="Trabajo como camarero en un restaurante ordinario en San Sebastián de La Gomera. ¿Salario, nocturnidad y divisor?",
+            territorios=["santa_cruz_tenerife"],
+            use_cohere_rerank=False,
+            role_context=role_ctx,
+        )
+        rest_ids = {d.chunk_id for d in sel_rest}
+        self.assertIn("tbl_cls3d_restauracion", rest_ids)
+        self.assertNotIn("tbl_cls1_hoteles", rest_ids)
+        self.assertNotIn("tbl_cls3_lujo", rest_ids)
+
+        sel_hotel = store.rerank_and_select_by_territory(
+            candidates=common_cands,
+            query="Trabajo como camarero en un hotel de 4 estrellas en Tenerife. ¿Cuál es mi salario base?",
+            territorios=["santa_cruz_tenerife"],
+            use_cohere_rerank=False,
+            role_context=role_ctx,
+        )
+        hotel_ids = {d.chunk_id for d in sel_hotel}
+        self.assertIn("tbl_cls1_hoteles", hotel_ids)
+        self.assertNotIn("tbl_cls3d_restauracion", hotel_ids)
+
+
+class TestEvaluationCheckpointLogic(unittest.TestCase):
+    """Tests deterministas en CPU para el checkpoint incremental por caso y reanudación multi-turno."""
+
+    @staticmethod
+    def _case(
+        case_id: str,
+        session_id: str,
+        *,
+        reset_session_before: bool = True,
+    ) -> GoldenTestCase:
+        return GoldenTestCase(
+            case_id=case_id,
+            category="guardrail_routing",
+            session_id=session_id,
+            reset_session_before=reset_session_before,
+            query=f"Consulta {case_id}",
+            expected_intent="HOSPITALITY_CORE",
+            expected_route="ask_clarification",
+            expected_territorio=None,
+            ground_truth_reference=f"Referencia {case_id}",
+        )
+
+    @staticmethod
+    def _cached(tc: GoldenTestCase, final_response: str = "OK") -> EvaluationCaseResult:
+        return EvaluationCaseResult(
+            case_id=tc.case_id,
+            category=tc.category,
+            session_id=tc.session_id,
+            query=tc.query,
+            effective_query=tc.query,
+            expected_intent=tc.expected_intent,
+            predicted_intent=tc.expected_intent,
+            intent_match=True,
+            expected_route=tc.expected_route,
+            predicted_route=tc.expected_route,
+            route_match=True,
+            expected_territorio=tc.expected_territorio,
+            predicted_territorio=tc.expected_territorio,
+            territorio_match=True,
+            num_retrieved_docs=0,
+            retrieved_layers=[],
+            retrieved_articles=[],
+            layer_coverage_score=1.0,
+            citation_recall_at_k=1.0,
+            ground_truth_number_hit=1.0,
+            zero_numerical_hallucination=True,
+            verified_numbers=[],
+            unverified_numbers=[],
+            faithfulness=1.0,
+            answer_relevancy=1.0,
+            context_recall_semantic=1.0,
+            hierarchy_application_score=1.0,
+            judge_critique="ok",
+            judge_model_used="mock",
+            node_timings_ms={"analyze_and_route": 10.0},
+            total_latency_ms=10.0,
+            final_response=final_response,
+        )
+
+    def test_checkpoint_skippable_ids_enforces_multiturn_session_chain_integrity(self) -> None:
+        c1 = self._case("C1", "ses-1", reset_session_before=True)
+        c2 = self._case("C2", "ses-m", reset_session_before=True)
+        c3 = self._case("C3", "ses-m", reset_session_before=False)
+        c4 = self._case("C4", "ses-m", reset_session_before=False)
+        c5 = self._case("C5", "ses-2", reset_session_before=True)
+        c6 = self._case("C6", "ses-2", reset_session_before=False)
+        dataset = [c1, c2, c3, c4, c5, c6]
+
+        cached = {tc.case_id: self._cached(tc) for tc in (c1, c2, c3, c5, c6)}
+        skippable = _compute_skippable_case_ids(dataset, cached)
+        self.assertEqual(skippable, {"C1", "C5", "C6"})
+
+    def test_evaluate_golden_dataset_saves_atomically_and_resumes_after_midrun_error(self) -> None:
+        t1 = self._case("T1", "ses-t1", reset_session_before=True)
+        t2 = self._case("T2", "ses-t2", reset_session_before=True)
+        t3 = self._case("T3", "ses-t3", reset_session_before=True)
+        dataset = [t1, t2, t3]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "evaluation_results.json"
+
+            calls_run1: list[str] = []
+
+            def _run1_side_effect(*, query: str, session_id: str, **_: object) -> dict[str, object]:
+                calls_run1.append(session_id)
+                if session_id == "ses-t3":
+                    raise RuntimeError("503 UNAVAILABLE")
+                return {
+                    "intent": "HOSPITALITY_CORE",
+                    "route_decision": "ask_clarification",
+                    "territorio_normalizado": None,
+                    "retrieved_docs": [],
+                    "audit_report": {"unverified_numbers": [], "verified_numbers": []},
+                    "node_timings_ms": {"analyze_and_route": 12.0},
+                    "final_response": f"Resp {session_id}",
+                }
+
+            with (
+                patch("src.evaluation.evaluator.AiHorecaVectorStore", return_value=MagicMock()),
+                patch("src.evaluation.evaluator.build_aihoreca_graph", return_value=MagicMock()),
+                patch("src.evaluation.evaluator.run_legal_query", side_effect=_run1_side_effect),
+            ):
+                with self.assertRaises(RuntimeError):
+                    evaluate_golden_dataset(
+                        force_recompute=True,
+                        output_path=out_path,
+                        cases=dataset,
+                        skip_semantic_judge=True,
+                    )
+
+            self.assertTrue(out_path.exists())
+            self.assertFalse(out_path.with_name(f"{out_path.name}.tmp").exists())
+            partial_data = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual([c["case_id"] for c in partial_data["cases"]], ["T1", "T2"])
+
+            calls_run2: list[str] = []
+
+            def _run2_side_effect(*, query: str, session_id: str, **_: object) -> dict[str, object]:
+                calls_run2.append(session_id)
+                return {
+                    "intent": "HOSPITALITY_CORE",
+                    "route_decision": "ask_clarification",
+                    "territorio_normalizado": None,
+                    "retrieved_docs": [],
+                    "audit_report": {"unverified_numbers": [], "verified_numbers": []},
+                    "node_timings_ms": {"analyze_and_route": 15.0},
+                    "final_response": f"Resp {session_id}",
+                }
+
+            with (
+                patch("src.evaluation.evaluator.AiHorecaVectorStore", return_value=MagicMock()),
+                patch("src.evaluation.evaluator.build_aihoreca_graph", return_value=MagicMock()),
+                patch("src.evaluation.evaluator.run_legal_query", side_effect=_run2_side_effect),
+            ):
+                resumed_report = evaluate_golden_dataset(
+                    force_recompute=False,
+                    output_path=out_path,
+                    cases=dataset,
+                    skip_semantic_judge=True,
+                )
+
+            self.assertEqual(calls_run2, ["ses-t3"])
+            self.assertEqual([c.case_id for c in resumed_report.cases], ["T1", "T2", "T3"])
+            final_data = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual([c["case_id"] for c in final_data["cases"]], ["T1", "T2", "T3"])
+
+    def test_evaluate_golden_dataset_subset_force_preserves_other_cached_cases(self) -> None:
+        t1 = self._case("T1", "ses-t1")
+        t2 = self._case("T2", "ses-t2")
+        t3 = self._case("T3", "ses-t3")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "evaluation_results.json"
+            seed = {
+                "total_cases": 3,
+                "generative_cases": 0,
+                "guardrail_and_hitl_cases": 3,
+                "intent_accuracy": 1.0,
+                "route_accuracy": 1.0,
+                "territorio_accuracy": 1.0,
+                "mean_layer_coverage": 0.0,
+                "mean_citation_recall_at_k": 0.0,
+                "mean_ground_truth_number_hit": 0.0,
+                "zero_hallucination_rate": 1.0,
+                "mean_faithfulness": 1.0,
+                "mean_answer_relevancy": 1.0,
+                "mean_context_recall_semantic": 1.0,
+                "mean_hierarchy_application_score": 1.0,
+                "mean_routing_latency_ms": 10.0,
+                "mean_retrieval_latency_ms": 0.0,
+                "mean_synthesis_latency_ms": 0.0,
+                "mean_total_latency_ms": 10.0,
+                "cases": [self._cached(tc, final_response=f"Old {tc.case_id}").model_dump() for tc in (t1, t2, t3)],
+            }
+            out_path.write_text(json.dumps(seed, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            with (
+                patch("src.evaluation.evaluator.AiHorecaVectorStore", return_value=MagicMock()),
+                patch("src.evaluation.evaluator.build_aihoreca_graph", return_value=MagicMock()),
+                patch(
+                    "src.evaluation.evaluator.run_legal_query",
+                    return_value={
+                        "intent": "HOSPITALITY_CORE",
+                        "route_decision": "ask_clarification",
+                        "territorio_normalizado": None,
+                        "retrieved_docs": [],
+                        "audit_report": {"unverified_numbers": [], "verified_numbers": []},
+                        "node_timings_ms": {"analyze_and_route": 20.0},
+                        "final_response": "Updated T2",
+                    },
+                ),
+            ):
+                subset_report = evaluate_golden_dataset(
+                    force_recompute=True,
+                    output_path=out_path,
+                    cases=[t2],
+                    skip_semantic_judge=True,
+                    preserve_other_cached=True,
+                )
+
+            self.assertEqual([c.case_id for c in subset_report.cases], ["T2"])
+            self.assertEqual(subset_report.cases[0].final_response, "Updated T2")
+            persisted = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [(c["case_id"], c["final_response"]) for c in persisted["cases"]],
+                [("T1", "Old T1"), ("T2", "Updated T2"), ("T3", "Old T3")],
+            )
 
 
 if __name__ == "__main__":

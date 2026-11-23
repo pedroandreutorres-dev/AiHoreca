@@ -155,5 +155,70 @@
     "start_marker": "ACUERDO PARA LA MEJORA DE LAS CONDICIONES DE TRABAJO",
     "end_marker": "III. ADMINISTRACIÓN LOCAL",
     "justificacion": "BOP de Las Palmas núm. 79 (02/07/2025), REGCON 35000975011981: Acuerdo de 12 de abril de 2025 (Acuerdos Primero-Noveno, +2,75% abril 2025 y +4,00% obligatorio desde enero de 2026 en Acuerdo Cuarto) y tablas salariales vigentes desde abril de 2025 (+5,00% sobre 2024) en págs. 6-7."
+  },
+  "convenio_santa_cruz_tenerife.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "layout": "single_column",
+    "territorio": "santa_cruz_tenerife",
+    "start_page": 6,
+    "end_page": 49,
+    "justificacion": "BOP de Santa Cruz de Tenerife n.º 154 (22/12/2025), REGCON 38000905011981: texto articulado íntegro (CAPÍTULO I Art. 1º hasta Disposición Final 5ª de Restauración y Ocio) del Convenio Colectivo del Sector de Hostelería de la Provincia de Santa Cruz de Tenerife (2025-2028, vigente del 01/07/2025 al 30/06/2028). Se omiten págs. 1-5 (portada, sumario, resolución administrativa e índice) y págs. 50-305 (otros convenios y anuncios)."
+  },
+  "convenio_santa_cruz_tenerife_tablas_2025_2028.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "santa_cruz_tenerife",
+    "start_page": 4,
+    "end_page": 20,
+    "skip_pages": [
+      13,
+      14,
+      15
+    ],
+    "force_gemini_pages": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      16,
+      17,
+      18,
+      19,
+      20
+    ],
+    "expected_years": [
+      2025,
+      2026,
+      2027,
+      2028
+    ],
+    "justificacion": "BOP de Santa Cruz de Tenerife n.º 4 (09/01/2026), corrección de errores del BOP n.º 154/2025 (REGCON 38000905011981): Anexo I Tablas Salariales 2025-2028 para Clasificación 1 Hoteles y Pensiones (págs. 4-6), Clasificación 2 Apartamentos/Campings/Vivienda Vacacional (págs. 7-9), Clasificación 3A-3C Golf/Casinos/Restauración de lujo (págs. 10-12) y Clasificación 4 Clubes Privados/Colectividades/Catering (págs. 16-18), más tabla de complementos salariales y extrasalariales 2025-2028 (pág. 19) y Anexo II Clasificación de Empresas (pág. 20). Se omiten págs. 13-15 (Clasificación 3D Restauración y Ocio) por haber sido sustituidas tras la revisión del IPC Canarias en el BOP n.º 108 (09/09/2026)."
+  },
+  "convenio_santa_cruz_tenerife_revision_3d_2025_2027.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "santa_cruz_tenerife",
+    "start_page": 9,
+    "end_page": 15,
+    "force_gemini_pages": [
+      12,
+      13,
+      14,
+      15
+    ],
+    "expected_years": [
+      2025,
+      2026,
+      2027
+    ],
+    "justificacion": "BOP de Santa Cruz de Tenerife n.º 108 (09/09/2026), REGCON 38000905011981: Acta de la Comisión Paritaria de 31/07/2026 (págs. 9-11, omitiendo pág. 8 de lista de asistentes) por la que se aplica la cláusula de revisión por IPC de Canarias (ISTAC 3,4%, diferencial +0,4%) a la Clasificación 3D Restauración y Ocio, junto con las tablas salariales definitivas revisadas 2025-2026 (págs. 12-13) y vigentes 2026-2027 con +3% (págs. 14-15)."
   }
 }

@@ -151,8 +151,13 @@ def run_regression_suite(
     case_id: Optional[str] = None,
     force_recompute: bool = False,
     update_baseline: bool = False,
+    resume: bool = False,
+    show_progress: bool = False,
 ) -> tuple[EvaluationSummaryReport, dict[str, Any]]:
     """Ejecuta la suite de regresión y genera el informe comparativo."""
+    if force_recompute and resume:
+        raise ValueError("No se pueden combinar --force y --resume al mismo tiempo.")
+
     dataset = get_golden_dataset(include_production=True)
     if case_id:
         dataset = [c for c in dataset if c.case_id == case_id]
@@ -160,9 +165,11 @@ def run_regression_suite(
             raise ValueError(f"No se encontró ningún caso con case_id='{case_id}' en el Golden Dataset.")
 
     current_report = evaluate_golden_dataset(
-        force_recompute=force_recompute,
+        force_recompute=bool(force_recompute and not resume),
         cases=dataset,
         skip_semantic_judge=quick,
+        preserve_other_cached=bool(case_id),
+        show_progress=show_progress,
     )
 
     baseline = load_baseline()
@@ -204,6 +211,11 @@ def _cli() -> None:
         help="Fuerza recomputación sin reutilizar caché previa en evaluation_results.json.",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reanuda una ejecución interrumpida reutilizando los casos ya guardados en evaluation_results.json (preservando integridad de sesiones multi-turno).",
+    )
+    parser.add_argument(
         "--update-baseline",
         action="store_true",
         help="Actualiza la línea base oficial (evaluation_baseline.json) con los resultados de esta ejecución.",
@@ -214,12 +226,16 @@ def _cli() -> None:
         help="Imprime el resultado completo en formato JSON estructurado.",
     )
     args = parser.parse_args()
+    if args.force and args.resume:
+        parser.error("No se pueden combinar --force y --resume al mismo tiempo.")
 
     report, comparison = run_regression_suite(
         quick=args.quick,
         case_id=args.case_id,
         force_recompute=args.force,
         update_baseline=args.update_baseline,
+        resume=args.resume,
+        show_progress=not args.json,
     )
 
     if args.json:

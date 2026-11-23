@@ -121,6 +121,9 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "orense": "ourense",
     "santa cruz de tenerife": "santa_cruz_tenerife",
     "tenerife": "santa_cruz_tenerife",
+    "la palma": "santa_cruz_tenerife",
+    "la gomera": "santa_cruz_tenerife",
+    "el hierro": "santa_cruz_tenerife",
     "bizkaia": "vizcaya",
     "cataluna": "catalunya",
 }
@@ -515,6 +518,20 @@ def chunk_markdown_document(
                 current_buffer.append(line)
                 idx += 1
                 continue
+            if re.match(r"(?i)^CLASIFICACI[ÓO]N\s+(?:[IVXLCDM]+|\d+[A-Z]?)\b", sub_title):
+                subsector_label = re.sub(
+                    r"(?i)\s*(?:[-–—.]\s*)?A\.?F\.?\s+1[ªa]?\b.*$",
+                    "",
+                    sub_title,
+                ).strip(" .-–—")
+                if subsector_label:
+                    if sum(len(x) for x in current_buffer) >= 600:
+                        flush_section()
+                    current_chapter = f"{current_base_chapter} | {subsector_label}"
+                    current_article = sub_title
+                    current_buffer.append(line)
+                    idx += 1
+                    continue
             # Si el buffer actual ya tiene suficiente contenido (>600 chars), abrimos sub-sección nueva
             if sum(len(x) for x in current_buffer) >= 600:
                 flush_section()

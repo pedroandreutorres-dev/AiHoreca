@@ -300,6 +300,36 @@ def _normalize_pdf_text_for_decimals(text: str) -> str:
     return re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", text)
 
 
+def _extract_manifest_pdf_text(
+    pdf_path: Path,
+    manifest_entry: Optional[DocumentManifestEntry],
+    *,
+    sort: bool = False,
+) -> str:
+    """Extrae el texto del rango de páginas configurado en el manifiesto aplicando marcadores."""
+    doc = pymupdf.open(pdf_path)
+    total_pages = len(doc)
+    start_page = manifest_entry.start_page if manifest_entry else 1
+    end_page = manifest_entry.end_page if manifest_entry else total_pages
+    skip_pages = set(manifest_entry.skip_pages) if manifest_entry else set()
+
+    pdf_chunks: list[str] = []
+    for human_page in range(max(1, start_page), min(end_page, total_pages) + 1):
+        if human_page in skip_pages:
+            continue
+        pdf_chunks.append(doc[human_page - 1].get_text("text", sort=sort))
+    doc.close()
+
+    extracted = "\n".join(pdf_chunks)
+    if manifest_entry and (manifest_entry.start_marker or manifest_entry.end_marker):
+        extracted = _apply_text_markers(
+            extracted,
+            start_marker=manifest_entry.start_marker,
+            end_marker=manifest_entry.end_marker,
+        )
+    return extracted
+
+
 def _check_decimal_parity(
     md_text: str,
     pdf_path: Optional[Path],
@@ -311,26 +341,9 @@ def _check_decimal_parity(
     if pdf_path is None or not pdf_path.exists():
         return [], None, md_count
 
-    doc = pymupdf.open(pdf_path)
-    total_pages = len(doc)
-    start_page = manifest_entry.start_page if manifest_entry else 1
-    end_page = manifest_entry.end_page if manifest_entry else total_pages
-    skip_pages = set(manifest_entry.skip_pages) if manifest_entry else set()
-
-    pdf_chunks: list[str] = []
-    for human_page in range(max(1, start_page), min(end_page, total_pages) + 1):
-        if human_page in skip_pages:
-            continue
-        pdf_chunks.append(doc[human_page - 1].get_text("text"))
-    doc.close()
-
-    normalized_pdf_text = _normalize_pdf_text_for_decimals("\n".join(pdf_chunks))
-    if manifest_entry and (manifest_entry.start_marker or manifest_entry.end_marker):
-        normalized_pdf_text = _apply_text_markers(
-            normalized_pdf_text,
-            start_marker=manifest_entry.start_marker,
-            end_marker=manifest_entry.end_marker,
-        )
+    normalized_pdf_text = _normalize_pdf_text_for_decimals(
+        _extract_manifest_pdf_text(pdf_path, manifest_entry, sort=False)
+    )
     pdf_decimals = _SPANISH_DECIMAL_RE.findall(normalized_pdf_text)
     pdf_count = len(pdf_decimals)
     if pdf_count == 0:
@@ -383,6 +396,55 @@ def _check_decimal_parity(
         )
 
     return issues, pdf_count, md_count
+
+
+_ROW_LABEL_WORD_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{5,}")
+
+
+def _check_monetary_row_label_parity(
+    md_text: str,
+    pdf_path: Optional[Path],
+    manifest_entry: Optional[DocumentManifestEntry],
+) -> list[ValidationIssue]:
+    """Verifica que las etiquetas descriptivas de filas salariales (>=2 decimales en PDF) permanezcan en el Markdown."""
+    if pdf_path is None or not pdf_path.exists():
+        return []
+
+    raw_pdf_text = _extract_manifest_pdf_text(pdf_path, manifest_entry, sort=True)
+    pdf_labels: set[str] = set()
+    for line in raw_pdf_text.splitlines():
+        decs = list(_SPANISH_DECIMAL_RE.finditer(line))
+        if len(decs) >= 2:
+            prefix = line[: decs[0].start()]
+            for word in _ROW_LABEL_WORD_RE.findall(prefix.lower()):
+                pdf_labels.add(word)
+
+    if len(pdf_labels) < 10:
+        return []
+
+    md_lower = md_text.lower()
+    present = {w for w in pdf_labels if w in md_lower}
+    recall = len(present) / len(pdf_labels)
+    if recall >= 0.90:
+        return []
+
+    missing = sorted(pdf_labels - present)
+    return [
+        ValidationIssue(
+            code="TABLE_LABEL_PARITY_LOSS",
+            severity="ERROR",
+            message=(
+                f"Faltan etiquetas descriptivas de filas salariales del PDF en el Markdown "
+                f"(recall={recall:.2%}, ausentes={len(missing)}/{len(pdf_labels)}, ejemplos={missing[:6]})."
+            ),
+            details={
+                "recall": round(recall, 4),
+                "pdf_labels_count": len(pdf_labels),
+                "missing_count": len(missing),
+                "sample_missing": missing[:10],
+            },
+        )
+    ]
 
 
 def _extract_table_header_years(chunk_text: str) -> set[int]:
@@ -496,12 +558,19 @@ def _check_chunks_and_retriever_invariants(
         if AiHorecaVectorStore._is_monetary_table(doc_view):
             header_years = _extract_table_header_years(chunk.text)
             year = AiHorecaVectorStore._extract_chunk_year(doc_view)
+            date_span = AiHorecaVectorStore._extract_chunk_date_span(doc_view)
             if year > 0:
                 observed_years.add(year)
             observed_years.update(header_years)
+            if (
+                date_span is not None
+                and not header_years
+                and (date_span[1].year - date_span[0].year) <= 1
+            ):
+                observed_years.update({date_span[0].year, date_span[1].year})
             if is_real_table:
                 monetary_chunks += 1
-                if year == 0 and not header_years:
+                if year == 0 and not header_years and date_span is None:
                     yearless_monetary.append(f"{chunk.chunk_id} ({chunk.articulo[:50]})")
 
     if yearless_monetary:
@@ -592,6 +661,13 @@ def validate_document(
         manifest_entry=manifest_entry,
     )
     issues.extend(parity_issues)
+    issues.extend(
+        _check_monetary_row_label_parity(
+            md_text=md_text,
+            pdf_path=resolved_pdf if resolved_pdf.exists() else None,
+            manifest_entry=manifest_entry,
+        )
+    )
 
     chunk_issues, chunks_count, _ = _check_chunks_and_retriever_invariants(
         md_path=md_path,
