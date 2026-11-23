@@ -1045,7 +1045,26 @@ class AiHorecaVectorStore:
         """Determina si un fragmento contiene importes salariales/económicos (con '€'/'euros' o >=4 importes decimales XX,XX)."""
         if "€" in doc.text or "euros" in doc.text.lower():
             return True
-        return len(re.findall(r"\b\d{1,3}(?:\.\s?\d{3})*,\d{2}\b", doc.text)) >= 4
+        text_no_hours = re.sub(
+            r"\b\d{1,2},\d{2}\s*h(?:oras?|rs?)?(?=\b|\.)",
+            "",
+            doc.text,
+            flags=re.IGNORECASE,
+        )
+        return len(re.findall(r"\b\d{1,3}(?:\.\s?\d{3})*,\d{2}\b", text_no_hours)) >= 4
+
+    @staticmethod
+    def _is_auxiliary_concepts_table(doc: RetrievedDocument) -> bool:
+        """Identifica sub-tablas secundarias de pluses/conceptos retributivos sueltos (sin escala salarial por puestos)."""
+        if doc.tipo_contenido != "tabla_salarial":
+            return False
+        surface = f"{doc.titulo_o_capitulo} {doc.articulo}"
+        return bool(
+            re.search(
+                r"(?i)\b(?:otros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos)\b",
+                surface,
+            )
+        )
 
     @classmethod
     def _is_classification_level_table(
@@ -1066,6 +1085,13 @@ class AiHorecaVectorStore:
                 re.search(
                     r"(?i)\b(?:anexo|nivel|categor[íi]a|clasificaci[óo]n|grupos?\s+profesionales|personal\s+de|establecimientos)\b",
                     surface,
+                )
+            )
+        if doc.tipo_contenido == "articulo":
+            return bool(
+                re.search(
+                    r"(?i)\b(?:categor[íi]as?|clasificaci[óo]n)\s+de\s+(?:los\s+)?establecimientos\b",
+                    doc.articulo,
                 )
             )
         if doc.tipo_contenido == "anexo_o_disposicion":
@@ -1170,8 +1196,8 @@ class AiHorecaVectorStore:
         ),
         (
             "jornada",
-            r"(?i)jornada\s+(?:de\s+trabajo|anual|m[áa]xima)|horas?\s+anuales?",
-            "jornada de trabajo jornada máxima anual horas anuales 40 horas semanales",
+            r"(?i)jornada\s+(?:de\s+trabajo|laboral|anual|m[áa]xima)|horas?\s+anuales?",
+            "jornada de trabajo jornada laboral jornada máxima anual horas anuales 40 horas semanales",
         ),
         (
             "vacaciones",
@@ -1320,10 +1346,17 @@ class AiHorecaVectorStore:
             for _, pat, bm25_terms in self._TOPIC_BM25_SPECS
             if re.search(pat, topic_surface)
         ][:4]
+        cls_bm25_terms = (
+            "categorías clasificación establecimientos hoteles restaurantes estrellas tenedores"
+            if is_remuneration_query
+            else None
+        )
         topic_art_docs: list[RetrievedDocument] = []
-        if matched_bm25_topics and getattr(self, "qdrant", None) is not None:
-            if self.is_cloud and len(matched_bm25_topics) > 1:
-                with ThreadPoolExecutor(max_workers=len(matched_bm25_topics)) as pool:
+        if (matched_bm25_topics or cls_bm25_terms) and getattr(self, "qdrant", None) is not None:
+            raw_cls_docs: list[RetrievedDocument] = []
+            worker_count = len(matched_bm25_topics) + (1 if cls_bm25_terms else 0)
+            if self.is_cloud and worker_count > 1:
+                with ThreadPoolExecutor(max_workers=worker_count) as pool:
                     topic_futures = [
                         pool.submit(
                             self.sparse_topic_search,
@@ -1335,8 +1368,22 @@ class AiHorecaVectorStore:
                         )
                         for t_terms in matched_bm25_topics
                     ]
+                    cls_fut = (
+                        pool.submit(
+                            self.sparse_topic_search,
+                            cls_bm25_terms,
+                            capa_normativa="convenio_provincial",
+                            provincia=norm_p,
+                            tipo_contenido="articulo",
+                            top_k=2,
+                        )
+                        if cls_bm25_terms
+                        else None
+                    )
                     for fut in topic_futures:
                         topic_art_docs.extend(fut.result())
+                    if cls_fut is not None:
+                        raw_cls_docs.extend(cls_fut.result())
             else:
                 for t_terms in matched_bm25_topics:
                     topic_art_docs.extend(
@@ -1348,6 +1395,19 @@ class AiHorecaVectorStore:
                             top_k=2,
                         )
                     )
+                if cls_bm25_terms:
+                    raw_cls_docs.extend(
+                        self.sparse_topic_search(
+                            cls_bm25_terms,
+                            capa_normativa="convenio_provincial",
+                            provincia=norm_p,
+                            tipo_contenido="articulo",
+                            top_k=2,
+                        )
+                    )
+            for cls_doc in raw_cls_docs:
+                if self._is_classification_level_table(cls_doc, include_seniority_tables):
+                    topic_art_docs.append(cls_doc)
 
         raw_tables = self._deduplicate_docs(
             layer_results["prov_tables"] + layer_results.get("prov_cls_tables", [])
@@ -1587,6 +1647,15 @@ class AiHorecaVectorStore:
                     )
                 )
 
+            def _t_euro_tbl_count() -> int:
+                return sum(
+                    1
+                    for s in selected
+                    if _belongs_to_territory(s, terr_key)
+                    and s.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(s)
+                )
+
             prov_euro_tables = [
                 d
                 for d in terr_cands
@@ -1626,11 +1695,27 @@ class AiHorecaVectorStore:
                     for d in prov_euro_tables
                 )
             )
+            asks_aux_concepts = bool(
+                re.search(
+                    r"(?i)\b(?:plus\s+(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa)|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
+                    clean_intent_q,
+                )
+            )
+            has_separate_concepts_table = bool(
+                is_remuneration_query
+                and asks_aux_concepts
+                and len(prov_euro_tables) >= 2
+                and any(
+                    self._is_auxiliary_concepts_table(d)
+                    and (not preferred_euro_ids or d.chunk_id in preferred_euro_ids)
+                    for d in prov_euro_tables
+                )
+            )
             effective_article_quota = max(
                 1,
                 QUOTA_PROVINCIAL_ARTICLES
                 - (1 if needs_dual_cls_tables else 0)
-                - (1 if has_separate_extra_pay_table else 0),
+                - (1 if (has_separate_extra_pay_table or has_separate_concepts_table) else 0),
             )
 
             def _is_normative_text(doc: RetrievedDocument) -> bool:
@@ -1641,7 +1726,7 @@ class AiHorecaVectorStore:
                     r"(?i)horas?\s+extra(?:ordinaria)?s?",
                     r"(?i)nocturnidad|jornada\s+nocturna|horas\s+nocturnas",
                     r"(?i)vacaciones",
-                    r"(?i)jornada\s+(?:de\s+trabajo|anual|m[áa]xima)|tiempo\s+parcial",
+                    r"(?i)jornada\s+(?:de\s+trabajo|laboral|anual|m[áa]xima)|tiempo\s+parcial",
                 )
                 matched_specific_pats = [
                     pat
@@ -1688,7 +1773,8 @@ class AiHorecaVectorStore:
                         )
 
             _pick(
-                lambda d: d.tipo_contenido == "articulo",
+                lambda d: d.tipo_contenido == "articulo"
+                and not (needs_tables and self._is_classification_level_table(d, include_seniority_tables)),
                 max(0, effective_article_quota - _t_art_count()),
                 terr_cands,
             )
@@ -1722,7 +1808,7 @@ class AiHorecaVectorStore:
                             and self._matches_primary_role_stem(d, role_stems),
                             1,
                         )
-                    if _t_tbl_count() == 0:
+                    if _t_euro_tbl_count() == 0:
                         _pick_with_period_preference(
                             lambda d: d.tipo_contenido == "tabla_salarial"
                             and self._is_monetary_table(d)
@@ -1730,7 +1816,7 @@ class AiHorecaVectorStore:
                             and self._doc_matches_establishment_subsector(d, target_subsector),
                             1,
                         )
-                if _t_tbl_count() == 0 and role_stems:
+                if _t_euro_tbl_count() == 0 and role_stems:
                     _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
@@ -1738,7 +1824,7 @@ class AiHorecaVectorStore:
                         and self._matches_primary_role_stem(d, role_stems),
                         1,
                     )
-                    if _t_tbl_count() == 0:
+                    if _t_euro_tbl_count() == 0:
                         _pick_with_period_preference(
                             lambda d: d.tipo_contenido == "tabla_salarial"
                             and self._is_monetary_table(d)
@@ -1746,7 +1832,7 @@ class AiHorecaVectorStore:
                             and self._matches_role_stem(d, role_stems),
                             1,
                         )
-                if _t_tbl_count() == 0:
+                if _t_euro_tbl_count() == 0:
                     _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
@@ -1754,7 +1840,7 @@ class AiHorecaVectorStore:
                         1,
                     )
 
-            if _t_tbl_count() == 0 and target_subsector:
+            if _t_euro_tbl_count() == 0 and target_subsector:
                 _pick_with_period_preference(
                     lambda d: d.tipo_contenido == "tabla_salarial"
                     and self._is_monetary_table(d)
@@ -1762,7 +1848,24 @@ class AiHorecaVectorStore:
                     1,
                 )
 
-            if _t_tbl_count() == 0:
+            if _t_euro_tbl_count() == 0 and role_stems:
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d)
+                    and not self._is_auxiliary_concepts_table(d)
+                    and self._matches_role_stem(d, role_stems),
+                    1,
+                )
+
+            if _t_euro_tbl_count() == 0:
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d)
+                    and not self._is_auxiliary_concepts_table(d),
+                    1,
+                )
+
+            if _t_euro_tbl_count() == 0:
                 _pick_with_period_preference(
                     lambda d: d.tipo_contenido == "tabla_salarial"
                     and self._is_monetary_table(d),
@@ -1831,6 +1934,14 @@ class AiHorecaVectorStore:
                     lambda d: d.tipo_contenido == "tabla_salarial"
                     and self._is_monetary_table(d)
                     and bool(extra_pay_table_row_re.search(d.text)),
+                    1,
+                )
+
+            if has_separate_concepts_table:
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d)
+                    and self._is_auxiliary_concepts_table(d),
                     1,
                 )
 

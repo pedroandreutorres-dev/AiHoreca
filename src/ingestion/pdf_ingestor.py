@@ -248,7 +248,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
         elif re.match(
-            r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
+            r"^(?:Art[íi]culo(?:\.-|\.)?|ART[ÍI]CULO(?:\.-|\.)?|Art\.|ART\.)\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
@@ -593,15 +593,17 @@ def _page_has_complex_table(page: pymupdf.Page) -> bool:
         pass
     text = page.get_text("text")
     text_sort = page.get_text("text", sort=True)
+    clock_hours_re = re.compile(r"\b\d{1,2},\d{2}\s*h(?:oras?|rs?)?(?=\b|\.)", re.IGNORECASE)
+    text_no_hours = clock_hours_re.sub("", text)
     lines = [ln.strip() for ln in text_sort.splitlines() if ln.strip()]
     multi_dec_lines = sum(
-        1 for ln in lines if len(_SPANISH_DECIMALS_RE.findall(ln)) >= 2
+        1 for ln in lines if len(_SPANISH_DECIMALS_RE.findall(clock_hours_re.sub("", ln))) >= 2
     )
     if multi_dec_lines >= 3:
         return True
     # Respaldo para tablas salariales sin bordes vectoriales: distinguir listas tabulares cortas de prosa jurídica
     euro_count = text.count("€")
-    decimal_amounts = len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", text))
+    decimal_amounts = len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", text_no_hours))
     if euro_count < 6 and decimal_amounts < 8:
         return False
     short_amount_lines = sum(
@@ -659,8 +661,17 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
 
 def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
     """Reconstruye en CPU una tabla vectorial extrayendo texto por rectángulo de celda (`clip`) para evitar fusión de decimales."""
+    table_rect = pymupdf.Rect(table.bbox)
+    table_width = max(1.0, float(table_rect.width or 1.0))
     raw_rows: list[list[str]] = []
+    row_colspans: list[bool] = []
     for row in table.rows:
+        is_colspan_row = (
+            len(row.cells) >= 2
+            and row.cells[0] is not None
+            and all(c is None for c in row.cells[1:])
+            and float(pymupdf.Rect(row.cells[0]).width) >= table_width * 0.70
+        )
         col_lines: list[list[tuple[int, str]]] = []
         any_multi = False
         for cb in row.cells:
@@ -712,10 +723,12 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
                 sub = [" ".join(t for yk, t in cl if yk in cset).strip() for cl in col_lines]
                 if any(sub):
                     raw_rows.append(sub)
+                    row_colspans.append(False)
         else:
             joined = [" ".join(t for _, t in cl).strip() for cl in col_lines]
             if any(joined):
                 raw_rows.append(joined)
+                row_colspans.append(is_colspan_row)
 
     if not raw_rows:
         return ""
@@ -727,30 +740,59 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
         return ""
     trimmed = [[r[c] for c in keep_cols] for r in padded]
 
-    if len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
-        hdr = [trimmed[0][0]]
-        last_top = ""
-        for col_idx, sub_h in enumerate(trimmed[1][1:], start=1):
-            if col_idx < len(trimmed[0]) and trimmed[0][col_idx]:
-                last_top = trimmed[0][col_idx]
-            if last_top and len(last_top) > 2:
-                hdr.append(f"{last_top} ({sub_h})")
-            elif last_top:
-                hdr.append(f"{last_top} {sub_h}".strip())
-            else:
-                hdr.append(sub_h)
-        body = trimmed[2:]
-    else:
-        hdr = trimmed[0]
-        body = trimmed[1:]
-
     def _esc(val: str) -> str:
         return val.replace("|", "/").strip()
 
-    banner_heading = ""
-    if len(hdr) >= 2 and hdr[0] and all(not c for c in hdr[1:]):
-        banner_heading = f"### {_esc(hdr[0])}\n\n"
-        hdr = [f"Columna {idx + 1}" for idx in range(len(hdr))]
+    banner_headings: list[str] = []
+    orig_row_idx = 0
+    while (
+        len(trimmed) >= 2
+        and (orig_row_idx == 0 or row_colspans[0])
+        and len(trimmed[0]) >= 2
+        and trimmed[0][0]
+        and all(not c for c in trimmed[0][1:])
+    ):
+        banner_headings.append(f"### {_esc(trimmed[0][0])}")
+        trimmed = trimmed[1:]
+        row_colspans = row_colspans[1:]
+        orig_row_idx += 1
+
+    banner_heading = ("\n\n".join(banner_headings) + "\n\n") if banner_headings else ""
+
+    def _merge_header_rows(top_row: list[str], sub_row: list[str], default_col0: str = "") -> list[str]:
+        merged = [top_row[0] or default_col0]
+        last_top = ""
+        for col_idx, sub_h in enumerate(sub_row[1:], start=1):
+            if col_idx < len(top_row) and top_row[col_idx]:
+                last_top = top_row[col_idx]
+            if last_top and len(last_top) > 2:
+                merged.append(f"{last_top} ({sub_h})")
+            elif last_top:
+                merged.append(f"{last_top} {sub_h}".strip())
+            else:
+                merged.append(sub_h)
+        return merged
+
+    if len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
+        hdr = _merge_header_rows(trimmed[0], trimmed[1])
+        body = trimmed[2:]
+    elif (
+        len(trimmed) >= 3
+        and not trimmed[0][0]
+        and any(trimmed[0][1:])
+        and trimmed[1][0]
+        and all(not c for c in trimmed[1][1:])
+        and not trimmed[2][0]
+        and all(trimmed[2][1:])
+    ):
+        hdr = _merge_header_rows(trimmed[0], trimmed[2], default_col0="Categoría / Nivel")
+        body = [trimmed[1], *trimmed[3:]]
+    elif banner_headings:
+        hdr = [f"Columna {idx + 1}" for idx in range(len(trimmed[0]))]
+        body = trimmed
+    else:
+        hdr = trimmed[0]
+        body = trimmed[1:]
 
     md_lines = [
         "| " + " | ".join(_esc(c) for c in hdr) + " |",

@@ -1994,5 +1994,250 @@ class TestCadizIngestionAndRetrieval(unittest.TestCase):
             self.assertNotIn(tbl27.chunk_id, ids_backfill)
 
 
+class TestGranadaIngestionAndRetrieval(unittest.TestCase):
+    """Tests en CPU sobre la ingesta, clasificación, corrección de errores y tablas 2026-2028 de Granada."""
+
+    def test_clock_hours_do_not_trigger_complex_table_flag(self) -> None:
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        prose = (
+            "Artículo 40.- PLUS NOCTURNIDAD\n"
+            "Se considera trabajo nocturno el realizado entre las 22.00 horas y las 06.00 horas.\n"
+            "1) HOTELES:\n"
+            "- Entre las 22,00 h y las 23,00 h., sin incremento alguno.\n"
+            "- Entre las 23,00 h. y las 6,00 h., incremento del 15 % de su salario.\n"
+            "- Costa del 1 de junio al 30 de septiembre entre las 0,00 h y las 6,00 h.\n"
+            "2) Resto de sectores:\n"
+            "- Entre las 22,00 h y las 0,00 h., sin incremento alguno.\n"
+            "- Entre las 0,00 h. y las 6,00 h., incremento del 15% de su salario.\n"
+        )
+        page.insert_text((40, 60), prose, fontsize=10)
+        self.assertFalse(_page_has_complex_table(page))
+        doc.close()
+
+    def test_granada_strict_validation_errata_level_iv_and_year_selection(self) -> None:
+        base_path = PROCESSED_DATA_DIR / "convenio_granada.md"
+        tablas_path = PROCESSED_DATA_DIR / "convenio_granada_tablas_2026_2028.md"
+        if not base_path.exists() or not tablas_path.exists():
+            self.skipTest("Convenio de Granada no disponible en data/processed/")
+
+        base_report = validate_document(base_path, strict=True)
+        tablas_report = validate_document(tablas_path, strict=True)
+        self.assertTrue(base_report.passed, msg=base_report.model_dump_json(indent=2))
+        self.assertEqual(base_report.error_count, 0)
+        self.assertEqual(base_report.warning_count, 0)
+        self.assertTrue(tablas_report.passed, msg=tablas_report.model_dump_json(indent=2))
+        self.assertEqual(tablas_report.error_count, 0)
+        self.assertEqual(tablas_report.warning_count, 0)
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(base_path, boundaries_cache=cache)
+        cls_chunks = []
+        for ch in base_chunks:
+            doc_view = RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                score=1.0,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                norma_titulo=ch.norma_titulo,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                source_file=ch.source_file,
+                text=ch.text,
+            )
+            if AiHorecaVectorStore._is_classification_level_table(doc_view):
+                cls_chunks.append(ch)
+        self.assertTrue(
+            any("59" in c.articulo and "Hoteles de 4 y 5 estrellas" in c.text for c in cls_chunks),
+            msg=[c.articulo for c in cls_chunks],
+        )
+
+        tablas_chunks = chunk_markdown_document(tablas_path, boundaries_cache=cache)
+        tablas_docs = [
+            RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                score=1.0,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                norma_titulo=ch.norma_titulo,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                source_file=ch.source_file,
+                text=ch.text,
+            )
+            for ch in tablas_chunks
+        ]
+
+        # Verificar corrección de errores del BOP n.º 214: CAMARERA DE PISOS en NIVEL IV (no en NIVEL V)
+        chunk_2026 = next(
+            d for d in tablas_docs if d.tipo_contenido == "tabla_salarial" and "ANEXO I" in d.titulo_o_capitulo and "OTROS CONCEPTOS" not in d.articulo
+        )
+        nivel_iv_block = chunk_2026.text.split("| NIVEL IV |", 1)[1].split("### NIVEL V", 1)[0]
+        nivel_v_block = chunk_2026.text.split("### NIVEL V", 1)[1]
+        self.assertIn("1.737,50", nivel_iv_block)
+        self.assertIn("1.489,03", nivel_iv_block)
+        self.assertIn("CAMARERA DE PISOS", nivel_iv_block)
+        self.assertNotIn("CAMARERA DE PISOS", nivel_v_block)
+
+        otros_years = {
+            AiHorecaVectorStore._extract_chunk_year(d)
+            for d in tablas_docs
+            if "OTROS CONCEPTOS RETRIBUTIVOS" in d.articulo
+        }
+        self.assertEqual(otros_years, {2026, 2027, 2028})
+
+        mon_docs = [d for d in tablas_docs if d.tipo_contenido == "tabla_salarial" and AiHorecaVectorStore._is_monetary_table(d)]
+        preferred_2026 = AiHorecaVectorStore._select_preferred_monetary_tables(
+            mon_docs,
+            [],
+            reference_date=date(2026, 11, 23),
+        )
+        self.assertEqual(len(preferred_2026), 2)
+        self.assertEqual(
+            {AiHorecaVectorStore._extract_chunk_year(d) for d in mon_docs if d.chunk_id in preferred_2026},
+            {2026},
+        )
+
+    def test_granada_retrieval_preserves_main_salary_table_with_aux_concepts_and_art59(self) -> None:
+        base_path = PROCESSED_DATA_DIR / "convenio_granada.md"
+        tablas_path = PROCESSED_DATA_DIR / "convenio_granada_tablas_2026_2028.md"
+        if not base_path.exists() or not tablas_path.exists():
+            self.skipTest("Convenio de Granada no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(base_path, boundaries_cache=cache)
+        tablas_chunks = chunk_markdown_document(tablas_path, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        art40 = next(c for c in base_chunks if c.articulo.startswith("Artículo 40"))
+        art15 = next(c for c in base_chunks if c.articulo.startswith("Artículo 15"))
+        art18 = next(c for c in base_chunks if c.articulo.startswith("Artículo 18"))
+        art33 = next(c for c in base_chunks if c.articulo.startswith("Artículo 33"))
+        art34 = next(c for c in base_chunks if c.articulo.startswith("Artículo 34"))
+        art59 = next(c for c in base_chunks if "59" in c.articulo)
+        main_2026 = next(c for c in tablas_chunks if c.tipo_contenido == "tabla_salarial" and "ANEXO I" in c.titulo_o_capitulo and "OTROS CONCEPTOS" not in c.articulo)
+        otros_2026 = next(c for c in tablas_chunks if c.tipo_contenido == "tabla_salarial" and "ANEXO I" in c.titulo_o_capitulo and "OTROS CONCEPTOS" in c.articulo)
+        main_2027 = next(c for c in tablas_chunks if c.tipo_contenido == "tabla_salarial" and "ANEXO II" in c.titulo_o_capitulo and "OTROS CONCEPTOS" not in c.articulo)
+
+        # Artículo 40 con horarios 22,00 h / 23,00 h / 0,00 h / 6,00 h NO es tabla monetaria
+        self.assertFalse(AiHorecaVectorStore._is_monetary_table(_to_doc(art40, 0.5)))
+        self.assertTrue(AiHorecaVectorStore._is_auxiliary_concepts_table(_to_doc(otros_2026, 0.5)))
+        self.assertFalse(AiHorecaVectorStore._is_auxiliary_concepts_table(_to_doc(main_2026, 0.5)))
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_gr_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_gr_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+        extra_arts = [
+            _to_doc(c, 0.25)
+            for c in base_chunks
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {art40.chunk_id, art15.chunk_id, art18.chunk_id, art33.chunk_id, art34.chunk_id, art59.chunk_id}
+        ][:3]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        # Escenario GD_37: Art. 59 y OTROS CONCEPTOS puntúan por encima de TABLAS SALARIALES 2026
+        pool_37 = [
+            _to_doc(art59, 0.98),
+            _to_doc(otros_2026, 0.96),
+            _to_doc(main_2027, 0.94),
+            _to_doc(art34, 0.89),
+            _to_doc(art33, 0.85),
+            _to_doc(main_2026, 0.55),
+            *extra_arts,
+            *aleh_docs,
+            *et_docs,
+        ]
+        with patch.object(
+            AiHorecaVectorStore,
+            "_select_preferred_monetary_tables",
+            return_value={main_2026.chunk_id, otros_2026.chunk_id},
+        ):
+            sel_37 = store.rerank_and_select_by_territory(
+                candidates=pool_37,
+                query="Trabajo como camarera de pisos en un hotel de 4 estrellas en Granada capital. ¿Qué salario base mensual y nivel retributivo me corresponden, cuántas pagas extraordinarias tengo al año y cuánto es el plus cultural?",
+                territorios=["granada"],
+                use_cohere_rerank=False,
+                role_context="Camarera de pisos (Área Funcional 4ª Pisos y Limpieza, Grupo Profesional II)",
+            )
+            ids_37 = {d.chunk_id for d in sel_37}
+            self.assertIn(main_2026.chunk_id, ids_37)
+            self.assertIn(otros_2026.chunk_id, ids_37)
+            self.assertIn(art59.chunk_id, ids_37)
+            self.assertIn(art33.chunk_id, ids_37)
+            self.assertIn(art34.chunk_id, ids_37)
+            self.assertNotIn(main_2027.chunk_id, ids_37)
+
+            # Escenario GD_38: Art. 15, Art. 18, Art. 40, Art. 59 y TABLAS SALARIALES 2026
+            pool_38 = [
+                _to_doc(otros_2026, 0.90),
+                _to_doc(art40, 0.88),
+                _to_doc(art18, 0.84),
+                _to_doc(art15, 0.82),
+                _to_doc(main_2026, 0.62),
+                _to_doc(art59, 0.45),
+                *extra_arts,
+                *aleh_docs,
+                *et_docs,
+            ]
+            sel_38 = store.rerank_and_select_by_territory(
+                candidates=pool_38,
+                query="Soy camarero en un restaurante de 2 tenedores en Motril (Granada) en 2026. ¿Cuál es mi salario base mensual, cuál es la jornada laboral y el descanso semanal, cómo se retribuye el plus de nocturnidad si trabajo hasta las 02:00 y cómo se calculan y abonan las horas extraordinarias?",
+                territorios=["granada"],
+                use_cohere_rerank=False,
+                role_context="Camarero/a (Área Funcional 3ª Restaurante, Sala, Bar y Similares, Grupo Profesional II)",
+            )
+            ids_38 = {d.chunk_id for d in sel_38}
+            self.assertIn(main_2026.chunk_id, ids_38)
+            self.assertIn(art59.chunk_id, ids_38)
+            self.assertIn(art15.chunk_id, ids_38)
+            self.assertIn(art18.chunk_id, ids_38)
+            self.assertIn(art40.chunk_id, ids_38)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -237,5 +237,39 @@
       2028
     ],
     "justificacion": "BOP de Cádiz n.º 153 (12/08/2025), Anuncio n.º 122.302, código REGCON 11000065011981: Convenio Colectivo Provincial de Hostelería de Cádiz 2025/2028 (págs. 1-12 del PDF, pp. 2-13 del boletín). Incluye texto articulado (Arts. 1º-50º), Disposiciones, Protocolo LGTBI+, Anexos I-II (clasificación de establecimientos A/B/C y grupos profesionales 1-5), Anexo III (tablas salariales 2025-2028 con +4,5% anual) y Anexo IV (casinos y asimilados 2025-2028); recorta con start_marker la resolución de tráfico inicial y con end_marker los edictos recaudatorios/municipales posteriores en pág. 12."
+  },
+  "convenio_granada.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "layout": "single_column",
+    "territorio": "granada",
+    "start_page": 3,
+    "end_page": 35,
+    "start_marker": "CAPÍTULO I DISPOSICIONES GENERALES",
+    "skip_pages": [
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34
+    ],
+    "justificacion": "BOP de Granada n.º 202 (19/10/2026), CVE BOP-GRA-2026-202001, número 2026053319, código REGCON 18000405011982: Convenio Colectivo Provincial para las Industrias de Hostelería de Granada y Provincia 2026-2028. Empieza en pág. 3 tras el índice general recortando con start_marker hasta CAPÍTULO I DISPOSICIONES GENERALES; incluye Arts. 1-59 (clasificación de establecimientos A/B/C/D en Art. 59), Disposición Final (Art. 58) y Anexo IV de protocolo LGTBI+ (pág. 35). Se omiten págs. 27-28 (modelos en blanco de finiquito y certificado de vacaciones) y págs. 29-34 (tablas salariales iniciales con error material en Camarera de Pisos), sustituidas íntegramente por la corrección de errores del BOP n.º 214 (05/11/2026)."
+  },
+  "convenio_granada_tablas_2026_2028.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "granada",
+    "start_page": 1,
+    "end_page": 7,
+    "expected_years": [
+      2026,
+      2027,
+      2028
+    ],
+    "justificacion": "BOP de Granada n.º 214 (05/11/2026), CVE BOP-GRA-2026-214002, número 2026057143, código REGCON 18000405011982: Resolución de corrección de errores de las tablas salariales 2026-2028 (Anexos I, II y III) que reubica la categoría profesional de Camarera de Pisos del Nivel V al Nivel IV y publica íntegramente las tablas salariales definitivas para 2026 (+3,7%, págs. 2-3), 2027 (+3,40%, págs. 4-5) y 2028 (+3,40%, págs. 6-7) junto con otros conceptos retributivos."
   }
 }

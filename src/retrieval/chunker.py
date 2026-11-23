@@ -29,7 +29,8 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"issn\s+\d{4}-\d{3}[\dx]|"
     r"\d{1,3}/\d{1,3}|"
     r"legislaci[óo]n\s+consolidada|"
-    r"p[áa]gina\s+\d+|"
+    r"p[áa]gina\s+\d+(?:\s+de\s+(?:\d+|un\s+total\s+de\s+\d+))?|"
+    r"bolet[íi]n\s+oficial\s+de\s+la\s+provincia.*|"
     r"verificable\s+en\s+https?://\S+|"
     r"sec\.\s+[ivx]+\.\s+p[áa]g\.\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*(?:•|-)?\s*p[áa]gina\s*\d+.*|"
@@ -41,11 +42,14 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"bocm-\d+-\d+|"
     r"bocm|"
     r"b\.?\s*o\.?\s*p\.?(?:\s+de\b|\s+n[úu]m\.?\b).*|"
+    r"n[º°]\.?\s*\d+\s*[-–—]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b.*|"
     r"#*\s*b\s*<mark>o</mark>\s*\*\*<mark>cm</mark>\*\*|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+de\s+\w+\s+de\s+\d{4}|"
     r"===\s*document\s+parser\s+messages\s*===|"
     r"warning:\s*rapidocr\s+is\s+missing.*|"
     r"cve:\s*\d{8}-\d+-\d+.*|"
+    r"cve:\s*bop[-a-z0-9]+.*|"
+    r"n[úu]mero\s+\d{6,}|"
     r"centro\s+de\s+ediciones.*|"
     r"tel[ée]fonos?:\s*\d.*"
     r")$"
@@ -65,11 +69,11 @@ _CHAPTER_OR_TITLE_RE = re.compile(
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIAL(?:ES)?\s+(?:A[ÑN]O\s+|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|INCREMENTO\s+2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIAL(?:ES)?\s+(?:A[ÑN]OS?\s+(?:DEL\s+\d{2}/\d{2}/)?|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|INCREMENTO\s+2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
 )
 
 _ARTICLE_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo|Art\.)\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:\.|\s*[-–—])\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo(?:\.-|\.)?|Art\.)\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:\.|\s*[-–—])\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
 )
 
 _DISPOSITION_START_RE = re.compile(
@@ -533,6 +537,14 @@ def chunk_markdown_document(
                     current_buffer.append(line)
                     idx += 1
                     continue
+            if (
+                re.fullmatch(r"(?i)NIVEL\s+[IVX0-9]+", sub_title)
+                and any(x.strip().startswith("|") for x in current_buffer)
+                and sum(len(x) for x in current_buffer) < 2000
+            ):
+                current_buffer.append(line)
+                idx += 1
+                continue
             # Si el buffer actual ya tiene suficiente contenido (>600 chars), abrimos sub-sección nueva
             if sum(len(x) for x in current_buffer) >= 600:
                 flush_section()
