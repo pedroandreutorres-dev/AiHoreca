@@ -220,5 +220,22 @@
       2027
     ],
     "justificacion": "BOP de Santa Cruz de Tenerife n.º 108 (09/09/2026), REGCON 38000905011981: Acta de la Comisión Paritaria de 31/07/2026 (págs. 9-11, omitiendo pág. 8 de lista de asistentes) por la que se aplica la cláusula de revisión por IPC de Canarias (ISTAC 3,4%, diferencial +0,4%) a la Clasificación 3D Restauración y Ocio, junto con las tablas salariales definitivas revisadas 2025-2026 (págs. 12-13) y vigentes 2026-2027 con +3% (págs. 14-15)."
+  },
+  "convenio_cadiz.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "double_column",
+    "territorio": "cadiz",
+    "start_page": 1,
+    "end_page": 12,
+    "start_marker": "CONVENIO O ACUERDO: CONVENIO PROVINCIAL",
+    "end_marker": "DIPUTACION PROVINCIAL DE CADIZ",
+    "expected_years": [
+      2025,
+      2026,
+      2027,
+      2028
+    ],
+    "justificacion": "BOP de Cádiz n.º 153 (12/08/2025), Anuncio n.º 122.302, código REGCON 11000065011981: Convenio Colectivo Provincial de Hostelería de Cádiz 2025/2028 (págs. 1-12 del PDF, pp. 2-13 del boletín). Incluye texto articulado (Arts. 1º-50º), Disposiciones, Protocolo LGTBI+, Anexos I-II (clasificación de establecimientos A/B/C y grupos profesionales 1-5), Anexo III (tablas salariales 2025-2028 con +4,5% anual) y Anexo IV (casinos y asimilados 2025-2028); recorta con start_marker la resolución de tráfico inicial y con end_marker los edictos recaudatorios/municipales posteriores en pág. 12."
   }
 }

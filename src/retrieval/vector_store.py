@@ -555,7 +555,6 @@ class AiHorecaVectorStore:
 
         docs: list[RetrievedDocument] = []
         for pt in result.points:
-            payload = pt.payload or {}
             rrf_score = float(pt.score or 0.0)
             cos_score = rrf_score
             if q_dense is not None and isinstance(pt.vector, dict) and DENSE_VECTOR_NAME in pt.vector:
@@ -564,21 +563,72 @@ class AiHorecaVectorStore:
                 cos_score = float(np.dot(q_dense, d_arr) / (q_norm * d_norm))
             calibrated = round(0.75 * cos_score + 0.25 * rrf_score, 4) if include_vectors else round(rrf_score, 4)
             docs.append(
-                RetrievedDocument(
-                    chunk_id=str(pt.id),
+                self._point_to_retrieved_doc(
+                    pt,
                     score=rrf_score,
-                    rerank_score=calibrated,
-                    capa_normativa=payload.get("capa_normativa", "convenio_provincial"),
-                    territorio=payload.get("territorio", ""),
-                    norma_titulo=payload.get("norma_titulo", ""),
-                    titulo_o_capitulo=payload.get("titulo_o_capitulo", ""),
-                    articulo=payload.get("articulo", ""),
-                    tipo_contenido=payload.get("tipo_contenido", "articulo"),
-                    source_file=payload.get("source_file", ""),
-                    text=payload.get("text", ""),
+                    calibrated_score=calibrated,
                 )
             )
         return docs
+
+    @staticmethod
+    def _point_to_retrieved_doc(
+        pt: Any,
+        *,
+        score: float,
+        calibrated_score: float,
+    ) -> RetrievedDocument:
+        """Convierte un punto devuelto por Qdrant en un `RetrievedDocument` normalizado."""
+        payload = pt.payload or {}
+        return RetrievedDocument(
+            chunk_id=str(pt.id),
+            score=score,
+            rerank_score=calibrated_score,
+            capa_normativa=payload.get("capa_normativa", "convenio_provincial"),
+            territorio=payload.get("territorio", ""),
+            norma_titulo=payload.get("norma_titulo", ""),
+            titulo_o_capitulo=payload.get("titulo_o_capitulo", ""),
+            articulo=payload.get("articulo", ""),
+            tipo_contenido=payload.get("tipo_contenido", "articulo"),
+            source_file=payload.get("source_file", ""),
+            text=payload.get("text", ""),
+        )
+
+    def sparse_topic_search(
+        self,
+        topic_query: str,
+        *,
+        capa_normativa: str,
+        provincia: str,
+        tipo_contenido: str = "articulo",
+        top_k: int = 2,
+    ) -> list[RetrievedDocument]:
+        """Ejecuta búsqueda dispersa BM25 pura por tema en Qdrant sin llamadas a embeddings densos."""
+        if getattr(self, "qdrant", None) is None:
+            return []
+        sparse_vec = self._get_query_sparse_vec(topic_query)
+        q_filter = self._build_filter(
+            capa_normativa=capa_normativa,
+            provincia=provincia,
+            tipo_contenido=tipo_contenido,
+        )
+        result = self.qdrant.query_points(
+            collection_name=self.collection_name,
+            query=sparse_vec,
+            using=SPARSE_VECTOR_NAME,
+            query_filter=q_filter,
+            limit=top_k,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [
+            self._point_to_retrieved_doc(
+                pt,
+                score=float(pt.score or 0.0),
+                calibrated_score=round(float(pt.score or 0.0), 4),
+            )
+            for pt in result.points
+        ]
 
     @staticmethod
     def _extract_chunk_year(doc: RetrievedDocument) -> int:
@@ -1022,13 +1072,13 @@ class AiHorecaVectorStore:
             body_head = doc.text.split("\n\n", 1)[-1][:350]
             return bool(
                 re.search(
-                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+establecimientos)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+(?:los\s+)?establecimientos|de\s+(?:las\s+)?empresas)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
                     f"{surface} {body_head}",
                 )
                 or (
                     "anexo" in doc.titulo_o_capitulo.lower()
                     and re.search(
-                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?)|CLASIFICACI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA))\b",
+                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?)|CATEGOR[ÍI]A\s+[A-D]\b|CLASIFICACI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA))\b",
                         body_head,
                     )
                 )
@@ -1102,6 +1152,39 @@ class AiHorecaVectorStore:
         layer_results = self._run_query_specs(query_specs)
         return self._deduplicate_docs(layer_results["et"] + layer_results["aleh"])
 
+    _TOPIC_BM25_SPECS: tuple[tuple[str, str, str], ...] = (
+        (
+            "pagas_extra",
+            r"(?i)pagas?\s+extra|gratificaci[óo]n",
+            "pagas extraordinarias gratificaciones extraordinarias",
+        ),
+        (
+            "horas_extra",
+            r"(?i)horas?\s+extra|divisor\s+anual",
+            "horas extraordinarias valor hora ordinaria recargo divisor anual",
+        ),
+        (
+            "nocturnidad",
+            r"(?i)nocturn",
+            "nocturnidad jornada nocturna horas nocturnas recargo",
+        ),
+        (
+            "jornada",
+            r"(?i)jornada\s+(?:de\s+trabajo|anual|m[áa]xima)|horas?\s+anuales?",
+            "jornada de trabajo jornada máxima anual horas anuales 40 horas semanales",
+        ),
+        (
+            "vacaciones",
+            r"(?i)vacaciones",
+            "vacaciones anuales días naturales periodo disfrute",
+        ),
+        (
+            "ipc",
+            r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria",
+            "revisión salarial ipc comisión paritaria cláusula garantía",
+        ),
+    )
+
     def retrieve_territory_candidates(
         self,
         query: str,
@@ -1110,6 +1193,7 @@ class AiHorecaVectorStore:
         use_cohere_rerank: bool = True,
         role_context: Optional[str] = None,
         usage_out: Optional[list[dict[str, Any]]] = None,
+        topic_source_query: Optional[str] = None,
     ) -> list[RetrievedDocument]:
         """Rama paralela B1 por territorio: recupera articulado, tablas estratificadas y anexos de un único convenio."""
         norm_p = provincia.lower().strip()
@@ -1230,6 +1314,41 @@ class AiHorecaVectorStore:
 
         layer_results = self._run_query_specs(query_specs)
 
+        topic_surface = f"{query} {topic_source_query or ''}"
+        matched_bm25_topics = [
+            bm25_terms
+            for _, pat, bm25_terms in self._TOPIC_BM25_SPECS
+            if re.search(pat, topic_surface)
+        ][:4]
+        topic_art_docs: list[RetrievedDocument] = []
+        if matched_bm25_topics and getattr(self, "qdrant", None) is not None:
+            if self.is_cloud and len(matched_bm25_topics) > 1:
+                with ThreadPoolExecutor(max_workers=len(matched_bm25_topics)) as pool:
+                    topic_futures = [
+                        pool.submit(
+                            self.sparse_topic_search,
+                            t_terms,
+                            capa_normativa="convenio_provincial",
+                            provincia=norm_p,
+                            tipo_contenido="articulo",
+                            top_k=2,
+                        )
+                        for t_terms in matched_bm25_topics
+                    ]
+                    for fut in topic_futures:
+                        topic_art_docs.extend(fut.result())
+            else:
+                for t_terms in matched_bm25_topics:
+                    topic_art_docs.extend(
+                        self.sparse_topic_search(
+                            t_terms,
+                            capa_normativa="convenio_provincial",
+                            provincia=norm_p,
+                            tipo_contenido="articulo",
+                            top_k=2,
+                        )
+                    )
+
         raw_tables = self._deduplicate_docs(
             layer_results["prov_tables"] + layer_results.get("prov_cls_tables", [])
         )
@@ -1291,6 +1410,7 @@ class AiHorecaVectorStore:
         combined.extend(layer_results["prov_art"])
         if "prov_pay_art" in layer_results:
             combined.extend(layer_results["prov_pay_art"])
+        combined.extend(topic_art_docs)
         combined.extend((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
         combined.extend(layer_results["prov_anexo"])
 
@@ -1420,6 +1540,7 @@ class AiHorecaVectorStore:
 
         selected: list[RetrievedDocument] = []
         selected_ids: set[str] = set()
+        stale_euro_ids: set[str] = set()
 
         def _pick(predicate, limit: int, pool: Optional[list[RetrievedDocument]] = None) -> None:
             count = 0
@@ -1475,6 +1596,10 @@ class AiHorecaVectorStore:
                 prov_euro_tables,
                 explicit_years,
             )
+            if preferred_euro_ids:
+                stale_euro_ids.update(
+                    d.chunk_id for d in prov_euro_tables if d.chunk_id not in preferred_euro_ids
+                )
             distinct_cls_sections = {
                 d.titulo_o_capitulo.strip()
                 for d in terr_cands
@@ -1542,10 +1667,18 @@ class AiHorecaVectorStore:
                     before_spec = len(selected)
                     _pick(
                         lambda d, p=pat: _is_normative_text(d)
-                        and bool(re.search(p, d.articulo)),
+                        and bool(re.search(p, d.articulo))
+                        and not re.search(r"\(Parte\s+[2-9]\d*/", d.articulo),
                         1,
                         terr_cands,
                     )
+                    if len(selected) == before_spec:
+                        _pick(
+                            lambda d, p=pat: _is_normative_text(d)
+                            and bool(re.search(p, d.articulo)),
+                            1,
+                            terr_cands,
+                        )
                     if len(selected) == before_spec:
                         _pick(
                             lambda d, p=pat: _is_normative_text(d)
@@ -1714,6 +1847,7 @@ class AiHorecaVectorStore:
         _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", QUOTA_ESTATUTO_CHUNKS)
         _pick(
             lambda d: (needs_tables or d.tipo_contenido != "tabla_salarial")
+            and d.chunk_id not in stale_euro_ids
             and (d.rerank_score is None or d.rerank_score >= 0.05),
             max(0, total_budget - len(selected)),
         )
@@ -1751,6 +1885,7 @@ class AiHorecaVectorStore:
                     top_k_per_layer=top_k_per_layer,
                     use_cohere_rerank=use_cohere_rerank,
                     role_context=role_context,
+                    topic_source_query=rerank_query,
                 )
             )
         return self.rerank_and_select_by_territory(

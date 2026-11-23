@@ -158,6 +158,7 @@ _PRETTY_TERRITORY_LABELS: dict[str, str] = {
     "a_coruna": "A Coruña",
     "alava": "Álava",
     "baleares": "Islas Baleares",
+    "cadiz": "Cádiz",
     "catalunya": "Cataluña",
     "castellon": "Castellón",
     "ciudad_real": "Ciudad Real",
@@ -816,7 +817,7 @@ class AiHorecaGraphNodes:
     def retrieve_territory_node(self, state: dict[str, Any]) -> dict[str, Any]:
         """Nodo B1 (Rama Send Territorial): recupera candidatos estratificados de un único convenio."""
         t0 = time.perf_counter()
-        enriched_query, _, role_context = self._build_retrieval_queries(state)
+        enriched_query, rerank_query, role_context = self._build_retrieval_queries(state)
         target_terr = str(state.get("target_territorio") or "").strip().lower()
         docs: list[RetrievedDocument] = []
         step_usage: list[dict[str, Any]] = []
@@ -828,6 +829,7 @@ class AiHorecaGraphNodes:
                 use_cohere_rerank=True,
                 role_context=role_context,
                 usage_out=step_usage,
+                topic_source_query=rerank_query,
             )
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return {

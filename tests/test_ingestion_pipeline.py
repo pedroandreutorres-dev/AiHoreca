@@ -29,6 +29,7 @@ from src.graph.nodes import (
     AiHorecaGraphNodes,
     _canonicalize_llm_province,
     _format_supported_territories_display,
+    _pretty_territory_label,
 )
 from src.graph.state import LegalCitation, LegalSynthesisSchema, QueryAnalysisSchema
 from src.ingestion.pdf_ingestor import (
@@ -36,6 +37,7 @@ from src.ingestion.pdf_ingestor import (
     _clean_gemini_markdown_output,
     _count_missing_spanish_decimals,
     _extract_double_column_page_text,
+    _extract_vector_tables_page_cpu,
     _format_plain_page_to_markdown,
     _has_clean_vector_table_grid,
     _is_scanned_page,
@@ -1667,6 +1669,329 @@ class TestEvaluationCheckpointLogic(unittest.TestCase):
                 [(c["case_id"], c["final_response"]) for c in persisted["cases"]],
                 [("T1", "Old T1"), ("T2", "Updated T2"), ("T3", "Old T3")],
             )
+
+
+class TestCadizIngestionAndRetrieval(unittest.TestCase):
+    """Invariantes CPU para el convenio de Cádiz y extracción tabular vectorial por clip."""
+
+    def test_cadiz_territory_canonicalization_and_pretty_label(self) -> None:
+        self.assertEqual(_canonicalize_llm_province("Cádiz"), "cadiz")
+        self.assertEqual(_canonicalize_llm_province("Provincia de Cádiz"), "cadiz")
+        self.assertEqual(_canonicalize_territory("Cádiz"), "cadiz")
+        self.assertEqual(_pretty_territory_label("cadiz"), "Cádiz")
+
+    def test_cadiz_silver_chunks_and_2026_table_selection(self) -> None:
+        cadiz_md = PROCESSED_DATA_DIR / "convenio_cadiz.md"
+        if not cadiz_md.exists():
+            self.skipTest("convenio_cadiz.md no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cadiz_md, boundaries_cache=cache)
+        self.assertEqual(len(chunks), 87)
+
+        texts_all = "\n".join(c.text for c in chunks)
+        self.assertIn("ART. 7º.- NOCTURNIDAD", texts_all)
+        self.assertIn("ART. 8º.- PAGAS EXTRAORDINARIAS", texts_all)
+        self.assertIn("ART. 20º.- JORNADA DE TRABAJO", texts_all)
+        self.assertIn("ART. 21º.- HORAS EXTRAORDINARIAS", texts_all)
+        self.assertIn("Cocinero/a.", texts_all)
+        self.assertIn("Camarero/a.", texts_all)
+
+        anexo3_tables = [
+            c
+            for c in chunks
+            if c.tipo_contenido == "tabla_salarial" and "ANEXO III" in c.titulo_o_capitulo
+        ]
+        self.assertEqual(len(anexo3_tables), 4)
+
+        docs_anexo3 = [
+            RetrievedDocument(
+                chunk_id=c.chunk_id,
+                source_file=c.source_file,
+                norma_titulo=c.norma_titulo,
+                capa_normativa=c.capa_normativa,
+                territorio=c.territorio,
+                titulo_o_capitulo=c.titulo_o_capitulo,
+                articulo=c.articulo,
+                tipo_contenido=c.tipo_contenido,
+                text=c.text,
+                score=0.9,
+            )
+            for c in anexo3_tables
+        ]
+        selected_ids = AiHorecaVectorStore._select_preferred_monetary_tables(
+            docs_anexo3,
+            [],
+            reference_date=date(2026, 11, 23),
+        )
+        selected_docs = [d for d in docs_anexo3 if d.chunk_id in selected_ids]
+        self.assertEqual(len(selected_docs), 1)
+        self.assertIn("TABLA SALARIAL 2026", selected_docs[0].articulo)
+        self.assertIn("1.447,69", selected_docs[0].text)
+        self.assertIn("1.411,04", selected_docs[0].text)
+        self.assertIn("1.253,89", selected_docs[0].text)
+        self.assertIn("3,02", selected_docs[0].text)
+
+    def test_cadiz_pdf_prose_filter_and_clip_table_cpu(self) -> None:
+        cadiz_pdf = RAW_DATA_DIR / "convenio_cadiz.pdf"
+        if not cadiz_pdf.exists():
+            self.skipTest("convenio_cadiz.pdf no disponible en data/raw/")
+
+        doc = pymupdf.open(cadiz_pdf)
+        try:
+            self.assertFalse(_page_has_complex_table(doc[1]))  # P02 prosa con decimales inline
+            self.assertFalse(_page_has_complex_table(doc[4]))  # P05 prosa con importes seguro/natalidad
+            p10_md = _extract_vector_tables_page_cpu(doc[9], layout="double_column")
+            self.assertIsNotNone(p10_md)
+            assert p10_md is not None
+            missing, total, _ = _count_missing_spanish_decimals(doc[9].get_text("text"), p10_md)
+            self.assertGreater(total, 50)
+            self.assertEqual(missing, 0)
+            self.assertIn("| GRUPO 3 | 1.447,69 | 1.292,71 | 1.272,06 |", p10_md)
+            self.assertIn("Encargado/a de Lavandería/Lencería", p10_md)
+            self.assertIn("Dependiente/a 1ª/1º.", p10_md)
+            self.assertNotIn("| g y g |", p10_md)
+        finally:
+            doc.close()
+
+    def test_cadiz_dual_classification_anexo1_and_anexo2_selected_together(self) -> None:
+        cadiz_md = PROCESSED_DATA_DIR / "convenio_cadiz.md"
+        if not cadiz_md.exists():
+            self.skipTest("convenio_cadiz.md no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cadiz_md, boundaries_cache=cache)
+        anexo1 = next(c for c in chunks if c.titulo_o_capitulo == "ANEXO I")
+        anexo2 = next(c for c in chunks if c.titulo_o_capitulo == "ANEXO II")
+        tbl25 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2025")
+        tbl26 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2026")
+        art7 = next(c for c in chunks if c.articulo.startswith("ART. 7º"))
+        art8 = next(c for c in chunks if c.articulo.startswith("ART. 8º"))
+        art14 = next(c for c in chunks if c.articulo.startswith("ART. 14º"))
+        art16 = next(c for c in chunks if c.articulo.startswith("ART. 16º"))
+        art20 = next(c for c in chunks if c.articulo.startswith("ART. 20º"))
+        art21 = next(c for c in chunks if c.articulo.startswith("ART. 21º"))
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        anexo1_doc = _to_doc(anexo1, 0.01)
+        anexo2_doc = _to_doc(anexo2, 0.02)
+        self.assertTrue(AiHorecaVectorStore._is_classification_level_table(anexo1_doc))
+        self.assertTrue(AiHorecaVectorStore._is_classification_level_table(anexo2_doc))
+
+        state_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Clasificación profesional estatal.",
+                score=0.4,
+                rerank_score=0.4,
+            )
+            for i in range(1, 3)
+        ] + [
+            RetrievedDocument(
+                chunk_id=f"et_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa estatal supletoria.",
+                score=0.35,
+                rerank_score=0.35,
+            )
+            for i in range(1, 3)
+        ]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        pool = [
+            _to_doc(art14, 0.90),
+            _to_doc(art16, 0.85),
+            _to_doc(tbl25, 0.82),
+            _to_doc(tbl26, 0.80),
+            _to_doc(art20, 0.78),
+            _to_doc(art21, 0.76),
+            _to_doc(art7, 0.74),
+            _to_doc(art8, 0.72),
+            anexo2_doc,
+            anexo1_doc,
+            *state_docs,
+        ]
+
+        with patch.object(
+            AiHorecaVectorStore,
+            "_select_preferred_monetary_tables",
+            return_value={tbl26.chunk_id},
+        ):
+            sel_salary = store.rerank_and_select_by_territory(
+                candidates=pool,
+                query="Soy cocinero en un hotel de 4 estrellas en Jerez de la Frontera (Cádiz), ¿cuál es mi salario base mensual vigente y cuántas pagas extraordinarias me corresponden?",
+                territorios=["cadiz"],
+                use_cohere_rerank=False,
+                role_context="Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
+            )
+            ids_salary = {d.chunk_id for d in sel_salary}
+            self.assertIn(tbl26.chunk_id, ids_salary)
+            self.assertIn(anexo1.chunk_id, ids_salary)
+            self.assertIn(anexo2.chunk_id, ids_salary)
+            self.assertIn(art8.chunk_id, ids_salary)
+
+            sel_cond = store.rerank_and_select_by_territory(
+                candidates=pool,
+                query="Trabajo como camarero en un restaurante de 1 tenedor en Tarifa (Cádiz). ¿Cuál es mi salario base mensual vigente, cuál es la jornada máxima anual, a partir de qué hora y con qué recargo se paga la nocturnidad, y qué recargo tienen las horas extraordinarias?",
+                territorios=["cadiz"],
+                use_cohere_rerank=False,
+                role_context="Camarero/a (Área Funcional 3ª Restaurante, Sala, Bar y Similares, Grupo Profesional II)",
+            )
+            ids_cond = {d.chunk_id for d in sel_cond}
+            self.assertIn(tbl26.chunk_id, ids_cond)
+            self.assertIn(anexo1.chunk_id, ids_cond)
+            self.assertIn(anexo2.chunk_id, ids_cond)
+            self.assertIn(art20.chunk_id, ids_cond)
+            self.assertIn(art7.chunk_id, ids_cond)
+            self.assertIn(art21.chunk_id, ids_cond)
+
+    def test_part1_priority_and_backfill_excludes_stale_monetary_tables(self) -> None:
+        cadiz_md = PROCESSED_DATA_DIR / "convenio_cadiz.md"
+        if not cadiz_md.exists():
+            self.skipTest("convenio_cadiz.md no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cadiz_md, boundaries_cache=cache)
+        anexo1 = next(c for c in chunks if c.titulo_o_capitulo == "ANEXO I")
+        anexo2 = next(c for c in chunks if c.titulo_o_capitulo == "ANEXO II")
+        tbl25 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2025")
+        tbl26 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2026")
+        tbl27 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2027")
+        art7 = next(c for c in chunks if c.articulo.startswith("ART. 7º"))
+        art21 = next(c for c in chunks if c.articulo.startswith("ART. 21º"))
+        art20_parts = [c for c in chunks if c.articulo.startswith("ART. 20º")]
+        self.assertGreaterEqual(len(art20_parts), 2)
+        art20_p1 = next(c for c in art20_parts if "(Parte 1/" in c.articulo)
+        art20_p2 = next(c for c in art20_parts if "(Parte 2/" in c.articulo)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_f_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.3,
+                rerank_score=0.3,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_f_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.28,
+                rerank_score=0.28,
+            )
+            for i in range(1, 3)
+        ]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        base_prov = [
+            _to_doc(tbl27, 0.96),
+            _to_doc(tbl25, 0.94),
+            _to_doc(art20_p2, 0.92),  # Parte 2 con mayor score que Parte 1
+            _to_doc(art7, 0.88),
+            _to_doc(art21, 0.86),
+            _to_doc(art20_p1, 0.70),  # Parte 1 con "1.800" horas
+            _to_doc(tbl26, 0.65),
+            _to_doc(anexo2, 0.50),
+            _to_doc(anexo1, 0.45),
+        ]
+        extra_arts = [
+            _to_doc(ch, 0.25)
+            for ch in chunks
+            if ch.tipo_contenido == "articulo"
+            and ch.chunk_id not in {art20_p1.chunk_id, art20_p2.chunk_id, art7.chunk_id, art21.chunk_id}
+        ][:5]
+        pool_full = [*base_prov, *aleh_docs, *et_docs]
+        pool_backfill = [*base_prov, *aleh_docs, *extra_arts]
+        query_str = "Camarero restaurante Tarifa Cádiz salario, jornada máxima anual, nocturnidad y horas extraordinarias"
+
+        with patch.object(
+            AiHorecaVectorStore,
+            "_select_preferred_monetary_tables",
+            return_value={tbl26.chunk_id},
+        ):
+            sel_full = store.rerank_and_select_by_territory(
+                candidates=pool_full,
+                query=query_str,
+                territorios=["cadiz"],
+                use_cohere_rerank=False,
+                role_context="Camarero/a (Área Funcional 3ª)",
+            )
+            ids_full = {d.chunk_id for d in sel_full}
+            self.assertIn(art20_p1.chunk_id, ids_full)
+            self.assertNotIn(art20_p2.chunk_id, ids_full)
+            self.assertIn(tbl26.chunk_id, ids_full)
+            self.assertNotIn(tbl25.chunk_id, ids_full)
+            self.assertNotIn(tbl27.chunk_id, ids_full)
+
+            sel_backfill = store.rerank_and_select_by_territory(
+                candidates=pool_backfill,
+                query=query_str,
+                territorios=["cadiz"],
+                use_cohere_rerank=False,
+                role_context="Camarero/a (Área Funcional 3ª)",
+            )
+            ids_backfill = {d.chunk_id for d in sel_backfill}
+            self.assertEqual(len(sel_backfill), 10)
+            self.assertIn(tbl26.chunk_id, ids_backfill)
+            self.assertNotIn(tbl25.chunk_id, ids_backfill)
+            self.assertNotIn(tbl27.chunk_id, ids_backfill)
 
 
 if __name__ == "__main__":

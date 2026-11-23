@@ -40,6 +40,7 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"boletin@dipuleon\.es|"
     r"bocm-\d+-\d+|"
     r"bocm|"
+    r"b\.?\s*o\.?\s*p\.?(?:\s+de\b|\s+n[úu]m\.?\b).*|"
     r"#*\s*b\s*<mark>o</mark>\s*\*\*<mark>cm</mark>\*\*|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+de\s+\w+\s+de\s+\d{4}|"
     r"===\s*document\s+parser\s+messages\s*===|"
@@ -64,7 +65,7 @@ _CHAPTER_OR_TITLE_RE = re.compile(
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIALES?\s+(?:A[ÑN]O\s+|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIAL(?:ES)?\s+(?:A[ÑN]O\s+|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|INCREMENTO\s+2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
 )
 
 _ARTICLE_START_RE = re.compile(

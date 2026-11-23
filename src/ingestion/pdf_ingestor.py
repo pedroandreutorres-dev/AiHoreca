@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 _BULLETIN_HEADER_NOISE = re.compile(
     r"(?i)^(?:"
     r"bolet[íi]n\s+oficial\s+de|"
+    r"b\.?\s*o\.?\s*p\.?(?:\s+de\b|\s+n[úu]m\.?\b)|"
     r"butllet[íi]\s+oficial\s+de|"
     r"edita\s+excma\.?\s+diputaci[óo]n?\s+provincial|"
     r"b\.?\s*o\.?\s*c\.?\s*m\.?(?:\s+n[úu]m)?|"
@@ -249,6 +250,14 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
         elif re.match(
             r"^(?:Art[íi]culo|ART[ÍI]CULO|Art\.|ART\.)\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
+        ):
+            cleaned_lines.append(f"\n### {stripped}\n")
+        elif (
+            stripped == stripped.upper()
+            and re.match(
+                r"^(?:TABLAS?\s+SALARIAL(?:ES)?\s+20[23]\d\b[^\n]*|INCREMENTO\s+20[23]\d\b[^\n]*)$",
+                stripped,
+            )
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
         else:
@@ -583,10 +592,29 @@ def _page_has_complex_table(page: pymupdf.Page) -> bool:
     except Exception:
         pass
     text = page.get_text("text")
-    # Respaldo para tablas salariales sin bordes vectoriales: densidad de importes (€ o decimales XXX,XX)
+    text_sort = page.get_text("text", sort=True)
+    lines = [ln.strip() for ln in text_sort.splitlines() if ln.strip()]
+    multi_dec_lines = sum(
+        1 for ln in lines if len(_SPANISH_DECIMALS_RE.findall(ln)) >= 2
+    )
+    if multi_dec_lines >= 3:
+        return True
+    # Respaldo para tablas salariales sin bordes vectoriales: distinguir listas tabulares cortas de prosa jurídica
     euro_count = text.count("€")
     decimal_amounts = len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", text))
-    return euro_count >= 6 or decimal_amounts >= 8
+    if euro_count < 6 and decimal_amounts < 8:
+        return False
+    short_amount_lines = sum(
+        1
+        for ln in lines
+        if len(ln) <= 85
+        and re.search(
+            r"\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:€|euros?)?\.?\s*$",
+            ln,
+            re.IGNORECASE,
+        )
+    )
+    return short_amount_lines >= 5 or len(text) < 4500
 
 
 def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
@@ -626,6 +654,203 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
             continue
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
+    return _normalize_spanish_thousands(out)
+
+
+def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
+    """Reconstruye en CPU una tabla vectorial extrayendo texto por rectángulo de celda (`clip`) para evitar fusión de decimales."""
+    raw_rows: list[list[str]] = []
+    for row in table.rows:
+        col_lines: list[list[tuple[int, str]]] = []
+        any_multi = False
+        for cb in row.cells:
+            if cb is None:
+                col_lines.append([])
+                continue
+            cell_rect = pymupdf.Rect(cb)
+            d = page.get_text("dict", clip=cell_rect)
+            y_buckets: dict[int, list[tuple[float, str]]] = {}
+            for blk in d.get("blocks", []):
+                if blk.get("type") != 0:
+                    continue
+                for ln in blk.get("lines", []):
+                    lx0, ly0, lx1, ly1 = ln["bbox"]
+                    cx = (lx0 + lx1) / 2.0
+                    cy = (ly0 + ly1) / 2.0
+                    if not (cell_rect.x0 <= cx <= cell_rect.x1 and cell_rect.y0 <= cy <= cell_rect.y1):
+                        continue
+                    txt = "".join(sp.get("text", "") for sp in ln.get("spans", [])).strip()
+                    if not txt:
+                        continue
+                    y_key = round(float(ly0) / 3.0) * 3
+                    y_buckets.setdefault(y_key, []).append((float(lx0), txt))
+            ordered = [
+                (yk, " ".join(t for _, t in sorted(y_buckets[yk], key=lambda item: item[0])).strip())
+                for yk in sorted(y_buckets)
+            ]
+            if len(ordered) >= 2:
+                any_multi = True
+            col_lines.append(ordered)
+
+        all_ys = sorted({yk for cl in col_lines for yk, _ in cl})
+        y_clusters: list[list[int]] = []
+        for y in all_ys:
+            if not y_clusters or y - y_clusters[-1][-1] > 5:
+                y_clusters.append([y])
+            else:
+                y_clusters[-1].append(y)
+
+        multi_col_clusters = sum(
+            1
+            for clus in y_clusters
+            if sum(1 for cl in col_lines if any(yk in clus for yk, _ in cl)) >= 2
+        )
+
+        if any_multi and multi_col_clusters >= 2:
+            for clus in y_clusters:
+                cset = set(clus)
+                sub = [" ".join(t for yk, t in cl if yk in cset).strip() for cl in col_lines]
+                if any(sub):
+                    raw_rows.append(sub)
+        else:
+            joined = [" ".join(t for _, t in cl).strip() for cl in col_lines]
+            if any(joined):
+                raw_rows.append(joined)
+
+    if not raw_rows:
+        return ""
+
+    ncols = max(len(r) for r in raw_rows)
+    padded = [r + [""] * (ncols - len(r)) for r in raw_rows]
+    keep_cols = [c for c in range(ncols) if any(r[c] for r in padded)]
+    if not keep_cols:
+        return ""
+    trimmed = [[r[c] for c in keep_cols] for r in padded]
+
+    if len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
+        hdr = [trimmed[0][0]]
+        last_top = ""
+        for col_idx, sub_h in enumerate(trimmed[1][1:], start=1):
+            if col_idx < len(trimmed[0]) and trimmed[0][col_idx]:
+                last_top = trimmed[0][col_idx]
+            if last_top and len(last_top) > 2:
+                hdr.append(f"{last_top} ({sub_h})")
+            elif last_top:
+                hdr.append(f"{last_top} {sub_h}".strip())
+            else:
+                hdr.append(sub_h)
+        body = trimmed[2:]
+    else:
+        hdr = trimmed[0]
+        body = trimmed[1:]
+
+    def _esc(val: str) -> str:
+        return val.replace("|", "/").strip()
+
+    banner_heading = ""
+    if len(hdr) >= 2 and hdr[0] and all(not c for c in hdr[1:]):
+        banner_heading = f"### {_esc(hdr[0])}\n\n"
+        hdr = [f"Columna {idx + 1}" for idx in range(len(hdr))]
+
+    md_lines = [
+        "| " + " | ".join(_esc(c) for c in hdr) + " |",
+        "| " + " | ".join(["---"] * len(hdr)) + " |",
+    ]
+    for r in body:
+        md_lines.append("| " + " | ".join(_esc(c) for c in r) + " |")
+    return banner_heading + "\n".join(md_lines)
+
+
+def _extract_vector_tables_page_cpu(
+    page: pymupdf.Page,
+    layout: str = "single_column",
+) -> Optional[str]:
+    """Extrae en CPU páginas mixtas (texto + tablas vectoriales) usando `clip` por celda y guardrail de paridad."""
+    try:
+        finder = page.find_tables()
+    except Exception:
+        return None
+    tables = (
+        [t for t in finder.tables if t.row_count >= 3 and t.col_count >= 2]
+        if finder and finder.tables
+        else []
+    )
+    if not tables:
+        return None
+
+    page_width = float(page.rect.width or 0.0)
+    mid_x = page_width / 2.0
+    table_rects = [pymupdf.Rect(t.bbox) for t in tables]
+
+    raw_items: list[tuple[pymupdf.Rect, bool, str]] = []
+    for table, rect in zip(tables, table_rects):
+        table_md = _extract_vector_table_md_by_clip(page, table)
+        if table_md:
+            is_wide = (
+                layout == "double_column"
+                and page_width > 0.0
+                and (rect.x1 - rect.x0) >= page_width * 0.55
+                and rect.x0 < mid_x - 15.0
+                and rect.x1 > mid_x + 15.0
+            )
+            raw_items.append((rect, is_wide, table_md))
+
+    for blk in page.get_text("blocks"):
+        if len(blk) < 7 or blk[6] != 0 or not str(blk[4]).strip():
+            continue
+        br = pymupdf.Rect(float(blk[0]), float(blk[1]), float(blk[2]), float(blk[3]))
+        cx, cy = (br.x0 + br.x1) / 2.0, (br.y0 + br.y1) / 2.0
+        if any(
+            tr.x0 - 2.0 <= cx <= tr.x1 + 2.0 and tr.y0 - 2.0 <= cy <= tr.y1 + 2.0
+            for tr in table_rects
+        ):
+            continue
+        plain_md = _format_plain_page_to_markdown(str(blk[4]).strip())
+        if not plain_md.strip():
+            continue
+        is_wide = (
+            layout == "double_column"
+            and page_width > 0.0
+            and (br.x1 - br.x0) >= page_width * 0.55
+            and br.x0 < mid_x - 15.0
+            and br.x1 > mid_x + 15.0
+        )
+        raw_items.append((br, is_wide, plain_md.strip()))
+
+    if not raw_items:
+        return None
+
+    if layout == "double_column" and page_width > 0.0:
+        col_rects = [rect for rect, is_wide, _ in raw_items if not is_wide]
+        col_top_y = min((r.y0 for r in col_rects), default=float("inf"))
+        col_bottom_y = max((r.y1 for r in col_rects), default=float("-inf"))
+
+        def _sort_key(item: tuple[pymupdf.Rect, bool, str]) -> tuple[int, float, float]:
+            rect, is_wide, _ = item
+            if is_wide:
+                if rect.y1 <= col_top_y + 5.0:
+                    group = 0
+                elif rect.y0 >= col_bottom_y - 5.0:
+                    group = 4
+                else:
+                    group = 2
+            else:
+                group = 1 if (rect.x0 + rect.x1) / 2.0 < mid_x else 3
+            return (group, round(float(rect.y0), 1), round(float(rect.x0), 1))
+
+        ordered_items = sorted(raw_items, key=_sort_key)
+    else:
+        ordered_items = sorted(
+            raw_items,
+            key=lambda item: (round(float(item[0].y0), 1), round(float(item[0].x0), 1)),
+        )
+
+    out = "\n\n".join(content for _, _, content in ordered_items if content).strip()
+    if "| ---" not in out:
+        return None
+    missing_total, _, _ = _count_missing_spanish_decimals(page.get_text("text"), out)
+    if missing_total > 0:
+        return None
     return _normalize_spanish_thousands(out)
 
 
@@ -726,7 +951,16 @@ def extract_hybrid_markdown(
                 )
                 markdown_parts.append(_extract_clean_vector_table_page_cpu(doc, p_idx))
             else:
-                enqueue_table_page(page, p_idx)
+                clip_md = _extract_vector_tables_page_cpu(page, layout=layout)
+                if clip_md is not None:
+                    flush_table_batch()
+                    logger.info(
+                        "  -> Extrayendo tablas vectoriales por clip de celda (pág. %d) en CPU (0%% déficit decimal)...",
+                        human_page,
+                    )
+                    markdown_parts.append(clip_md)
+                else:
+                    enqueue_table_page(page, p_idx)
         else:
             flush_table_batch()
             raw_page_text = (
