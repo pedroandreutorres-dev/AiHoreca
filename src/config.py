@@ -32,6 +32,7 @@ HF_SYNC_DEBOUNCE_SECONDS = float(os.getenv("HF_SYNC_DEBOUNCE_SECONDS", "15.0"))
 
 # Política de retención en producción (RGPD art. 5.1.e): sesiones sin actividad durante más de N días se eliminan en origen
 SESSION_RETENTION_DAYS = int(os.getenv("SESSION_RETENTION_DAYS", "90"))
+CONTACT_EMAIL = (os.getenv("CONTACT_EMAIL") or "pedroandreutorres@gmail.com").strip()
 
 # Auditoría local de logs (carpetas ignoradas por Git dentro de data/logs/)
 SESSION_ARCHIVE_DIR = LOGS_DIR / "sesiones"
@@ -93,6 +94,7 @@ def load_environment() -> None:
                 "GEMINI_FAST_MODEL",
                 "GEMINI_REASONING_MODEL",
                 "GEMINI_FALLBACK_MODELS",
+                "CONTACT_EMAIL",
             ):
                 if k in st.secrets and not os.getenv(k):
                     os.environ[k] = str(st.secrets[k])

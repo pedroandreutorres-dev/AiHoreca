@@ -18,7 +18,10 @@ from typing import Iterable, Optional
 import pymupdf
 
 from src.config import BOUNDARIES_CACHE_PATH, PROCESSED_DATA_DIR, RAW_DATA_DIR
-from src.ingestion.pdf_ingestor import _apply_text_markers
+from src.ingestion.pdf_ingestor import (
+    _apply_text_markers,
+    _extract_bilingual_right_es_page_text,
+)
 from src.ingestion.schemas import (
     CorpusValidationReport,
     DocumentManifestEntry,
@@ -313,11 +316,16 @@ def _extract_manifest_pdf_text(
     end_page = manifest_entry.end_page if manifest_entry else total_pages
     skip_pages = set(manifest_entry.skip_pages) if manifest_entry else set()
 
+    is_bilingual = bool(manifest_entry and manifest_entry.layout == "bilingual_right_es")
     pdf_chunks: list[str] = []
     for human_page in range(max(1, start_page), min(end_page, total_pages) + 1):
         if human_page in skip_pages:
             continue
-        pdf_chunks.append(doc[human_page - 1].get_text("text", sort=sort))
+        page_obj = doc[human_page - 1]
+        if is_bilingual:
+            pdf_chunks.append(_extract_bilingual_right_es_page_text(page_obj))
+        else:
+            pdf_chunks.append(page_obj.get_text("text", sort=sort))
     doc.close()
 
     extracted = "\n".join(pdf_chunks)

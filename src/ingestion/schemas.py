@@ -74,9 +74,13 @@ class DocumentManifestEntry(DocumentBoundary):
             "'modificacion' o 'erratas'."
         ),
     )
-    layout: Literal["single_column", "double_column", "scanned_ocr"] = Field(
+    layout: Literal["single_column", "double_column", "scanned_ocr", "bilingual_right_es"] = Field(
         default="single_column",
         description="Familia de maquetación del PDF para despachar el adaptador de extracción adecuado.",
+    )
+    subsector: Literal["general", "alojamiento", "restauracion"] = Field(
+        default="general",
+        description="Ámbito subsectorial del convenio ('general' para convenios únicos, 'alojamiento' para hospedaje/hoteles, 'restauracion' para bares/restaurantes/catering).",
     )
     force_gemini_pages: list[int] = Field(
         default_factory=list,

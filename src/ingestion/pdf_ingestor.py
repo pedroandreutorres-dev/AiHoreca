@@ -62,7 +62,13 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"\d{1,5}\s*/\s*20[12]\d$|"
     r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
     r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}\s*\d+|"
-    r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}"
+    r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}|"
+    r"(?:e?k\\?cv\s+gao-[a-z0-9-]+)|"
+    r"gipuzkoako\s+aldizkari\s+ofiziala|"
+    r"n[úu]mero\s*\|\s*zenbakia\b|"
+    r"www\.gipuzkoa\.eus\b|"
+    r"lg\.?:?\s*s\.?s\.?\s*\d+|"
+    r"eusko\s+jaurlaritza"
     r").*$"
 )
 
@@ -195,7 +201,8 @@ def _apply_text_markers(
 
 def _format_plain_page_to_markdown(page_text: str) -> str:
     """Formatea en CPU una página de texto articulado eliminando ruido genérico de boletín oficial."""
-    raw_lines = page_text.splitlines()
+    normalized_text = re.sub(r"[\u2000-\u200b\u00a0]+", " ", page_text or "").replace("\xad", "")
+    raw_lines = normalized_text.splitlines()
     merged_lines: list[str] = []
     idx = 0
     while idx < len(raw_lines):
@@ -526,6 +533,187 @@ def _is_scanned_page(page: pymupdf.Page, min_chars: int = 80) -> bool:
     return text_len < min_chars and bool(page.get_images())
 
 
+_NON_SPANISH_COOFFICIAL_TOKENS: frozenset[str] = frozenset(
+    {
+        "eranskina", "artikulua", "kapitulua", "atala", "xedapen", "gehigarria",
+        "maila", "mailak", "mailako", "ordu", "orduko", "orduetan",
+        "hitzarmen", "hitzarmena", "hitzarmenaren", "hitzarmeneko",
+        "kolektiboa", "kolektiboaren", "kolektiboko",
+        "langile", "langileen", "langileek", "langileak", "lanbide",
+        "soldata", "oinarrizko", "ordain", "ordainduko",
+        "zerbitz", "zerbitzaria", "zerbitzariak", "zerbitzu", "zerbitzuak", "zerbitzuen",
+        "aparteko", "kapital", "aseguratua", "indargabetua", "zenbatekoa",
+        "eta", "edo", "dira", "dute", "baino", "arte", "arteko",
+        "urteko", "urtean", "urterako", "hilean", "hileko", "balioa",
+        "mantenua", "hirurtekoa", "hirurtekotan", "hirurtekoaren",
+        "okupazioak", "lanpostuak", "taldea", "taldeak",
+        "kategoria", "kategoriak", "korrelatiboa", "ostalaritzaren", "ostalaritzako",
+        "gipuzkoako", "ostatuen", "jatetxe", "sukalde", "sukaldaria", "laguntzailea",
+        "eltzezaina", "garbitzailea", "solairu", "egun", "eremu", "funtzionala",
+        "antzinatasuna", "antzinatasunik", "gabeko", "gaueko", "lanaren",
+        "guztira", "hil", "osoa", "partziala", "kontzeptua", "heriotza",
+        "baliaezintasun", "istripuak", "jaiegunaren", "abenduaren", "azpisektoreko",
+        "enpresen", "aldirako", "bitarteko", "egindako", "gidaria", "atezaina",
+        "zilargintza", "lentzeriako", "plantxako", "joskintzako", "txikiagoa", "handiagoa",
+        "lehen", "bigarren", "hirugarren", "laugarren", "bosgarren",
+        "annex", "capítol", "treballadors", "conveni", "artigo", "táboa", "traballadores",
+    }
+)
+
+_SPANISH_LANGUAGE_TOKENS: frozenset[str] = frozenset(
+    {
+        "anexo", "anexos", "artículo", "articulo", "capítulo", "capitulo",
+        "disposición", "disposicion", "nivel", "niveles", "categoría", "categoria",
+        "categorías", "categorias", "convenio", "colectivo", "grupo", "profesional",
+        "salario", "salariales", "salarios", "ocupaciones", "puestos", "capital",
+        "asegurado", "manutención", "manutencion", "trienio", "trienios", "valor",
+        "mensual", "anual", "antigüedad", "antiguedad", "camarero", "camarera",
+        "cocinero", "ayudante", "marmitón", "pinche", "limpieza",
+        "del", "las", "los", "para", "con", "por", "sobre", "entre", "hasta", "según", "segun",
+        "servicios", "extraordinarios", "extraordinarias", "trabajo", "trabajadores",
+        "trabajadoras", "días", "dias", "horas", "hora", "año", "años", "mes",
+        "completa", "parcial", "nocturnidad", "nocturno", "festivo", "festivos",
+        "diciembre", "extinto", "hostelería", "hosteleria", "alojamientos",
+        "restauración", "restauracion", "gastos", "mantenimiento", "administración",
+        "administracion", "recepción", "recepcion", "muerte", "accidente",
+        "enfermedad", "invalidez", "conductor", "portero", "correlativa", "tablas",
+    }
+)
+
+
+def _normalize_unicode_spaces(text: str) -> str:
+    """Normaliza espacios tipográficos Unicode (p. ej. U+2005/NBSP) y guiones blandos."""
+    cleaned = re.sub(r"[\u2000-\u200b\u00a0]+", " ", text or "")
+    # Conserva como raya (–) el carácter U+00AD cuando actúa como símbolo de "sin importe" al final de puntos o espacios.
+    cleaned = re.sub(r"(?:(?<=^)|(?<=\s)|(?<=\.))\xad(?=\s|$)", "–", cleaned)
+    return cleaned.replace("\xad", "")
+
+
+def _is_coofficial_non_spanish_text(text: str) -> bool:
+    """Clasifica determinísticamente si un bloque está redactado en lengua cooficial distinta del castellano."""
+    cleaned = _normalize_unicode_spaces(text).lower()
+    tokens = re.findall(r"[a-záéíóúüñ]{2,}", cleaned)
+    if not tokens:
+        return False
+    non_es_score = sum(1 for tok in tokens if tok in _NON_SPANISH_COOFFICIAL_TOKENS)
+    es_score = sum(1 for tok in tokens if tok in _SPANISH_LANGUAGE_TOKENS)
+    return (non_es_score >= 2 and non_es_score > es_score) or (
+        non_es_score >= 1 and es_score == 0 and len(tokens) <= 4
+    )
+
+
+def _extract_bilingual_right_es_page_text(
+    page: pymupdf.Page,
+    exclude_rects: Optional[list[pymupdf.Rect]] = None,
+) -> str:
+    """Extrae únicamente el texto en castellano (columna derecha y bloques/tablas anchos en castellano) de páginas bilingües."""
+    page_width = float(page.rect.width or 0.0)
+    page_height = float(page.rect.height or 0.0)
+    if page_width <= 0.0:
+        return _normalize_unicode_spaces(page.get_text("text"))
+
+    mid_x = page_width / 2.0
+    y_top = 34.0
+    y_bot = page_height - 24.0 if page_height > 80.0 else page_height
+    x_right_margin = page_width - 26.0 if page_width > 100.0 else page_width
+
+    effective_exclude = exclude_rects
+    if effective_exclude is None:
+        auto_exclude: list[pymupdf.Rect] = []
+        try:
+            finder = page.find_tables()
+            for t in (finder.tables if finder and finder.tables else []):
+                tr = pymupdf.Rect(t.bbox)
+                if (
+                    (tr.x1 - tr.x0) >= page_width * 0.55
+                    and tr.x0 < mid_x - 12.0
+                    and tr.x1 > mid_x + 12.0
+                ):
+                    tbl_txt = _normalize_unicode_spaces(page.get_text("text", clip=tr))
+                    if _is_coofficial_non_spanish_text(tbl_txt):
+                        auto_exclude.append(tr)
+        except Exception:
+            pass
+        effective_exclude = auto_exclude
+
+    dict_data = page.get_text("dict")
+    items: list[tuple[float, float, str]] = []
+
+    for blk in dict_data.get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        bx0, by0, bx1, by1 = [float(v) for v in blk.get("bbox", (0, 0, 0, 0))]
+        if by1 <= y_top or by0 >= y_bot or bx0 >= x_right_margin:
+            continue
+        cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+        if effective_exclude and any(
+            r.x0 - 2.0 <= cx <= r.x1 + 2.0 and r.y0 - 2.0 <= cy <= r.y1 + 2.0
+            for r in effective_exclude
+        ):
+            continue
+
+        raw_lines = blk.get("lines", [])
+        if not raw_lines:
+            continue
+
+        # Descarta bloque completo en columna izquierda
+        if bx1 <= mid_x + 12.0:
+            continue
+
+        is_wide = (bx1 - bx0) >= page_width * 0.50 and bx0 < mid_x - 12.0 and bx1 > mid_x + 12.0
+        if is_wide:
+            # Detectar caso de fórmulas o columnas paralelas mezcladas por PyMuPDF en el mismo bloque (ej. izquierda euskera / derecha castellano)
+            left_lines: list[tuple[float, float, str]] = []
+            right_lines: list[tuple[float, float, str]] = []
+            for ln in raw_lines:
+                lx0, ly0, lx1, ly1 = [float(v) for v in ln["bbox"]]
+                ltxt = _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+                if not ltxt or _BULLETIN_HEADER_NOISE.match(ltxt):
+                    continue
+                if lx1 <= mid_x - 5.0:
+                    left_lines.append((ly0, lx0, ltxt))
+                elif lx0 >= mid_x - 12.0:
+                    right_lines.append((ly0, lx0, ltxt))
+            if left_lines and right_lines and _is_coofficial_non_spanish_text(" ".join(t for _, _, t in left_lines)):
+                kept_lines = [t for _, _, t in sorted(right_lines)]
+                joined = "\n".join(kept_lines).strip()
+                if joined:
+                    items.append((by0, mid_x, joined))
+                continue
+
+            full_txt = "\n".join(
+                _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+                for ln in raw_lines
+            ).strip()
+            if not full_txt or _is_coofficial_non_spanish_text(full_txt):
+                continue
+
+        clean_blk_lines: list[str] = []
+        for ln in raw_lines:
+            lx0, ly0 = float(ln["bbox"][0]), float(ln["bbox"][1])
+            if lx0 >= x_right_margin:
+                continue
+            ltxt = _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+            if not ltxt:
+                continue
+            if _BULLETIN_HEADER_NOISE.match(ltxt):
+                continue
+            if re.fullmatch(r"\d{1,5}", ltxt) and (
+                ly0 <= 60.0 or ly0 >= page_height - 55.0 or len(raw_lines) == 1
+            ):
+                continue
+            clean_blk_lines.append(ltxt)
+
+        if clean_blk_lines:
+            joined_blk = "\n".join(clean_blk_lines)
+            if _is_coofficial_non_spanish_text(joined_blk):
+                continue
+            items.append((by0, bx0, joined_blk))
+
+    items.sort(key=lambda it: (round(it[0], 1), round(it[1], 1)))
+    return "\n\n".join(txt for _, _, txt in items if txt.strip())
+
+
 def _extract_double_column_page_text(page: pymupdf.Page) -> str:
     """Extrae texto respetando el orden columna izquierda -> columna derecha en boletines a 2 columnas.
 
@@ -659,28 +847,86 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
     return _normalize_spanish_thousands(out)
 
 
-def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
+def _extract_vector_table_md_by_clip(
+    page: pymupdf.Page,
+    table: object,
+    *,
+    bilingual_right_es: bool = False,
+) -> str:
     """Reconstruye en CPU una tabla vectorial extrayendo texto por rectángulo de celda (`clip`) para evitar fusión de decimales."""
     table_rect = pymupdf.Rect(table.bbox)
     table_width = max(1.0, float(table_rect.width or 1.0))
+    page_width = float(page.rect.width or 0.0)
+    mid_x = page_width / 2.0
+
+    # Si es tabla ancha bilingüe lado-a-lado (columnas izq en lengua cooficial y col der en castellano),
+    # conserva solo las columnas derechas en castellano cuando estén claramente separadas por mid_x.
+    valid_orig_cols: Optional[list[int]] = None
+    if (
+        bilingual_right_es
+        and page_width > 0.0
+        and table_width >= page_width * 0.55
+        and table_rect.x0 < mid_x - 12.0
+        and table_rect.x1 > mid_x + 12.0
+        and table.rows
+    ):
+        ncols_probe = max((len(r.cells) for r in table.rows), default=0)
+        if ncols_probe >= 3:
+            col_cxs: dict[int, list[float]] = {c: [] for c in range(ncols_probe)}
+            col_texts: dict[int, list[str]] = {c: [] for c in range(ncols_probe)}
+            for r in table.rows:
+                for ci, cb in enumerate(r.cells):
+                    if cb is None:
+                        continue
+                    cr = pymupdf.Rect(cb)
+                    ctxt = _normalize_unicode_spaces(page.get_text("text", clip=cr)).strip()
+                    if ctxt:
+                        col_cxs[ci].append((cr.x0 + cr.x1) / 2.0)
+                        col_texts[ci].append(ctxt)
+            left_cols = [
+                ci for ci in range(ncols_probe)
+                if col_cxs[ci] and (sum(col_cxs[ci]) / len(col_cxs[ci])) < mid_x - 10.0
+            ]
+            right_cols = [
+                ci for ci in range(ncols_probe)
+                if col_cxs[ci] and (sum(col_cxs[ci]) / len(col_cxs[ci])) >= mid_x - 15.0
+            ]
+            if left_cols and right_cols:
+                left_blob = " ".join(t for ci in left_cols for t in col_texts[ci])
+                right_blob = " ".join(t for ci in right_cols for t in col_texts[ci])
+                if _is_coofficial_non_spanish_text(left_blob) and not _is_coofficial_non_spanish_text(right_blob):
+                    valid_orig_cols = right_cols
+
     raw_rows: list[list[str]] = []
+    raw_row_segs: list[list[list[tuple[float, str]]]] = []
+    cell_x_bounds: list[tuple[float, float]] = []
     row_colspans: list[bool] = []
     for row in table.rows:
-        is_colspan_row = (
-            len(row.cells) >= 2
-            and row.cells[0] is not None
-            and all(c is None for c in row.cells[1:])
-            and float(pymupdf.Rect(row.cells[0]).width) >= table_width * 0.70
+        orig_cells = (
+            [row.cells[ci] for ci in valid_orig_cols]
+            if valid_orig_cols is not None
+            else list(row.cells)
         )
-        col_lines: list[list[tuple[int, str]]] = []
+        is_colspan_row = (
+            len(orig_cells) >= 2
+            and orig_cells[0] is not None
+            and all(c is None for c in orig_cells[1:])
+            and float(pymupdf.Rect(orig_cells[0]).width) >= (table_width * 0.70 if valid_orig_cols is None else table_width * 0.30)
+        )
+        col_lines: list[list[tuple[int, str, list[tuple[float, str]]]]] = []
         any_multi = False
-        for cb in row.cells:
+        for c_pos, cb in enumerate(orig_cells):
             if cb is None:
                 col_lines.append([])
                 continue
             cell_rect = pymupdf.Rect(cb)
+            while len(cell_x_bounds) <= c_pos:
+                cell_x_bounds.append((float(cell_rect.x0), float(cell_rect.x1)))
+            old_x0, old_x1 = cell_x_bounds[c_pos]
+            cell_x_bounds[c_pos] = (min(old_x0, float(cell_rect.x0)), max(old_x1, float(cell_rect.x1)))
+
             d = page.get_text("dict", clip=cell_rect)
-            y_buckets: dict[int, list[tuple[float, str]]] = {}
+            y_buckets: dict[int, list[tuple[float, float, str]]] = {}
             for blk in d.get("blocks", []):
                 if blk.get("type") != 0:
                     continue
@@ -690,20 +936,44 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
                     cy = (ly0 + ly1) / 2.0
                     if not (cell_rect.x0 <= cx <= cell_rect.x1 and cell_rect.y0 <= cy <= cell_rect.y1):
                         continue
-                    txt = "".join(sp.get("text", "") for sp in ln.get("spans", [])).strip()
+                    raw_txt = _normalize_unicode_spaces(
+                        "".join(sp.get("text", "") for sp in ln.get("spans", []))
+                    )
+                    txt = raw_txt.strip()
                     if not txt:
                         continue
+                    eff_lx0 = float(lx0)
+                    lead_ws = len(raw_txt) - len(raw_txt.lstrip())
+                    if lead_ws >= 4 and len(raw_txt) > lead_ws:
+                        eff_lx0 = float(lx0) + (lead_ws / len(raw_txt)) * max(0.0, float(lx1) - float(lx0))
+                    if bilingual_right_es:
+                        stripped_dots = re.sub(r"\.{3,}", " ", txt).strip()
+                        if not stripped_dots:
+                            continue
+                        txt = stripped_dots
                     y_key = round(float(ly0) / 3.0) * 3
-                    y_buckets.setdefault(y_key, []).append((float(lx0), txt))
-            ordered = [
-                (yk, " ".join(t for _, t in sorted(y_buckets[yk], key=lambda item: item[0])).strip())
-                for yk in sorted(y_buckets)
-            ]
+                    y_buckets.setdefault(y_key, []).append((eff_lx0, float(lx1), txt))
+            ordered: list[tuple[int, str, list[tuple[float, str]]]] = []
+            for yk in sorted(y_buckets):
+                segs_raw = sorted(y_buckets[yk], key=lambda item: item[0])
+                segs_clean: list[tuple[float, str]] = []
+                for sx0, _, stxt in segs_raw:
+                    # Divide un mismo span que mezcle "etiqueta    valor" separados por líder de puntos o >=4 espacios
+                    if bilingual_right_es and re.search(r"\S(?:\.{2,}|\s{4,})\S", stxt):
+                        parts = [p.strip() for p in re.split(r"\s{3,}", re.sub(r"\.{2,}", "    ", stxt)) if p.strip()]
+                        for pi, pt in enumerate(parts):
+                            segs_clean.append((sx0 + (pi * 80.0), pt))
+                    else:
+                        segs_clean.append((sx0, stxt))
+                joined_line = " ".join(t for _, _, t in segs_raw).strip()
+                if bilingual_right_es:
+                    joined_line = re.sub(r"\s{2,}", " ", joined_line)
+                ordered.append((yk, joined_line, segs_clean))
             if len(ordered) >= 2:
                 any_multi = True
             col_lines.append(ordered)
 
-        all_ys = sorted({yk for cl in col_lines for yk, _ in cl})
+        all_ys = sorted({yk for cl in col_lines for yk, _, _ in cl})
         y_clusters: list[list[int]] = []
         for y in all_ys:
             if not y_clusters or y - y_clusters[-1][-1] > 5:
@@ -714,24 +984,98 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
         multi_col_clusters = sum(
             1
             for clus in y_clusters
-            if sum(1 for cl in col_lines if any(yk in clus for yk, _ in cl)) >= 2
+            if sum(1 for cl in col_lines if any(yk in clus for yk, _, _ in cl)) >= 2
         )
 
         if any_multi and multi_col_clusters >= 2:
             for clus in y_clusters:
                 cset = set(clus)
-                sub = [" ".join(t for yk, t in cl if yk in cset).strip() for cl in col_lines]
+                sub = [" ".join(t for yk, t, _ in cl if yk in cset).strip() for cl in col_lines]
+                sub_segs = [
+                    [sg for yk, _, sgs in cl if yk in cset for sg in sgs]
+                    for cl in col_lines
+                ]
                 if any(sub):
                     raw_rows.append(sub)
+                    raw_row_segs.append(sub_segs)
                     row_colspans.append(False)
         else:
-            joined = [" ".join(t for _, t in cl).strip() for cl in col_lines]
+            joined = [" ".join(t for _, t, _ in cl).strip() for cl in col_lines]
+            joined_segs = [[sg for _, _, sgs in cl for sg in sgs] for cl in col_lines]
             if any(joined):
                 raw_rows.append(joined)
+                raw_row_segs.append(joined_segs)
                 row_colspans.append(is_colspan_row)
 
     if not raw_rows:
         return ""
+
+    # Divide columnas colapsadas por líder de puntos cuando >=2 sub-columnas están alineadas horizontalmente (ej. Nivel ... Total mes (€))
+    if bilingual_right_es and len(raw_rows) >= 3:
+        ncols_tmp = max(len(r) for r in raw_rows)
+        new_cols_per_row: list[list[str]] = [[] for _ in raw_rows]
+        for ci in range(ncols_tmp):
+            col_segs_rows = [
+                raw_row_segs[ri][ci] if ri < len(raw_row_segs) and ci < len(raw_row_segs[ri]) else []
+                for ri in range(len(raw_rows))
+            ]
+            two_seg_rows = [sgs for sgs in col_segs_rows if len(sgs) == 2 and (sgs[1][0] - sgs[0][0]) >= 35.0]
+            can_split = (
+                len(two_seg_rows) >= max(2, len(raw_rows) // 2)
+                and ci < len(cell_x_bounds)
+                and (cell_x_bounds[ci][1] - cell_x_bounds[ci][0]) >= 90.0
+            )
+            if can_split:
+                left_max_x = max(sgs[0][0] for sgs in two_seg_rows)
+                right_min_x = min(sgs[1][0] for sgs in two_seg_rows)
+                split_x = (left_max_x + right_min_x) / 2.0
+                for ri, row in enumerate(raw_rows):
+                    sgs = col_segs_rows[ri]
+                    val = row[ci] if ci < len(row) else ""
+                    if row_colspans[ri] and ci == 0 and all(not c for c in row[1:]):
+                        new_cols_per_row[ri].extend([val, ""])
+                    elif len(sgs) >= 2 and (sgs[-1][0] - sgs[0][0]) >= 35.0:
+                        l_part = " ".join(t for x, t in sgs if x < split_x).strip()
+                        r_part = " ".join(t for x, t in sgs if x >= split_x).strip()
+                        new_cols_per_row[ri].extend([l_part, r_part])
+                    elif len(sgs) == 1:
+                        if sgs[0][0] >= split_x:
+                            new_cols_per_row[ri].extend(["", sgs[0][1]])
+                        else:
+                            new_cols_per_row[ri].extend([sgs[0][1], ""])
+                    else:
+                        new_cols_per_row[ri].extend([val, ""])
+            else:
+                for ri, row in enumerate(raw_rows):
+                    new_cols_per_row[ri].append(row[ci] if ci < len(row) else "")
+        raw_rows = new_cols_per_row
+
+    # En tablas bilingües anchos completos que apilan euskera arriba y castellano abajo (ej. Anexo I P31),
+    # descarta el bloque inicial en lengua cooficial o toda la tabla si es íntegramente no castellana.
+    if bilingual_right_es:
+        non_empty_rows_txt = [" ".join(r) for r in raw_rows if any(r)]
+        if non_empty_rows_txt and _is_coofficial_non_spanish_text(non_empty_rows_txt[0]):
+            spanish_start_idx: Optional[int] = None
+            for ri, r in enumerate(raw_rows):
+                r_txt = " ".join(r).strip()
+                if not r_txt or _is_coofficial_non_spanish_text(r_txt):
+                    continue
+                es_hits = sum(
+                    1
+                    for tok in re.findall(r"[a-záéíóúüñ]{2,}", r_txt.lower())
+                    if tok in _SPANISH_LANGUAGE_TOKENS
+                )
+                if es_hits >= 2:
+                    spanish_start_idx = ri
+                    break
+            if spanish_start_idx is None:
+                return ""
+            raw_rows = raw_rows[spanish_start_idx:]
+            row_colspans = row_colspans[spanish_start_idx:]
+        else:
+            whole_tbl_txt = " ".join(non_empty_rows_txt)
+            if _is_coofficial_non_spanish_text(whole_tbl_txt):
+                return ""
 
     ncols = max(len(r) for r in raw_rows)
     padded = [r + [""] * (ncols - len(r)) for r in raw_rows]
@@ -751,6 +1095,10 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
         and len(trimmed[0]) >= 2
         and trimmed[0][0]
         and all(not c for c in trimmed[0][1:])
+        and not (
+            not row_colspans[0]
+            and any(_SPANISH_DECIMALS_RE.search(c) for c in trimmed[1][1:])
+        )
     ):
         banner_headings.append(f"### {_esc(trimmed[0][0])}")
         trimmed = trimmed[1:]
@@ -760,13 +1108,13 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
     banner_heading = ("\n\n".join(banner_headings) + "\n\n") if banner_headings else ""
 
     def _merge_header_rows(top_row: list[str], sub_row: list[str], default_col0: str = "") -> list[str]:
-        merged = [top_row[0] or default_col0]
+        merged = [top_row[0] or sub_row[0] or default_col0]
         last_top = ""
         for col_idx, sub_h in enumerate(sub_row[1:], start=1):
             if col_idx < len(top_row) and top_row[col_idx]:
                 last_top = top_row[col_idx]
             if last_top and len(last_top) > 2:
-                merged.append(f"{last_top} ({sub_h})")
+                merged.append(f"{last_top} ({sub_h})" if sub_h else last_top)
             elif last_top:
                 merged.append(f"{last_top} {sub_h}".strip())
             else:
@@ -774,6 +1122,16 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
         return merged
 
     if len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
+        hdr = _merge_header_rows(trimmed[0], trimmed[1])
+        body = trimmed[2:]
+    elif (
+        len(trimmed) >= 2
+        and not trimmed[0][0]
+        and trimmed[1][0]
+        and all(trimmed[0][1:])
+        and all(trimmed[1][1:])
+        and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
+    ):
         hdr = _merge_header_rows(trimmed[0], trimmed[1])
         body = trimmed[2:]
     elif (
@@ -791,8 +1149,52 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
         hdr = [f"Columna {idx + 1}" for idx in range(len(trimmed[0]))]
         body = trimmed
     else:
-        hdr = trimmed[0]
+        hdr = list(trimmed[0])
         body = trimmed[1:]
+
+    # Rellenar cabeceras vacías en columnas [1:] para evitar SPLIT_COLSPAN_HEADER manteniendo nombres distintos
+    if bilingual_right_es:
+        seen_headers: set[str] = {_esc(hdr[0]).lower()} if hdr else set()
+        for ci in range(1, len(hdr)):
+            if not _esc(hdr[ci]):
+                col_has_dec = any(_SPANISH_DECIMALS_RE.search(r[ci]) for r in body if ci < len(r))
+                candidate = "Importe / Valor" if (col_has_dec and ci == 1) else f"Columna {ci + 1}"
+                if candidate.lower() in seen_headers:
+                    candidate = f"Observaciones ({ci + 1})"
+                hdr[ci] = candidate
+            seen_headers.add(_esc(hdr[ci]).lower())
+
+        # Reagrupa filas de descripción partidas verticalmente cuando la fila i carece de valor y la fila i+1 aporta el importe
+        merged_body: list[list[str]] = []
+        bi = 0
+        while bi < len(body):
+            row = list(body[bi])
+            if (
+                len(row) >= 2
+                and row[0]
+                and all(not c for c in row[1:])
+                and bi + 1 < len(body)
+                and any(body[bi + 1][1:])
+                and (
+                    not body[bi + 1][0]
+                    or row[0].endswith("-")
+                    or body[bi + 1][0][:1].islower()
+                )
+            ):
+                nxt = body[bi + 1]
+                if nxt[0]:
+                    if row[0].endswith("-"):
+                        row[0] = f"{row[0][:-1]}{nxt[0]}".strip()
+                    else:
+                        row[0] = f"{row[0]} {nxt[0]}".strip()
+                for ci in range(1, len(row)):
+                    row[ci] = nxt[ci] if ci < len(nxt) else ""
+                merged_body.append(row)
+                bi += 2
+                continue
+            merged_body.append(row)
+            bi += 1
+        body = merged_body
 
     md_lines = [
         "| " + " | ".join(_esc(c) for c in hdr) + " |",
@@ -801,6 +1203,227 @@ def _extract_vector_table_md_by_clip(page: pymupdf.Page, table: object) -> str:
     for r in body:
         md_lines.append("| " + " | ".join(_esc(c) for c in r) + " |")
     return banner_heading + "\n".join(md_lines)
+
+
+def _format_dotted_leader_block_to_md(block_text: str) -> Optional[str]:
+    """Convierte un bloque textual con líneas de puntos (`..... importe`) en tabla Markdown GFM limpia."""
+    raw_lines = [_normalize_unicode_spaces(ln).strip() for ln in block_text.splitlines() if ln.strip()]
+    if len(raw_lines) < 2:
+        return None
+    dotted_count = sum(1 for ln in raw_lines if re.search(r"\.{3,}", ln))
+    if dotted_count < 2:
+        return None
+
+    # Reensambla líneas partidas justo antes de puntos (p. ej. "Muerte o invalidez ... enfermedad ..\n...... 8.017")
+    joined_lines: list[str] = []
+    idx = 0
+    while idx < len(raw_lines):
+        curr = raw_lines[idx]
+        if (
+            idx + 1 < len(raw_lines)
+            and not re.search(r"(?:\d{1,3}(?:\.\d{3})*,\d{2}|\b\d{1,3}(?:\.\d{3})+\b|[–\-—])\s*$", curr)
+            and re.match(r"^\.{2,}", raw_lines[idx + 1])
+        ):
+            nxt = raw_lines[idx + 1]
+            curr_clean = re.sub(r"\.{2,}$", "", curr).rstrip("- ").strip() if curr.endswith("-") else f"{curr.rstrip('. ')} "
+            joined_lines.append(f"{curr_clean}{nxt}".strip())
+            idx += 2
+            continue
+        joined_lines.append(curr)
+        idx += 1
+
+    header_tokens: list[str] = []
+    parsed_rows: list[list[str]] = []
+    trailing_lines: list[str] = []
+
+    row_re = re.compile(
+        r"^(.+?)\s*\.{3,}\s*"
+        r"(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|[–\-—]|0\b)(?:\s+(\d{1,3}(?:\.\d{3})*(?:,\d{2})?))?\s*$"
+    )
+
+    for ln in joined_lines:
+        m = row_re.match(ln)
+        if m:
+            lbl = m.group(1).strip(" .")
+            v1 = m.group(2).strip()
+            v2 = (m.group(3) or "").strip()
+            if v2:
+                parsed_rows.append([lbl, v1, v2])
+            else:
+                parsed_rows.append([lbl, v1])
+        elif not parsed_rows:
+            header_tokens.append(ln)
+        else:
+            trailing_lines.append(ln)
+
+    if len(parsed_rows) < 2:
+        return None
+
+    ncols = max(len(r) for r in parsed_rows)
+    for r in parsed_rows:
+        while len(r) < ncols:
+            r.append("")
+
+    # Intenta extraer cabecera de la última línea previa si tiene el mismo número de columnas separadas por >=2 espacios
+    hdr: Optional[list[str]] = None
+    extra_intro: list[str] = list(header_tokens)
+    if header_tokens:
+        last_hdr = header_tokens[-1]
+        parts = [p.strip() for p in re.split(r"\s{2,}", last_hdr) if p.strip()]
+        if len(parts) == ncols:
+            hdr = parts
+            extra_intro = header_tokens[:-1]
+        elif ncols == 2 and len(parts) == 1 and re.search(r"(?i)(?:nivel|categor|modalidad|concepto|valor|mes|trienio|hora|€)", parts[0]):
+            if re.search(r"(?i)nivel", parts[0]):
+                hdr = [parts[0], "Importe (€)"]
+            else:
+                hdr = ["Concepto / Modalidad", parts[0]]
+            extra_intro = header_tokens[:-1]
+        elif ncols == 2 and len(header_tokens) >= 2:
+            # Cabecera en 2 líneas cortas (ej. "2026 valor" / "mes (€/mes)")
+            tail_joined = " ".join(header_tokens[-2:]).strip()
+            if len(tail_joined) <= 45 and not tail_joined.endswith("."):
+                hdr = ["Concepto / Modalidad", tail_joined]
+                extra_intro = header_tokens[:-2]
+
+    if hdr is None:
+        hdr = ["Concepto / Nivel", "Valor", "Total"][:ncols]
+
+    md_parts: list[str] = []
+    if extra_intro:
+        md_parts.append(_format_plain_page_to_markdown("\n".join(extra_intro)))
+    tbl_lines = [
+        "| " + " | ".join(h.replace("|", "/").strip() for h in hdr) + " |",
+        "| " + " | ".join(["---"] * ncols) + " |",
+    ]
+    for r in parsed_rows:
+        tbl_lines.append("| " + " | ".join(c.replace("|", "/").strip() for c in r) + " |")
+    md_parts.append("\n".join(tbl_lines))
+    if trailing_lines:
+        md_parts.append(_format_plain_page_to_markdown("\n".join(trailing_lines)))
+    return "\n\n".join(p for p in md_parts if p.strip())
+
+
+def _extract_bilingual_right_es_page_cpu(page: pymupdf.Page) -> str:
+    """Extrae en CPU texto y tablas exclusivamente en castellano de boletines bilingües (ej. BOG/BOTHA)."""
+    page_width = float(page.rect.width or 0.0)
+    page_height = float(page.rect.height or 0.0)
+    mid_x = page_width / 2.0
+    y_top = 34.0
+    y_bot = page_height - 24.0 if page_height > 80.0 else page_height
+    x_right_margin = page_width - 26.0 if page_width > 100.0 else page_width
+
+    try:
+        finder = page.find_tables()
+        raw_tables = list(finder.tables) if finder and finder.tables else []
+    except Exception:
+        raw_tables = []
+
+    # Descarta marcos contenedores externos (<=3 filas) que envuelven otra tabla interna más detallada
+    all_rects = [pymupdf.Rect(t.bbox) for t in raw_tables]
+    filtered_tables: list[tuple[object, pymupdf.Rect]] = []
+    for idx_t, (t, tr) in enumerate(zip(raw_tables, all_rects)):
+        if t.row_count <= 3 and any(
+            idx_o != idx_t
+            and raw_tables[idx_o].row_count > t.row_count
+            and tr.x0 - 6.0 <= o_r.x0
+            and tr.y0 - 6.0 <= o_r.y0
+            and o_r.x1 <= tr.x1 + 6.0
+            and o_r.y1 <= tr.y1 + 6.0
+            for idx_o, o_r in enumerate(all_rects)
+        ):
+            continue
+        filtered_tables.append((t, tr))
+
+    # Todas las tablas detectadas (también las descartadas en euskera) bloquean el texto plano suelto en su interior
+    all_detected_rects = [tr for _, tr in filtered_tables]
+    items: list[tuple[float, float, str]] = []
+
+    for table, rect in filtered_tables:
+        if table.row_count < 2 or table.col_count < 2:
+            continue
+        if page_width > 0.0 and rect.x1 <= mid_x + 12.0:
+            # Tabla íntegramente en la columna izquierda (lengua cooficial)
+            continue
+        is_wide = (rect.x1 - rect.x0) >= page_width * 0.55 and rect.x0 < mid_x - 12.0 and rect.x1 > mid_x + 12.0
+        table_md = _extract_vector_table_md_by_clip(page, table, bilingual_right_es=True)
+        if not table_md or "| ---" not in table_md:
+            continue
+        if is_wide and _is_coofficial_non_spanish_text(table_md):
+            continue
+        items.append((rect.y0, rect.x0, table_md))
+
+    # Procesar los bloques textuales fuera de las tablas vectoriales
+    dict_data = page.get_text("dict")
+    for blk in dict_data.get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        bx0, by0, bx1, by1 = [float(v) for v in blk.get("bbox", (0, 0, 0, 0))]
+        if by1 <= y_top or by0 >= y_bot or bx0 >= x_right_margin or bx1 <= mid_x + 12.0:
+            continue
+        cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+        if any(
+            tr.x0 - 2.0 <= cx <= tr.x1 + 2.0 and tr.y0 - 2.0 <= cy <= tr.y1 + 2.0
+            for tr in all_detected_rects
+        ):
+            continue
+
+        raw_lines = blk.get("lines", [])
+        if not raw_lines:
+            continue
+
+        is_wide = (bx1 - bx0) >= page_width * 0.50 and bx0 < mid_x - 12.0 and bx1 > mid_x + 12.0
+        if is_wide:
+            left_lines: list[tuple[float, str]] = []
+            right_lines: list[tuple[float, str]] = []
+            for ln in raw_lines:
+                lx0, ly0, lx1, _ = [float(v) for v in ln["bbox"]]
+                ltxt = _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+                if not ltxt or _BULLETIN_HEADER_NOISE.match(ltxt):
+                    continue
+                if lx1 <= mid_x - 5.0:
+                    left_lines.append((ly0, ltxt))
+                elif lx0 >= mid_x - 12.0:
+                    right_lines.append((ly0, ltxt))
+            if left_lines and right_lines and _is_coofficial_non_spanish_text(" ".join(t for _, t in left_lines)):
+                block_text = "\n".join(t for _, t in sorted(right_lines))
+            else:
+                block_text = "\n".join(
+                    _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+                    for ln in raw_lines
+                )
+                if _is_coofficial_non_spanish_text(block_text):
+                    continue
+        else:
+            block_lines_clean: list[str] = []
+            for ln in raw_lines:
+                lx0, ly0 = float(ln["bbox"][0]), float(ln["bbox"][1])
+                if lx0 >= x_right_margin:
+                    continue
+                ltxt = _normalize_unicode_spaces("".join(sp.get("text", "") for sp in ln.get("spans", []))).strip()
+                if not ltxt or _BULLETIN_HEADER_NOISE.match(ltxt):
+                    continue
+                if re.fullmatch(r"\d{1,5}", ltxt) and (
+                    ly0 <= 60.0 or ly0 >= page_height - 55.0 or len(raw_lines) == 1
+                ):
+                    continue
+                block_lines_clean.append(ltxt)
+            block_text = "\n".join(block_lines_clean)
+
+        if not block_text.strip() or _is_coofficial_non_spanish_text(block_text):
+            continue
+
+        dotted_md = _format_dotted_leader_block_to_md(block_text)
+        if dotted_md:
+            items.append((by0, bx0, dotted_md))
+        else:
+            formatted = _format_plain_page_to_markdown(block_text).strip()
+            if formatted:
+                items.append((by0, bx0, formatted))
+
+    items.sort(key=lambda it: (round(it[0], 1), round(it[1], 1)))
+    out = "\n\n".join(content for _, _, content in items if content).strip()
+    return _normalize_spanish_thousands(out)
 
 
 def _extract_vector_tables_page_cpu(
@@ -984,6 +1607,13 @@ def extract_hybrid_markdown(
             continue
 
         flush_scanned_batch()
+        if layout == "bilingual_right_es":
+            flush_table_batch()
+            bilingual_md = _extract_bilingual_right_es_page_cpu(page)
+            if bilingual_md:
+                markdown_parts.append(bilingual_md)
+            continue
+
         if _page_has_complex_table(page):
             if _has_clean_vector_table_grid(page):
                 flush_table_batch()
@@ -1129,7 +1759,10 @@ def _serialize_manifest_entry(entry: DocumentManifestEntry) -> dict:
     return {
         key: value
         for key, value in raw.items()
-        if key in core_keys or (key == "layout" and value != "single_column") or bool(value)
+        if key in core_keys
+        or (key == "layout" and value != "single_column")
+        or (key == "subsector" and value != "general")
+        or bool(value)
     }
 
 

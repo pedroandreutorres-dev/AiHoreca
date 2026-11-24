@@ -40,6 +40,7 @@ from src.ingestion.pdf_ingestor import (
     _extract_vector_tables_page_cpu,
     _format_plain_page_to_markdown,
     _has_clean_vector_table_grid,
+    _is_coofficial_non_spanish_text,
     _is_scanned_page,
     _normalize_spanish_thousands,
     _page_has_complex_table,
@@ -2237,6 +2238,268 @@ class TestGranadaIngestionAndRetrieval(unittest.TestCase):
             self.assertIn(art15.chunk_id, ids_38)
             self.assertIn(art18.chunk_id, ids_38)
             self.assertIn(art40.chunk_id, ids_38)
+
+
+class TestGuipuzcoaIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para Guipúzcoa (bilingüe BOG y doble convenio subsectorial)."""
+
+    def test_coofficial_language_filter_distinguishes_basque_from_spanish(self) -> None:
+        self.assertTrue(_is_coofficial_non_spanish_text("V. ERANSKINA"))
+        self.assertTrue(_is_coofficial_non_spanish_text("LEHEN EREMU FUNTZIONALA"))
+        self.assertTrue(_is_coofficial_non_spanish_text("2026KO SOLDATA-TAULAK"))
+        self.assertFalse(_is_coofficial_non_spanish_text("ANEXO II TABLAS SALARIALES AÑO 2026"))
+        self.assertFalse(_is_coofficial_non_spanish_text("Camarero/a de pisos"))
+
+    def test_guipuzcoa_territory_and_subsector_routing_filters(self) -> None:
+        for alias in ("Donostia", "San Sebastián", "Donostia-San Sebastián", "Gipuzkoa", "Guipúzcoa"):
+            self.assertEqual(_canonicalize_territory(alias), "guipuzcoa")
+            self.assertEqual(_canonicalize_llm_province(alias), "guipuzcoa")
+
+        self.assertIn("guipuzcoa", AiHorecaVectorStore.get_split_subsector_territories())
+        self.assertEqual(
+            AiHorecaVectorStore._extract_query_agreement_subsector(
+                "Trabajo como camarera de pisos en un hotel de 4 estrellas en Donostia."
+            ),
+            "alojamiento",
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._extract_query_agreement_subsector(
+                "Soy cocinero en un restaurante en Irún (Gipuzkoa)."
+            ),
+            "restauracion",
+        )
+        self.assertIsNone(
+            AiHorecaVectorStore._extract_query_agreement_subsector(
+                "¿Cuántos días de vacaciones tengo en hostelería en Gipuzkoa?"
+            )
+        )
+
+        flt_aloj = AiHorecaVectorStore._build_filter(
+            capa_normativa="convenio_provincial",
+            provincia="guipuzcoa",
+            subsector="alojamiento",
+        )
+        self.assertIsNotNone(flt_aloj)
+        keys_vals = {
+            cond.key: getattr(cond.match, "value", None)
+            for cond in (flt_aloj.must or [])
+        }
+        self.assertEqual(keys_vals.get("provincias_aplicables"), "guipuzcoa")
+        self.assertEqual(keys_vals.get("subsector"), "alojamiento")
+
+        flt_rest = AiHorecaVectorStore._build_filter(
+            capa_normativa="convenio_provincial",
+            provincia="Donostia",
+            subsector="restauracion",
+        )
+        self.assertIsNotNone(flt_rest)
+        keys_vals_rest = {
+            cond.key: getattr(cond.match, "value", None)
+            for cond in (flt_rest.must or [])
+        }
+        self.assertEqual(keys_vals_rest.get("provincias_aplicables"), "guipuzcoa")
+        self.assertEqual(keys_vals_rest.get("subsector"), "restauracion")
+
+    def test_guipuzcoa_strict_validation_and_chunk_metadata(self) -> None:
+        files_expected = [
+            (
+                "convenio_guipuzcoa_alojamientos.md",
+                "alojamiento",
+                "Convenio Colectivo de Alojamientos de Guipúzcoa",
+            ),
+            (
+                "convenio_guipuzcoa_alojamientos_tablas_2026.md",
+                "alojamiento",
+                "Convenio Colectivo de Alojamientos de Guipúzcoa",
+            ),
+            (
+                "convenio_guipuzcoa_restauracion.md",
+                "restauracion",
+                "Convenio Colectivo de Empresas de Restauración de Guipúzcoa",
+            ),
+            (
+                "convenio_guipuzcoa_restauracion_tablas_2026.md",
+                "restauracion",
+                "Convenio Colectivo de Empresas de Restauración de Guipúzcoa",
+            ),
+        ]
+        if not all((PROCESSED_DATA_DIR / fn).exists() for fn, _, _ in files_expected):
+            self.skipTest("Convenios de Guipúzcoa no disponibles en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        for fname, expected_sub, expected_title in files_expected:
+            report = validate_document(PROCESSED_DATA_DIR / fname, strict=True)
+            self.assertTrue(report.passed, msg=f"{fname} falló validación estricta: {report.issues}")
+            self.assertEqual(report.error_count, 0, msg=f"{fname} tiene errores: {report.issues}")
+            self.assertEqual(report.warning_count, 0, msg=f"{fname} tiene warnings: {report.issues}")
+
+            chunks = chunk_markdown_document(PROCESSED_DATA_DIR / fname, boundaries_cache=cache)
+            self.assertGreater(len(chunks), 0)
+            self.assertTrue(all(c.territorio == "guipuzcoa" for c in chunks))
+            self.assertTrue(all(c.subsector == expected_sub for c in chunks))
+            self.assertTrue(all(c.norma_titulo == expected_title for c in chunks))
+
+        aloj_t_chunks = chunk_markdown_document(
+            PROCESSED_DATA_DIR / "convenio_guipuzcoa_alojamientos_tablas_2026.md",
+            boundaries_cache=cache,
+        )
+        for ch in aloj_t_chunks:
+            if ch.tipo_contenido == "tabla_salarial":
+                self.assertIn("2026", ch.titulo_o_capitulo)
+
+        rest_t_chunks = chunk_markdown_document(
+            PROCESSED_DATA_DIR / "convenio_guipuzcoa_restauracion_tablas_2026.md",
+            boundaries_cache=cache,
+        )
+        for ch in rest_t_chunks:
+            if ch.tipo_contenido == "tabla_salarial":
+                self.assertIn("2026", ch.titulo_o_capitulo)
+
+    def test_guipuzcoa_retrieval_selection_for_alojamientos_and_restauracion(self) -> None:
+        required_files = [
+            "convenio_guipuzcoa_alojamientos.md",
+            "convenio_guipuzcoa_alojamientos_tablas_2026.md",
+            "convenio_guipuzcoa_restauracion.md",
+            "convenio_guipuzcoa_restauracion_tablas_2026.md",
+        ]
+        if not all((PROCESSED_DATA_DIR / fn).exists() for fn in required_files):
+            self.skipTest("Convenios de Guipúzcoa no disponibles en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        aloj_base = chunk_markdown_document(PROCESSED_DATA_DIR / "convenio_guipuzcoa_alojamientos.md", boundaries_cache=cache)
+        aloj_2026 = chunk_markdown_document(PROCESSED_DATA_DIR / "convenio_guipuzcoa_alojamientos_tablas_2026.md", boundaries_cache=cache)
+        rest_base = chunk_markdown_document(PROCESSED_DATA_DIR / "convenio_guipuzcoa_restauracion.md", boundaries_cache=cache)
+        rest_2026 = chunk_markdown_document(PROCESSED_DATA_DIR / "convenio_guipuzcoa_restauracion_tablas_2026.md", boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_gi_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_gi_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_39 (Alojamientos)
+        aloj_anexo1 = next(c for c in aloj_base if c.articulo.startswith("ANEXO I (Parte 1"))
+        aloj_art7 = next(c for c in aloj_base if c.articulo.startswith("Artículo 7"))
+        aloj_art13 = next(c for c in aloj_base if c.articulo.startswith("Artículo 13") and "1.705" in c.text)
+        aloj_art18 = next(c for c in aloj_base if c.articulo.startswith("Artículo 18"))
+        aloj_main_2026 = next(c for c in aloj_2026 if c.titulo_o_capitulo == "ANEXO II | 2026")
+        aloj_anexo6_2026 = next(c for c in aloj_2026 if c.titulo_o_capitulo == "ANEXO VI | 2026")
+        self.assertTrue(AiHorecaVectorStore._is_auxiliary_concepts_table(_to_doc(aloj_anexo6_2026, 0.98)))
+        self.assertFalse(AiHorecaVectorStore._is_auxiliary_concepts_table(_to_doc(aloj_main_2026, 0.60)))
+        aloj_extra = [
+            _to_doc(c, 0.25)
+            for c in aloj_base
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {aloj_art7.chunk_id, aloj_art13.chunk_id, aloj_art18.chunk_id}
+        ][:3]
+        pool_39 = [
+            _to_doc(aloj_anexo6_2026, 0.98),
+            _to_doc(aloj_anexo1, 0.96),
+            _to_doc(aloj_art7, 0.90),
+            _to_doc(aloj_art13, 0.89),
+            _to_doc(aloj_art18, 0.88),
+            _to_doc(aloj_main_2026, 0.60),
+            *aloj_extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_39 = store.rerank_and_select_by_territory(
+            candidates=pool_39,
+            query="Trabajo como camarera de pisos en un hotel de 4 estrellas en Donostia - San Sebastián (Guipúzcoa). ¿Qué nivel salarial, salario mensual y anual me corresponden en 2026, cuál es mi jornada anual ordinaria, cuántas pagas extraordinarias tengo y cómo se retribuye la nocturnidad?",
+            territorios=["guipuzcoa"],
+            use_cohere_rerank=False,
+            role_context="Camarera de pisos (Área Funcional 4ª)",
+        )
+        ids_39 = {d.chunk_id for d in sel_39}
+        self.assertIn(aloj_anexo1.chunk_id, ids_39)
+        self.assertIn(aloj_main_2026.chunk_id, ids_39)
+        self.assertIn(aloj_art7.chunk_id, ids_39)
+        self.assertIn(aloj_art13.chunk_id, ids_39)
+        self.assertIn(aloj_art18.chunk_id, ids_39)
+
+        # Escenario GD_40 (Restauración)
+        rest_anexo2 = next(c for c in rest_base if c.articulo.startswith("ANEXO II (Parte 1"))
+        rest_art14 = next(c for c in rest_base if c.articulo.startswith("Artículo 14"))
+        rest_art18 = next(c for c in rest_base if c.articulo.startswith("Artículo 18"))
+        rest_art28 = next(c for c in rest_base if c.articulo.startswith("Artículo 28") and "1.723" in c.text)
+        rest_main_2026 = next(c for c in rest_2026 if "ANEXO III" in c.titulo_o_capitulo)
+        rest_anexo5_2026 = next(c for c in rest_2026 if "ANEXO V" in c.titulo_o_capitulo)
+        rest_extra = [
+            _to_doc(c, 0.25)
+            for c in rest_base
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {rest_art14.chunk_id, rest_art18.chunk_id, rest_art28.chunk_id}
+        ][:2]
+        pool_40 = [
+            _to_doc(rest_anexo2, 0.96),
+            _to_doc(rest_main_2026, 0.95),
+            _to_doc(rest_anexo5_2026, 0.93),
+            _to_doc(rest_art14, 0.90),
+            _to_doc(rest_art18, 0.89),
+            _to_doc(rest_art28, 0.88),
+            *rest_extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_40 = store.rerank_and_select_by_territory(
+            candidates=pool_40,
+            query="Soy cocinero en un restaurante en Irún (Gipuzkoa). ¿Qué nivel salarial y salario base mensual y anual me corresponden en 2026, cuál es la jornada anual ordinaria, cómo se regulan las pagas extraordinarias y cuánto es el plus de nocturnidad?",
+            territorios=["guipuzcoa"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina)",
+        )
+        ids_40 = {d.chunk_id for d in sel_40}
+        self.assertIn(rest_anexo2.chunk_id, ids_40)
+        self.assertIn(rest_main_2026.chunk_id, ids_40)
+        self.assertIn(rest_anexo5_2026.chunk_id, ids_40)
+        self.assertIn(rest_art14.chunk_id, ids_40)
+        self.assertIn(rest_art18.chunk_id, ids_40)
+        self.assertIn(rest_art28.chunk_id, ids_40)
 
 
 if __name__ == "__main__":

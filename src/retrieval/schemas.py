@@ -37,6 +37,10 @@ class LegalChunk(BaseModel):
     territorio: str = Field(
         description="Código normalizado del territorio ('estatal', 'madrid', 'catalunya', 'leon', etc.)."
     )
+    subsector: str = Field(
+        default="general",
+        description="Subsector del convenio ('general', 'alojamiento', 'restauracion').",
+    )
     provincias_aplicables: list[str] = Field(
         description="Lista de provincias donde aplica la norma (ej. ['barcelona', 'girona', 'tarragona', 'catalunya'])."
     )
@@ -65,6 +69,10 @@ class RetrievedDocument(BaseModel):
     rerank_score: Optional[float] = None
     capa_normativa: NormativeLayer
     territorio: str
+    subsector: str = Field(
+        default="general",
+        description="Subsector del convenio ('general', 'alojamiento', 'restauracion').",
+    )
     norma_titulo: str
     titulo_o_capitulo: str
     articulo: str

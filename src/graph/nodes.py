@@ -86,6 +86,10 @@ _CANONICAL_PROVINCE_MAP: dict[str, str] = {
     "ciudad real": "ciudad_real",
     "gerona": "girona",
     "gipuzkoa": "guipuzcoa",
+    "donostia": "guipuzcoa",
+    "san sebastian": "guipuzcoa",
+    "donostia-san sebastian": "guipuzcoa",
+    "donostia san sebastian": "guipuzcoa",
     "la rioja": "la_rioja",
     "las palmas": "las_palmas",
     "las palmas de gran canaria": "las_palmas",
@@ -1077,10 +1081,12 @@ class AiHorecaGraphNodes:
     def expand_retrieval_node(self, state: LegalGraphState) -> LegalGraphState:
         """Nodo B2 (2º Salto Condicional Acotado): recupera remisiones normativas ausentes para ese territorio."""
         t0 = time.perf_counter()
-        enriched_query, _, _ = self._build_retrieval_queries(state)
+        enriched_query, _, role_context = self._build_retrieval_queries(state)
         missing_refs = list(state.get("missing_cross_refs") or [])
         current_docs: list[RetrievedDocument] = list(state.get("retrieved_docs") or [])
         branch_docs: list[RetrievedDocument] = list(state.get("branch_docs") or [])
+        effective_query = str(state.get("effective_query") or state.get("query") or "")
+        split_territories = self.vector_store.get_split_subsector_territories()
 
         seen_ids = {d.chunk_id for d in current_docs}
         added_docs: list[RetrievedDocument] = []
@@ -1115,11 +1121,19 @@ class AiHorecaGraphNodes:
                     else f"{raw_or_label} {terr} {enriched_query[:80]}".strip()
                 )
                 tipo_contenido = "articulo" if ref_type == "articulo" else None
+                agreement_subsector = (
+                    self.vector_store._extract_query_agreement_subsector(
+                        effective_query, role_context=role_context
+                    )
+                    if terr in split_territories
+                    else None
+                )
                 hits = self.vector_store.hybrid_search(
                     query=target_query,
                     capa_normativa="convenio_provincial",
                     provincia=terr,
                     tipo_contenido=tipo_contenido,
+                    subsector=agreement_subsector,
                     top_k=4,
                     include_vectors=False,
                     usage_out=step_usage,

@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.app.service import AiHorecaEngineService, TurnExecutionPayload
+from src.config import CONTACT_EMAIL, SESSION_RETENTION_DAYS
 
 
 @st.cache_resource(show_spinner="Inicializando motor híbrido Qdrant + LangGraph + SQLite...")
@@ -355,7 +356,37 @@ def _render_sidebar(service: AiHorecaEngineService) -> str:
         else:
             st.caption("Sin preguntas pendientes de aclaración contextual.")
 
+        st.divider()
+        st.subheader("3. Contacto y Privacidad")
+        st.markdown(
+            "¿Tienes dudas, comentarios, consejos o has detectado algún error en esta demo?"
+        )
+        st.link_button(
+            f"✉️ {CONTACT_EMAIL}",
+            f"mailto:{CONTACT_EMAIL}?subject=Comentarios%20sobre%20AiHoreca",
+            use_container_width=True,
+        )
+        st.markdown(
+            "- **No introduzcas datos personales** (nombre, DNI/NIE, empresa o teléfono).\n"
+            "- **Auditorías de calidad:** las consultas se recogen para mejorar el sistema.\n"
+            f"- **Borrado automático:** eliminación tras **{SESSION_RETENTION_DAYS} días** de inactividad (RGPD)."
+        )
+        st.caption("Demo orientativa • Contrasta siempre la información con un profesional.")
+
     return st.session_state.active_session_id
+
+
+def _render_demo_privacy_banner(expanded: bool) -> None:
+    """Renderiza el aviso de versión demo, privacidad (90 días) y contacto, plegado tras el primer turno."""
+    with st.expander(
+        f"⚠️ Aviso Demo, Privacidad (borrado en {SESSION_RETENTION_DAYS} días) y Contacto",
+        expanded=expanded,
+    ):
+        st.warning(
+            "- **Versión Demo (carácter orientativo):** esta aplicación es una demostración técnica y la información generada puede contener errores u omisiones. **Contrasta siempre** cualquier dato salarial o criterio jurídico con un profesional cualificado (abogado laboralista, graduado social o asesoría) y con el boletín oficial vigente.\n"
+            f"- **Privacidad y auditorías (borrado en {SESSION_RETENTION_DAYS} días):** te aconsejamos **no introducir datos personales** (nombres, DNI/NIE, datos de empresa, teléfonos, etc.). La información introducida se recoge únicamente para mejorar el sistema mediante auditorías de calidad y se **elimina automáticamente transcurridos {SESSION_RETENTION_DAYS} días** de inactividad (art. 5.1.e RGPD).\n"
+            f"- **Contacto y sugerencias:** para preguntas, consejos, comentarios o avisos de mejora, puedes escribir a [{CONTACT_EMAIL}](mailto:{CONTACT_EMAIL}?subject=Comentarios%20sobre%20AiHoreca) *(también disponible en el panel izquierdo)*."
+        )
 
 
 def main() -> None:
@@ -380,6 +411,8 @@ def main() -> None:
     session_telemetry: dict[int, TurnExecutionPayload] = st.session_state.turn_telemetry_cache.setdefault(
         active_sid, {}
     )
+
+    _render_demo_privacy_banner(expanded=not persisted_turns)
 
     if not persisted_turns:
         st.info(

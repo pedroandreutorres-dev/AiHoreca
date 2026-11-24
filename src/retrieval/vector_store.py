@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ from google.genai import types
 from qdrant_client import QdrantClient, models
 
 from src.config import (
+    BOUNDARIES_CACHE_PATH,
     COHERE_RERANK_MODEL,
     EMBEDDING_MODEL,
     QDRANT_STORAGE_DIR,
@@ -120,6 +122,7 @@ class AiHorecaVectorStore:
             "tipo_contenido",
             "source_file",
             "territorio",
+            "subsector",
         ):
             try:
                 self.qdrant.create_payload_index(
@@ -451,6 +454,7 @@ class AiHorecaVectorStore:
         capa_normativa: Optional[str] = None,
         provincia: Optional[str] = None,
         tipo_contenido: Optional[str] = None,
+        subsector: Optional[str] = None,
     ) -> Optional[models.Filter]:
         """Construye el filtro determinista de metadatos (payload) para Qdrant."""
         must_conditions: list[models.Condition] = []
@@ -495,6 +499,13 @@ class AiHorecaVectorStore:
                     match=models.MatchValue(value=tipo_contenido),
                 )
             )
+        if subsector:
+            must_conditions.append(
+                models.FieldCondition(
+                    key="subsector",
+                    match=models.MatchValue(value=subsector),
+                )
+            )
         return models.Filter(must=must_conditions) if must_conditions else None
 
     def hybrid_search(
@@ -503,6 +514,7 @@ class AiHorecaVectorStore:
         capa_normativa: Optional[str] = None,
         provincia: Optional[str] = None,
         tipo_contenido: Optional[str] = None,
+        subsector: Optional[str] = None,
         top_k: int = 6,
         dense_query_vec: Optional[list[float]] = None,
         sparse_query_vec: Optional[models.SparseVector] = None,
@@ -525,6 +537,7 @@ class AiHorecaVectorStore:
             capa_normativa=capa_normativa,
             provincia=provincia,
             tipo_contenido=tipo_contenido,
+            subsector=subsector,
         )
 
         q_dense = np.asarray(d_vec, dtype=np.float32) if include_vectors else None
@@ -586,6 +599,7 @@ class AiHorecaVectorStore:
             rerank_score=calibrated_score,
             capa_normativa=payload.get("capa_normativa", "convenio_provincial"),
             territorio=payload.get("territorio", ""),
+            subsector=payload.get("subsector") or "general",
             norma_titulo=payload.get("norma_titulo", ""),
             titulo_o_capitulo=payload.get("titulo_o_capitulo", ""),
             articulo=payload.get("articulo", ""),
@@ -601,6 +615,7 @@ class AiHorecaVectorStore:
         capa_normativa: str,
         provincia: str,
         tipo_contenido: str = "articulo",
+        subsector: Optional[str] = None,
         top_k: int = 2,
     ) -> list[RetrievedDocument]:
         """Ejecuta búsqueda dispersa BM25 pura por tema en Qdrant sin llamadas a embeddings densos."""
@@ -611,6 +626,7 @@ class AiHorecaVectorStore:
             capa_normativa=capa_normativa,
             provincia=provincia,
             tipo_contenido=tipo_contenido,
+            subsector=subsector,
         )
         result = self.qdrant.query_points(
             collection_name=self.collection_name,
@@ -1009,6 +1025,77 @@ class AiHorecaVectorStore:
         r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|apartamentos|colectividades|catering)\b"
     )
 
+    _SPLIT_TERRITORIES_CACHE: Optional[tuple[tuple[int, int], set[str]]] = None
+
+    @classmethod
+    def get_split_subsector_territories(cls) -> set[str]:
+        """Descubre dinámicamente territorios con convenios separados (alojamiento vs restauración)."""
+        cache_path = BOUNDARIES_CACHE_PATH
+        if not cache_path.exists():
+            return set()
+        try:
+            st = cache_path.stat()
+            sig = (int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            return set()
+        cached = cls._SPLIT_TERRITORIES_CACHE
+        if cached is not None and cached[0] == sig:
+            return set(cached[1])
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return set()
+        subsectors_by_terr: dict[str, set[str]] = {}
+        for info in data.values():
+            if not isinstance(info, dict):
+                continue
+            raw_t = str(info.get("territorio", "")).strip()
+            sub = str(info.get("subsector") or "general").lower().strip()
+            if raw_t and raw_t != "estatal" and sub in ("alojamiento", "restauracion"):
+                canon = _canonicalize_territory(raw_t)
+                subsectors_by_terr.setdefault(canon, set()).add(sub)
+        split_terrs = {t for t, subs in subsectors_by_terr.items() if len(subs) >= 2}
+        cls._SPLIT_TERRITORIES_CACHE = (sig, split_terrs)
+        return set(split_terrs)
+
+    _AGREEMENT_ALOJAMIENTO_EST_RE = re.compile(
+        r"(?i)\b(?:hotel(?:es)?|hostal(?:es)?|pensi[óo]n(?:es)?|parador(?:es)?|balneario|hospedaje|alojamiento(?:s)?|apartahotel(?:es)?|aparthotel(?:es)?|apartamentos?\s+tur[íi]sticos?|campings?|casa\s+rural|agroturismo|albergue(?:s)?)\b"
+    )
+    _AGREEMENT_RESTAURACION_EST_RE = re.compile(
+        r"(?i)\b(?:restaurante(?:s)?|bar(?:es)?|cafeter[íi]a(?:s)?|taberna(?:s)?|tasca|sidrer[íi]a(?:s)?|asador(?:es)?|mes[óo]n(?:es)?|chiringuito(?:s)?|pizzer[íi]a(?:s)?|hamburgueser[íi]a(?:s)?|helader[íi]a(?:s)?|churrer[íi]a(?:s)?|pub(?:s)?|discoteca(?:s)?|salas?\s+de\s+fiestas?|catering|colectividades|comedor(?:es)?\s+escolares?|restauraci[óo]n|fast\s+food|comida\s+r[áa]pida)\b"
+    )
+    _AGREEMENT_ALOJAMIENTO_ROLE_RE = re.compile(
+        r"(?i)\b(?:camarer[oa]s?\s+de\s+pisos?|gobernant[ae]s?|botones|conserje(?:s)?\s+de\s+noche|recepcionista(?:s)?)\b"
+    )
+    _AGREEMENT_RESTAURACION_ROLE_RE = re.compile(
+        r"(?i)\b(?:riders?|repartidor(?:es|as)?(?:\s+de\s+comida)?)\b"
+    )
+
+    @classmethod
+    def _extract_query_agreement_subsector(
+        cls,
+        clean_query: str,
+        role_context: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resuelve el convenio subsectorial aplicable cuando una provincia divide Alojamiento y Restauración."""
+        surface = (clean_query or "").strip()
+        has_aloj = bool(cls._AGREEMENT_ALOJAMIENTO_EST_RE.search(surface))
+        has_rest = bool(cls._AGREEMENT_RESTAURACION_EST_RE.search(surface))
+        if has_aloj and not has_rest:
+            return "alojamiento"
+        if has_rest and not has_aloj:
+            return "restauracion"
+        if has_aloj and has_rest:
+            return None
+        role_surface = f"{surface} {role_context or ''}".strip()
+        has_aloj_role = bool(cls._AGREEMENT_ALOJAMIENTO_ROLE_RE.search(role_surface))
+        has_rest_role = bool(cls._AGREEMENT_RESTAURACION_ROLE_RE.search(role_surface))
+        if has_aloj_role and not has_rest_role:
+            return "alojamiento"
+        if has_rest_role and not has_aloj_role:
+            return "restauracion"
+        return None
+
     @classmethod
     def _extract_query_establishment_subsector(cls, clean_query: str) -> Optional[str]:
         """Detecta el subsector de establecimiento en la consulta limpia (sin role_context)."""
@@ -1058,10 +1145,16 @@ class AiHorecaVectorStore:
         """Identifica sub-tablas secundarias de pluses/conceptos retributivos sueltos (sin escala salarial por puestos)."""
         if doc.tipo_contenido != "tabla_salarial":
             return False
-        surface = f"{doc.titulo_o_capitulo} {doc.articulo}"
+        body_head = doc.text.split("\n\n", 1)[-1][:260]
+        if re.search(
+            r"(?i)\bsalario\s+base\b|\|\s*(?:total\s+mensual|total\s+anual|salarios?\s+mensuales?)\s*\|",
+            f"{doc.articulo} {body_head}",
+        ):
+            return False
+        surface = f"{doc.titulo_o_capitulo} {doc.articulo} {body_head}"
         return bool(
             re.search(
-                r"(?i)\b(?:otros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos)\b",
+                r"(?i)\b(?:otros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servicios?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
                 surface,
             )
         )
@@ -1098,7 +1191,7 @@ class AiHorecaVectorStore:
             body_head = doc.text.split("\n\n", 1)[-1][:350]
             return bool(
                 re.search(
-                    r"(?i)\b(?:puestos?\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+salarial(?:es)?|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+(?:los\s+)?establecimientos|de\s+(?:las\s+)?empresas)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|ocupaciones\s+y\s+puestos\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+(?:salarial(?:es)?|retributivos?)|adscripci[óo]n\s+de\s+las\s+categor[íi]as|tablas?\s+de\s+correspondencia|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+(?:los\s+)?establecimientos|de\s+(?:las\s+)?empresas)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
                     f"{surface} {body_head}",
                 )
                 or (
@@ -1237,6 +1330,16 @@ class AiHorecaVectorStore:
         include_seniority_tables = bool(re.search(r"(?i)antig[üu]edad|trienio", query))
         role_stems = self._build_role_stems(role_context)
 
+        clean_q = self._clean_intent_query(
+            topic_source_query or query,
+            role_context=role_context,
+        )
+        agreement_subsector: Optional[str] = (
+            self._extract_query_agreement_subsector(clean_q, role_context=role_context)
+            if norm_p in self.get_split_subsector_territories()
+            else None
+        )
+
         topic_boosts: list[str] = []
         if re.search(r"(?i)pagas?\s+extra|gratificaci[óo]n", query):
             topic_boosts.append("gratificaciones extraordinarias pagas extraordinarias pagas extras")
@@ -1265,6 +1368,7 @@ class AiHorecaVectorStore:
                     "capa_normativa": "convenio_provincial",
                     "provincia": norm_p,
                     "tipo_contenido": "articulo",
+                    "subsector": agreement_subsector,
                     "top_k": max(top_k_per_layer + 4, 10),
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
@@ -1281,6 +1385,7 @@ class AiHorecaVectorStore:
                         "capa_normativa": "convenio_provincial",
                         "provincia": norm_p,
                         "tipo_contenido": "articulo",
+                        "subsector": agreement_subsector,
                         "top_k": 6,
                         "dense_query_vec": d_vec,
                         "sparse_query_vec": pay_sparse_vec,
@@ -1296,6 +1401,7 @@ class AiHorecaVectorStore:
                     "capa_normativa": "convenio_provincial",
                     "provincia": norm_p,
                     "tipo_contenido": "tabla_salarial",
+                    "subsector": agreement_subsector,
                     "top_k": max(top_k_per_layer * 4, 20),
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
@@ -1315,6 +1421,7 @@ class AiHorecaVectorStore:
                         "capa_normativa": "convenio_provincial",
                         "provincia": norm_p,
                         "tipo_contenido": "tabla_salarial",
+                        "subsector": agreement_subsector,
                         "top_k": 3,
                         "dense_query_vec": d_vec,
                         "sparse_query_vec": cls_sparse_vec,
@@ -1330,6 +1437,7 @@ class AiHorecaVectorStore:
                     "capa_normativa": "convenio_provincial",
                     "provincia": norm_p,
                     "tipo_contenido": "anexo_o_disposicion",
+                    "subsector": agreement_subsector,
                     "top_k": 4 if is_remuneration_query else 2,
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
@@ -1363,8 +1471,9 @@ class AiHorecaVectorStore:
                             t_terms,
                             capa_normativa="convenio_provincial",
                             provincia=norm_p,
-                            tipo_contenido="articulo",
-                            top_k=2,
+                            tipo_contenido=None,
+                            subsector=agreement_subsector,
+                            top_k=3,
                         )
                         for t_terms in matched_bm25_topics
                     ]
@@ -1375,25 +1484,33 @@ class AiHorecaVectorStore:
                             capa_normativa="convenio_provincial",
                             provincia=norm_p,
                             tipo_contenido="articulo",
+                            subsector=agreement_subsector,
                             top_k=2,
                         )
                         if cls_bm25_terms
                         else None
                     )
                     for fut in topic_futures:
-                        topic_art_docs.extend(fut.result())
+                        topic_art_docs.extend(
+                            d
+                            for d in fut.result()
+                            if d.tipo_contenido in ("articulo", "anexo_o_disposicion")
+                        )
                     if cls_fut is not None:
                         raw_cls_docs.extend(cls_fut.result())
             else:
                 for t_terms in matched_bm25_topics:
                     topic_art_docs.extend(
-                        self.sparse_topic_search(
+                        d
+                        for d in self.sparse_topic_search(
                             t_terms,
                             capa_normativa="convenio_provincial",
                             provincia=norm_p,
-                            tipo_contenido="articulo",
-                            top_k=2,
+                            tipo_contenido=None,
+                            subsector=agreement_subsector,
+                            top_k=3,
                         )
+                        if d.tipo_contenido in ("articulo", "anexo_o_disposicion")
                     )
                 if cls_bm25_terms:
                     raw_cls_docs.extend(
@@ -1402,6 +1519,7 @@ class AiHorecaVectorStore:
                             capa_normativa="convenio_provincial",
                             provincia=norm_p,
                             tipo_contenido="articulo",
+                            subsector=agreement_subsector,
                             top_k=2,
                         )
                     )
@@ -1636,6 +1754,20 @@ class AiHorecaVectorStore:
                     if _belongs_to_territory(s, terr_key) and s.tipo_contenido == "articulo"
                 )
 
+            def _t_normative_count() -> int:
+                return sum(
+                    1
+                    for s in selected
+                    if _belongs_to_territory(s, terr_key)
+                    and (
+                        s.tipo_contenido == "articulo"
+                        or (
+                            s.tipo_contenido == "anexo_o_disposicion"
+                            and not self._is_classification_level_table(s, include_seniority_tables)
+                        )
+                    )
+                )
+
             def _t_tbl_count() -> int:
                 return sum(
                     1
@@ -1674,8 +1806,19 @@ class AiHorecaVectorStore:
                 for d in terr_cands
                 if self._is_classification_level_table(d, include_seniority_tables)
             }
+            has_establishment_cls = any(
+                self._is_classification_level_table(d, include_seniority_tables)
+                and re.search(
+                    r"(?i)\b(?:categor[íi]as?|clasificaci[óo]n)\s+de\s+(?:los\s+)?(?:establecimientos|empresas)\b|\b(?:estrellas|tenedores)\b",
+                    f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}",
+                )
+                for d in terr_cands
+            )
             needs_dual_cls_tables = (
-                is_remuneration_query and bool(prov_euro_tables) and len(distinct_cls_sections) >= 2
+                is_remuneration_query
+                and bool(prov_euro_tables)
+                and len(distinct_cls_sections) >= 2
+                and has_establishment_cls
             )
             asks_extra_pay = bool(
                 re.search(
@@ -1771,11 +1914,30 @@ class AiHorecaVectorStore:
                             1,
                             terr_cands,
                         )
+                    if len(selected) > before_spec:
+                        picked_doc = selected[-1]
+                        if (
+                            picked_doc.tipo_contenido == "articulo"
+                            and re.search(r"(?i)\banexo\b", picked_doc.text)
+                        ):
+                            annex_cands = [
+                                (idx, d)
+                                for idx, d in enumerate(terr_cands)
+                                if d.chunk_id not in selected_ids
+                                and d.tipo_contenido == "anexo_o_disposicion"
+                                and not self._is_classification_level_table(d, include_seniority_tables)
+                                and re.search(pat, f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}")
+                            ]
+                            if annex_cands:
+                                annex_cands.sort(
+                                    key=lambda item: (-(self._extract_chunk_year(item[1]) or 0), item[0])
+                                )
+                                _pick(lambda _d: True, 1, [d for _, d in annex_cands])
 
             _pick(
                 lambda d: d.tipo_contenido == "articulo"
                 and not (needs_tables and self._is_classification_level_table(d, include_seniority_tables)),
-                max(0, effective_article_quota - _t_art_count()),
+                max(0, effective_article_quota - _t_normative_count()),
                 terr_cands,
             )
 

@@ -271,5 +271,60 @@
       2028
     ],
     "justificacion": "BOP de Granada n.º 214 (05/11/2026), CVE BOP-GRA-2026-214002, número 2026057143, código REGCON 18000405011982: Resolución de corrección de errores de las tablas salariales 2026-2028 (Anexos I, II y III) que reubica la categoría profesional de Camarera de Pisos del Nivel V al Nivel IV y publica íntegramente las tablas salariales definitivas para 2026 (+3,7%, págs. 2-3), 2027 (+3,40%, págs. 4-5) y 2028 (+3,40%, págs. 6-7) junto con otros conceptos retributivos."
+  },
+  "convenio_guipuzcoa_alojamientos.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "subsector": "alojamiento",
+    "layout": "bilingual_right_es",
+    "territorio": "guipuzcoa",
+    "start_page": 2,
+    "end_page": 42,
+    "skip_pages": [
+      34,
+      35
+    ],
+    "justificacion": "BOG de Gipuzkoa n.º 125 (02/07/2025), CVE GAO-I-2025-04779, código REGCON 20100035012014: Convenio Colectivo de Alojamientos de Gipuzkoa 2025-2028 (publicación bilingüe euskera izquierda / castellano derecha; se omiten pág. 1 de resolución administrativa y págs. 34-35 con tablas 2025 sustituidas por la revisión salarial 2026, manteniendo pág. 33 para conservar el final del Anexo I de adscripción de categorías a los niveles I-IV)."
+  },
+  "convenio_guipuzcoa_alojamientos_tablas_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "subsector": "alojamiento",
+    "layout": "bilingual_right_es",
+    "territorio": "guipuzcoa",
+    "start_page": 2,
+    "end_page": 3,
+    "expected_years": [
+      2026
+    ],
+    "justificacion": "BOG de Gipuzkoa n.º 30 (16/02/2026), CVE GAO-I-2026-00553, código REGCON 20100035012014: Anexos II-VII de Tablas Salariales 2026 del Convenio Colectivo de Alojamientos de Gipuzkoa (+5,4%: IPC 2025 del 2,9% + 2,5% diferencial, con efectos 01/01/2026-31/12/2026), valor del trienio, festivo sin antigüedad, servicios extraordinarios, 24 y 31 de diciembre y manutención."
+  },
+  "convenio_guipuzcoa_restauracion.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "subsector": "restauracion",
+    "layout": "bilingual_right_es",
+    "territorio": "guipuzcoa",
+    "start_page": 2,
+    "end_page": 50,
+    "skip_pages": [
+      40,
+      44,
+      45
+    ],
+    "justificacion": "BOG de Gipuzkoa n.º 117 (19/06/2023), CVE GAO-I-2023-04299, código REGCON 20104585012023: Convenio Colectivo de Empresas de Restauración de Gipuzkoa 2023-2026 (publicación bilingüe euskera izquierda / castellano derecha; se omiten pág. 1 de resolución administrativa, pág. 40 en euskera de Anexo II conservando P41-P43 con todas las tablas de equivalencias en castellano, y págs. 44-45 con tablas 2023 sustituidas por la revisión salarial 2026)."
+  },
+  "convenio_guipuzcoa_restauracion_tablas_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "subsector": "restauracion",
+    "layout": "bilingual_right_es",
+    "territorio": "guipuzcoa",
+    "start_page": 2,
+    "end_page": 2,
+    "expected_years": [
+      2026
+    ],
+    "justificacion": "BOG de Gipuzkoa n.º 29 (13/02/2026), CVE GAO-I-2026-00525, código REGCON 20104585012023: Acta de revisión salarial para 2026 (Anexos III-VII) del Convenio Colectivo de Empresas de Restauración de Gipuzkoa 2023-2026 (+5,9%: IPC 2025 del 2,9% + 3% pactado), con tablas salariales 2026 (Niveles 1-5 y Auxiliar de Hostelería), trienio, plus de nocturnidad, manutención y seguro colectivo."
   }
 }

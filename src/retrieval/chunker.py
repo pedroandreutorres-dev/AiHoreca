@@ -51,7 +51,10 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"cve:\s*bop[-a-z0-9]+.*|"
     r"n[úu]mero\s+\d{6,}|"
     r"centro\s+de\s+ediciones.*|"
-    r"tel[ée]fonos?:\s*\d.*"
+    r"tel[ée]fonos?:\s*\d.*|"
+    r"(?:e?k\\?cv\s+gao-[a-z0-9-]+.*)|"
+    r"gipuzkoako\s+aldizkari\s+ofiziala.*|"
+    r"bolet[íi]n\s+oficial\s+de\s+gipuzkoa.*"
     r")$"
 )
 
@@ -111,6 +114,10 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "ciudad real": "ciudad_real",
     "gerona": "girona",
     "gipuzkoa": "guipuzcoa",
+    "donostia": "guipuzcoa",
+    "san sebastian": "guipuzcoa",
+    "donostia-san sebastian": "guipuzcoa",
+    "donostia san sebastian": "guipuzcoa",
     "la rioja": "la_rioja",
     "las palmas": "las_palmas",
     "las palmas de gran canaria": "las_palmas",
@@ -228,8 +235,15 @@ def _infer_document_metadata(
 
     pretty_terr = _PRETTY_TERRITORY_TITLES.get(territorio, territorio.replace("_", " ").title())
     provincias_aplicables = list(AUTONOMOUS_COMMUNITY_EXPANSION.get(territorio, [territorio]))
+    subsector = (cached.get("subsector") or "general").lower().strip()
+    if subsector == "alojamiento":
+        norma_title = f"Convenio Colectivo de Alojamientos de {pretty_terr}"
+    elif subsector == "restauracion":
+        norma_title = f"Convenio Colectivo de Empresas de Restauración de {pretty_terr}"
+    else:
+        norma_title = f"Convenio Colectivo de Hostelería de {pretty_terr}"
     return (
-        f"Convenio Colectivo de Hostelería de {pretty_terr}",
+        norma_title,
         "convenio_provincial",
         territorio,
         provincias_aplicables,
@@ -356,6 +370,15 @@ def chunk_markdown_document(
     cache = boundaries_cache or {}
     norma_titulo, capa_normativa, territorio, provincias = _infer_document_metadata(
         md_path, cache
+    )
+    cached_meta = cache.get(f"{md_path.stem}.pdf", {})
+    doc_subsector = (cached_meta.get("subsector") or "general").lower().strip()
+    doc_role_meta = (cached_meta.get("doc_role") or "").lower().strip()
+    expected_years_meta = cached_meta.get("expected_years") or []
+    single_tablas_year = (
+        int(expected_years_meta[0])
+        if doc_role_meta == "tablas" and isinstance(expected_years_meta, list) and len(expected_years_meta) == 1
+        else None
     )
 
     raw_text = md_path.read_text(encoding="utf-8")
@@ -580,10 +603,17 @@ def chunk_markdown_document(
 
             part_suffix = f" (Parte {part_idx}/{total_parts})" if total_parts > 1 else ""
             art_label = f"{article}{part_suffix}"
+            chapter_label = chapter
+            if (
+                single_tablas_year is not None
+                and re.search(r"(?i)anexo|tabla", chapter_label)
+                and not re.search(r"\b202\d\b", chapter_label)
+            ):
+                chapter_label = f"{chapter_label} | {single_tablas_year}"
 
             context_header = (
                 f"[NORMA: {norma_titulo} | CAPA: {capa_normativa} | "
-                f"TERRITORIO: {territorio.upper()} | SECCIÓN: {chapter} | "
+                f"TERRITORIO: {territorio.upper()} | SECCIÓN: {chapter_label} | "
                 f"REFERENCIA: {art_label}]"
             )
             enriched_text = f"{context_header}\n\n{sub_text}"
@@ -602,8 +632,9 @@ def chunk_markdown_document(
                     norma_titulo=norma_titulo,
                     capa_normativa=capa_normativa,
                     territorio=territorio,
+                    subsector=doc_subsector,
                     provincias_aplicables=provincias,
-                    titulo_o_capitulo=chapter,
+                    titulo_o_capitulo=chapter_label,
                     articulo=art_label,
                     tipo_contenido=tipo_contenido,
                     chunk_index=chunk_counter,
