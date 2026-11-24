@@ -2502,5 +2502,228 @@ class TestGuipuzcoaIngestionAndRetrieval(unittest.TestCase):
         self.assertIn(rest_art28.chunk_id, ids_40)
 
 
+class TestAlavaIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el Convenio Colectivo de Hostelería de Álava (BOTHA n.º 20/2026)."""
+
+    def test_alava_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "Álava",
+            "alava",
+            "Araba",
+            "Araba/Álava",
+            "Araba / Álava",
+            "Álava/Araba",
+            "Vitoria-Gasteiz",
+            "Vitoria",
+            "Gasteiz",
+            "Llodio",
+            "Laudio",
+            "Amurrio",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "alava")
+            self.assertEqual(_canonicalize_llm_province(alias), "alava")
+        self.assertEqual(_pretty_territory_label("alava"), "Álava")
+
+    def test_alava_strict_validation_and_2025_vs_2026_table_selection(self) -> None:
+        md_path = PROCESSED_DATA_DIR / "convenio_alava.md"
+        if not md_path.exists():
+            self.skipTest("Convenio de Álava no disponible en data/processed/")
+
+        report = validate_document(md_path, strict=True)
+        self.assertTrue(report.passed, msg=f"convenio_alava.md falló validación estricta: {report.issues}")
+        self.assertEqual(report.error_count, 0, msg=f"Errores en convenio_alava.md: {report.issues}")
+        self.assertEqual(report.warning_count, 0, msg=f"Warnings en convenio_alava.md: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(md_path, boundaries_cache=cache)
+        self.assertGreater(len(chunks), 0)
+        self.assertTrue(all(c.territorio == "alava" for c in chunks))
+        self.assertTrue(all(c.subsector == "general" for c in chunks))
+
+        t_2025 = next(c for c in chunks if "1 de diciembre de 2025" in c.articulo)
+        t_2026 = next(c for c in chunks if "Tabla salarial año 2026" in c.articulo)
+        self.assertNotEqual(t_2025.chunk_id, t_2026.chunk_id)
+
+        def _to_doc(ch: LegalChunk) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=0.8,
+                rerank_score=0.8,
+            )
+
+        d25 = _to_doc(t_2025)
+        d26 = _to_doc(t_2026)
+        self.assertEqual(AiHorecaVectorStore._extract_chunk_year(d25), 2025)
+        self.assertEqual(AiHorecaVectorStore._extract_chunk_year(d26), 2026)
+        preferred = AiHorecaVectorStore._select_preferred_monetary_tables(
+            [d25, d26],
+            [],
+            reference_date=date(2026, 11, 24),
+        )
+        self.assertEqual(preferred, {d26.chunk_id})
+
+    def test_alava_retrieval_selection_gd41_and_gd42(self) -> None:
+        md_path = PROCESSED_DATA_DIR / "convenio_alava.md"
+        if not md_path.exists():
+            self.skipTest("Convenio de Álava no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(md_path, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_vi_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_vi_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        anexo2 = next(c for c in chunks if c.articulo == "Anexo II (Parte 2/4)")
+        anexo2_part3 = next(c for c in chunks if c.articulo == "Anexo II (Parte 3/4)")
+        t_2025 = next(c for c in chunks if "1 de diciembre de 2025" in c.articulo)
+        t_2026 = next(c for c in chunks if "Tabla salarial año 2026" in c.articulo)
+        art6 = next(c for c in chunks if c.articulo.startswith("Artículo 6º"))
+        art8 = next(c for c in chunks if c.articulo.startswith("Artículo 8º"))
+        art11 = next(c for c in chunks if c.articulo.startswith("Artículo 11º"))
+        art14 = next(c for c in chunks if c.articulo.startswith("Artículo 14º"))
+        art15 = next(c for c in chunks if c.articulo.startswith("Artículo 15º"))
+        art16 = next(c for c in chunks if c.articulo.startswith("Artículo 16º"))
+        art17 = next(c for c in chunks if c.articulo.startswith("Artículo 17º"))
+        art18 = next(c for c in chunks if c.articulo.startswith("Artículo 18."))
+        extra = [
+            _to_doc(c, 0.22)
+            for c in chunks
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id
+            not in {
+                art6.chunk_id,
+                art8.chunk_id,
+                art11.chunk_id,
+                art14.chunk_id,
+                art15.chunk_id,
+                art16.chunk_id,
+                art17.chunk_id,
+                art18.chunk_id,
+            }
+        ][:2]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        self.assertTrue(store._matches_primary_role_stem(_to_doc(anexo2, 0.5), ["camarer"]))
+        self.assertFalse(store._matches_primary_role_stem(_to_doc(anexo2_part3, 0.5), ["camarer"]))
+        self.assertTrue(store._matches_primary_role_stem(_to_doc(anexo2_part3, 0.5), ["camarer", "pis"]))
+
+        # Escenario GD_41: art11 y art6 con score superior a art8 para validar rescate por descanso semanal
+        pool_41 = [
+            _to_doc(t_2025, 0.99),
+            _to_doc(art11, 0.98),
+            _to_doc(anexo2, 0.96),
+            _to_doc(art18, 0.90),
+            _to_doc(art17, 0.88),
+            _to_doc(art6, 0.85),
+            _to_doc(t_2026, 0.65),
+            _to_doc(art8, 0.60),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_41 = store.rerank_and_select_by_territory(
+            candidates=pool_41,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Vitoria-Gasteiz (Álava). ¿Cuál es mi nivel salarial, salario base, complemento en especie y bruto mensual en 2026, cuántas pagas extraordinarias tengo, cuánto es el Bonus 31 de octubre y cuántos días de descanso semanal me corresponden?",
+            territorios=["alava"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina, Grupo Profesional II)",
+        )
+        ids_41 = {d.chunk_id for d in sel_41}
+        self.assertIn(anexo2.chunk_id, ids_41)
+        self.assertIn(t_2026.chunk_id, ids_41)
+        self.assertNotIn(t_2025.chunk_id, ids_41)
+        self.assertIn(art8.chunk_id, ids_41)
+        self.assertIn(art17.chunk_id, ids_41)
+        self.assertIn(art18.chunk_id, ids_41)
+
+        # Escenario GD_42: anexo2_part3 con score superior a anexo2 para validar prioridad de puesto principal
+        pool_42 = [
+            _to_doc(t_2025, 0.995),
+            _to_doc(anexo2_part3, 0.99),
+            _to_doc(art6, 0.92),
+            _to_doc(art14, 0.90),
+            _to_doc(art15, 0.89),
+            _to_doc(art16, 0.87),
+            _to_doc(anexo2, 0.70),
+            _to_doc(t_2026, 0.65),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_42 = store.rerank_and_select_by_territory(
+            candidates=pool_42,
+            query="Soy camarero en un restaurante en Llodio (Araba) en 2026. ¿Qué nivel salarial y salario base mensual me corresponden, cuál es la jornada laboral anual, cómo se retribuye la nocturnidad si trabajo hasta las 02:00, cuánto vale cada hora extraordinaria y cuál es el plus de domingos y festivos?",
+            territorios=["alava"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, Grupo Profesional II)",
+        )
+        ids_42 = {d.chunk_id for d in sel_42}
+        self.assertIn(anexo2.chunk_id, ids_42)
+        self.assertNotIn(anexo2_part3.chunk_id, ids_42)
+        self.assertIn(t_2026.chunk_id, ids_42)
+        self.assertNotIn(t_2025.chunk_id, ids_42)
+        self.assertIn(art6.chunk_id, ids_42)
+        self.assertIn(art14.chunk_id, ids_42)
+        self.assertIn(art15.chunk_id, ids_42)
+        self.assertIn(art16.chunk_id, ids_42)
+
+
 if __name__ == "__main__":
     unittest.main()

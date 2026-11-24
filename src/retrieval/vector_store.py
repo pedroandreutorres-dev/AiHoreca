@@ -934,8 +934,9 @@ class AiHorecaVectorStore:
     def _build_role_stems(role_context: Optional[str]) -> list[str]:
         """Extrae raíces léxicas morfológicas (eliminando solo sufijo de género/número) del puesto detectado."""
         raw_role = role_context.split("|")[0].strip().lower() if role_context else ""
+        cleaned_role = re.sub(r"\([^)]*\)", " ", raw_role).strip() or raw_role
         stems: list[str] = []
-        for w in re.findall(r"[a-záéíóúüñ]{4,}", raw_role):
+        for w in re.findall(r"[a-záéíóúüñ]{4,}", cleaned_role):
             stem = re.sub(r"[oa]s?$", "", w)
             stems.append(stem if len(stem) >= 4 else w)
         return stems
@@ -954,20 +955,37 @@ class AiHorecaVectorStore:
 
     @classmethod
     def _matches_primary_role_stem(cls, doc: RetrievedDocument, role_stems: list[str]) -> bool:
-        """Comprueba coincidencia del puesto principal evitando falsos positivos en filas subordinadas."""
+        """Comprueba coincidencia del puesto principal evitando falsos positivos en filas subordinadas o de pisos."""
         if not role_stems:
             return False
         allow_subordinate = any(
             s.startswith(cls._SUBORDINATE_STEMS) for s in role_stems
         )
+        asks_pisos = any(s.startswith("pis") for s in role_stems)
         for raw_line in doc.text.lower().splitlines():
             if not all(stem in raw_line for stem in role_stems):
                 continue
-            if allow_subordinate:
-                return True
-            cell0 = raw_line.strip("| ").split("|")[0].strip() if "|" in raw_line else raw_line
-            if not cls._SUBORDINATE_ROLE_RE.search(cell0):
-                return True
+            cells = (
+                [c.strip() for c in raw_line.strip("|").split("|")]
+                if "|" in raw_line
+                else [raw_line]
+            )
+            matching_cells = [
+                c for c in cells if all(stem in c for stem in role_stems)
+            ]
+            targets = matching_cells or [raw_line]
+            for target in targets:
+                sub_items = [
+                    p.strip()
+                    for p in re.split(r"[,;]", target)
+                    if p.strip() and all(stem in p for stem in role_stems)
+                ] or [target]
+                for item in sub_items:
+                    if not allow_subordinate and cls._SUBORDINATE_ROLE_RE.search(item):
+                        continue
+                    if not asks_pisos and re.search(r"(?i)\bde\s+pisos?\b", item):
+                        continue
+                    return True
         return False
 
     _QUERY_SUBSECTOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -1293,6 +1311,11 @@ class AiHorecaVectorStore:
             "jornada de trabajo jornada laboral jornada máxima anual horas anuales 40 horas semanales",
         ),
         (
+            "descanso_semanal",
+            r"(?i)descanso\s+semanal",
+            "descanso semanal días consecutivos fin de semana libranza",
+        ),
+        (
             "vacaciones",
             r"(?i)vacaciones",
             "vacaciones anuales días naturales periodo disfrute",
@@ -1563,7 +1586,10 @@ class AiHorecaVectorStore:
         cls_levels = sorted(
             [t for t in level_tables if self._is_classification_level_table(t, include_seniority_tables)]
             + classification_annexes,
-            key=lambda t: not self._matches_role_stem(t, role_stems),
+            key=lambda t: (
+                not self._matches_primary_role_stem(t, role_stems),
+                not self._matches_role_stem(t, role_stems),
+            ),
         )
         for item in cls_levels:
             sec_key = item.titulo_o_capitulo.strip()
@@ -1870,6 +1896,7 @@ class AiHorecaVectorStore:
                     r"(?i)nocturnidad|jornada\s+nocturna|horas\s+nocturnas",
                     r"(?i)vacaciones",
                     r"(?i)jornada\s+(?:de\s+trabajo|laboral|anual|m[áa]xima)|tiempo\s+parcial",
+                    r"(?i)descanso\s+semanal",
                 )
                 matched_specific_pats = [
                     pat
@@ -2037,10 +2064,21 @@ class AiHorecaVectorStore:
             if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES:
                 _pick(
                     lambda d: self._is_classification_level_table(d, include_seniority_tables)
-                    and self._matches_role_stem(d, role_stems),
+                    and self._matches_primary_role_stem(d, role_stems),
                     1,
                     terr_cands,
                 )
+                if not any(
+                    _belongs_to_territory(s, terr_key)
+                    and self._is_classification_level_table(s, include_seniority_tables)
+                    for s in selected
+                ):
+                    _pick(
+                        lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                        and self._matches_role_stem(d, role_stems),
+                        1,
+                        terr_cands,
+                    )
                 if not any(
                     _belongs_to_territory(s, terr_key)
                     and self._is_classification_level_table(s, include_seniority_tables)

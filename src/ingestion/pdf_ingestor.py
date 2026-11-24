@@ -61,7 +61,9 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"n[úu]m(?:ero)?\.?\s*\d+$|"
     r"\d{1,5}\s*/\s*20[12]\d$|"
     r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
-    r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}\s*\d+|"
+    r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}[\s-]*\d+|"
+    r"20[12]\d-\d{5}$|"
+    r"\d{1,3}/\d{1,3}$|"
     r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}|"
     r"(?:e?k\\?cv\s+gao-[a-z0-9-]+)|"
     r"gipuzkoako\s+aldizkari\s+ofiziala|"
@@ -263,6 +265,15 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
             stripped == stripped.upper()
             and re.match(
                 r"^(?:TABLAS?\s+SALARIAL(?:ES)?\s+20[23]\d\b[^\n]*|INCREMENTO\s+20[23]\d\b[^\n]*)$",
+                stripped,
+            )
+        ):
+            cleaned_lines.append(f"\n### {stripped}\n")
+        elif (
+            len(stripped) <= 90
+            and not stripped.endswith(".")
+            and re.match(
+                r"^(?:Tabla(?:s)?\s+salarial(?:es)?|TABLA(?:S)?\s+SALARIAL(?:ES)?)\b[^\n]*\b20[23]\d\b[^\n]*$",
                 stripped,
             )
         ):
@@ -1145,6 +1156,16 @@ def _extract_vector_table_md_by_clip(
     ):
         hdr = _merge_header_rows(trimmed[0], trimmed[2], default_col0="Categoría / Nivel")
         body = [trimmed[1], *trimmed[3:]]
+    elif (
+        len(trimmed) >= 2
+        and any(not c for c in trimmed[0])
+        and all(trimmed[0][i] or trimmed[1][i] for i in range(len(trimmed[0])))
+        and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
+        and not re.fullmatch(r"[IVX]+|\d+", trimmed[1][0].strip())
+        and sum(1 for c in trimmed[1] if c) >= max(2, len(trimmed[0]) // 2)
+    ):
+        hdr = [f"{trimmed[0][i]} {trimmed[1][i]}".strip() for i in range(len(trimmed[0]))]
+        body = trimmed[2:]
     elif banner_headings:
         hdr = [f"Columna {idx + 1}" for idx in range(len(trimmed[0]))]
         body = trimmed

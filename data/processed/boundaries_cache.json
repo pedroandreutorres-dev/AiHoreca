@@ -326,5 +326,20 @@
       2026
     ],
     "justificacion": "BOG de Gipuzkoa n.º 29 (13/02/2026), CVE GAO-I-2026-00525, código REGCON 20104585012023: Acta de revisión salarial para 2026 (Anexos III-VII) del Convenio Colectivo de Empresas de Restauración de Gipuzkoa 2023-2026 (+5,9%: IPC 2025 del 2,9% + 3% pactado), con tablas salariales 2026 (Niveles 1-5 y Auxiliar de Hostelería), trienio, plus de nocturnidad, manutención y seguro colectivo."
+  },
+  "convenio_alava.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "single_column",
+    "territorio": "alava",
+    "start_page": 2,
+    "end_page": 31,
+    "expected_years": [
+      2025,
+      2026
+    ],
+    "start_marker": "Convenio colectivo provincial de trabajo para las industrias de hostelería de Álava",
+    "end_marker": "Firmante: CN=ARABAKO FORU ALDUNDIA",
+    "justificacion": "BOTHA n.º 20 de 16/02/2026 (anuncio 2026-00378, código REGCON 01000755011981): Convenio Colectivo para el Sector de Hostelería de Álava 2025-2028 (publicación íntegra en castellano con articulado, Anexos I-IV y tablas salariales desde diciembre de 2025 y para el año 2026 en pág. 30)."
   }
 }
