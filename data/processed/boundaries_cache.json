@@ -365,5 +365,19 @@
     "expected_years": [],
     "start_marker": "ACTA DA COMISIÓN PARITARIA",
     "justificacion": "BOP de A Coruña n.º 216 (11/11/2026), anuncio 2026/7301, código REGCON 15000745011981: Acta da Comisión Paritaria (05/11/2026) aclarando la paga única de 500 € del año 2025 (solo compensable con cantidades a cuenta del 2025, abonable en IT y proporcional al tiempo/jornada) y la no compensabilidad ni absorbibilidad del plus de transporte de 30 €."
+  },
+  "convenio_pontevedra.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "single_column",
+    "territorio": "pontevedra",
+    "start_page": 28,
+    "end_page": 53,
+    "expected_years": [
+      2024,
+      2025
+    ],
+    "start_marker": "Convenio Colectivo Provincial de Hostelería",
+    "justificacion": "BOPPO n.º 209 (31/10/2025), anuncio 2025071494, código REGCON 36000765011982: Convenio Colectivo Provincial de Hostelería de Pontevedra 2024-2025 (prorrogado/ultraactividad desde 01/01/2026 con tablas 2025 conforme al Art. 3º; págs. 2-27 en gallego y págs. 28-53 versión íntegra oficial en castellano con Arts. 1-43 y Anexos I-V; extracción 100 % CPU con reconstrucción vectorial y matriz de 13 columnas)."
   }
 }

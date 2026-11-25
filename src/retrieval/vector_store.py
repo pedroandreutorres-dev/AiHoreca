@@ -1208,15 +1208,18 @@ class AiHorecaVectorStore:
         if doc.tipo_contenido != "tabla_salarial":
             return False
         body_head = doc.text.split("\n\n", 1)[-1][:260]
+        table_head_lines = "\n".join(
+            ln for ln in body_head.splitlines() if ln.strip().startswith("|")
+        )
         if re.search(
             r"(?i)\bsalario\s+base\b|\|\s*(?:total\s+mensual|total\s+anual|salarios?\s+mensuales?)\s*\|",
-            f"{doc.articulo} {body_head}",
+            f"{doc.articulo} {table_head_lines}",
         ):
             return False
         surface = f"{doc.titulo_o_capitulo} {doc.articulo} {body_head}"
         return bool(
             re.search(
-                r"(?i)\b(?:otros\s+conceptos|outros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos|horas?\s+extras?\b|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servi[cz]os?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
+                r"(?i)\b(?:otros\s+conceptos|outros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|complemento\s+personal|antiguo\s+nivel|ajuste\s+de\s+niveles|pluses\s+y\s+complementos|horas?\s+extras?\b|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servi[cz]os?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
                 surface,
             )
         )
@@ -1253,7 +1256,7 @@ class AiHorecaVectorStore:
             body_head = doc.text.split("\n\n", 1)[-1][:350]
             return bool(
                 re.search(
-                    r"(?i)\b(?:puestos?\s+de\s+trabajo|ocupaciones\s+y\s+puestos\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+(?:salarial(?:es)?|retributivos?)|adscripci[óo]n\s+de\s+las\s+categor[íi]as|tablas?\s+de\s+correspondencia|clasificaci[óo]n\s+(?:profesional|del\s+personal|de\s+(?:los\s+)?establecimientos|de\s+(?:las\s+)?empresas)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
+                    r"(?i)\b(?:puestos?\s+de\s+trabajo|ocupaciones\s+y\s+puestos\s+de\s+trabajo|grupos?\s+salarial(?:es)?|niveles?\s+(?:salarial(?:es)?|retributivos?)|adscripci[óo]n\s+de\s+las\s+categor[íi]as|tablas?\s+de\s+correspondencia|(?:clasificaci[óo]n|descripci[óo]n)\s+(?:profesional|del\s+personal|de\s+(?:los\s+)?establecimientos|de\s+(?:las\s+)?empresas)|categor[íi]as?\s+o\s+niveles\s+del\s+personal|equivalencias?\s+de\s+clasificaci)\b",
                     f"{surface} {body_head}",
                 )
                 or (
@@ -1886,14 +1889,14 @@ class AiHorecaVectorStore:
                     d.chunk_id for d in prov_euro_tables if d.chunk_id not in preferred_euro_ids
                 )
             distinct_cls_sections = {
-                d.titulo_o_capitulo.strip()
+                (d.titulo_o_capitulo.strip(), d.tipo_contenido)
                 for d in terr_cands
                 if self._is_classification_level_table(d, include_seniority_tables)
             }
             has_establishment_cls = any(
                 self._is_classification_level_table(d, include_seniority_tables)
                 and re.search(
-                    r"(?i)\b(?:categor[íi]as?|clasificaci[óo]n)\s+de\s+(?:los\s+)?(?:establecimientos|empresas)\b|\b(?:estrellas|tenedores)\b",
+                    r"(?i)\b(?:categor[íi]as?|clasificaci[óo]n|descripci[óo]n)\s+de\s+(?:los\s+)?(?:establecimientos|empresas)\b|\b(?:estrellas|tenedores)\b",
                     f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}",
                 )
                 for d in terr_cands
@@ -1943,6 +1946,20 @@ class AiHorecaVectorStore:
                     clean_intent_q,
                 )
             )
+            asked_aux_stems = [
+                tok[:6].lower()
+                for tok in re.findall(
+                    r"(?i)(?:cultural|transporte|asistencia|convenio|vestuario|ropa|manutenci|herramienta|seguro|matrimonio|natalidad|nacimiento|jubilaci|quebranto|alojamiento)",
+                    clean_intent_q,
+                )
+            ]
+
+            def _matches_asked_aux_terms(doc: RetrievedDocument) -> bool:
+                if not asked_aux_stems:
+                    return True
+                low_txt = doc.text.lower()
+                return any(st in low_txt for st in asked_aux_stems)
+
             has_separate_concepts_table = bool(
                 is_remuneration_query
                 and asks_aux_concepts
@@ -1950,6 +1967,7 @@ class AiHorecaVectorStore:
                 and any(
                     self._is_auxiliary_concepts_table(d)
                     and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                    and _matches_asked_aux_terms(d)
                     and (not preferred_euro_ids or d.chunk_id in preferred_euro_ids)
                     for d in prov_euro_tables
                 )
@@ -2209,7 +2227,7 @@ class AiHorecaVectorStore:
                     )
                 if needs_dual_cls_tables:
                     selected_cls_sections = {
-                        s.titulo_o_capitulo.strip()
+                        (s.titulo_o_capitulo.strip(), s.tipo_contenido)
                         for s in selected
                         if _belongs_to_territory(s, terr_key)
                         and self._is_classification_level_table(s, include_seniority_tables)
@@ -2217,7 +2235,7 @@ class AiHorecaVectorStore:
                     if selected_cls_sections:
                         _pick(
                             lambda d: self._is_classification_level_table(d, include_seniority_tables)
-                            and d.titulo_o_capitulo.strip() not in selected_cls_sections
+                            and (d.titulo_o_capitulo.strip(), d.tipo_contenido) not in selected_cls_sections
                             and self._matches_role_stem(d, role_stems),
                             1,
                             terr_cands,
@@ -2231,7 +2249,7 @@ class AiHorecaVectorStore:
                         if cls_count < 2:
                             _pick(
                                 lambda d: self._is_classification_level_table(d, include_seniority_tables)
-                                and d.titulo_o_capitulo.strip() not in selected_cls_sections,
+                                and (d.titulo_o_capitulo.strip(), d.tipo_contenido) not in selected_cls_sections,
                                 1,
                                 terr_cands,
                             )
@@ -2270,8 +2288,18 @@ class AiHorecaVectorStore:
                         and self._is_monetary_table(d)
                         and self._is_auxiliary_concepts_table(d)
                         and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                        and _matches_asked_aux_terms(d)
                         and self._doc_matches_establishment_subsector(d, target_subsector)
                         and self._matches_role_stem(d, role_stems),
+                        1,
+                    )
+                if len(selected) == before_aux:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._is_auxiliary_concepts_table(d)
+                        and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                        and _matches_asked_aux_terms(d),
                         1,
                     )
                 if len(selected) == before_aux:

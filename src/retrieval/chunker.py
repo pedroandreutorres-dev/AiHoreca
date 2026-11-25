@@ -60,7 +60,13 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"tel[ée]fonos?:\s*\d.*|"
     r"(?:e?k\\?cv\s+gao-[a-z0-9-]+.*)|"
     r"gipuzkoako\s+aldizkari\s+ofiziala.*|"
-    r"bolet[íi]n\s+oficial\s+de\s+gipuzkoa.*"
+    r"bolet[íi]n\s+oficial\s+de\s+gipuzkoa.*|"
+    r"edita:\s*deputaci[oó]n\s+de\s+pontevedra.*|"
+    r"boppo|"
+    r"n[úu]m\.|"
+    r"pode\s+verificar\s+a\s+integridade.*|"
+    r"https?://sede\.depo\.gal\S*|"
+    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:.*"
     r")$"
 )
 
@@ -83,7 +89,7 @@ _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
 )
 
 _ARTICLE_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo|Artigo|Article|Art\.)(?:\.-|\.)?\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:(?:\.|\s*[-–—]|(?<=\bbis):|(?<=\bter):|(?<=\bquater):))\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo|Artigo|Article|Art\.)(?:\.-|\.)?\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:(?:\s*\.|\s*[-–—]|(?<=\bbis):|(?<=\bter):|(?<=\bquater):))\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
 )
 
 _DISPOSITION_START_RE = re.compile(
@@ -163,6 +169,33 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "nafarroa": "navarra",
     "comunidad foral de navarra": "navarra",
     "orense": "ourense",
+    "vigo": "pontevedra",
+    "vilagarcia": "pontevedra",
+    "vilagarcia de arousa": "pontevedra",
+    "villagarcia": "pontevedra",
+    "redondela": "pontevedra",
+    "cangas": "pontevedra",
+    "marin": "pontevedra",
+    "ponteareas": "pontevedra",
+    "a estrada": "pontevedra",
+    "lalin": "pontevedra",
+    "o porrino": "pontevedra",
+    "porrino": "pontevedra",
+    "sanxenxo": "pontevedra",
+    "o grove": "pontevedra",
+    "baiona": "pontevedra",
+    "nigran": "pontevedra",
+    "tui": "pontevedra",
+    "cambados": "pontevedra",
+    "poio": "pontevedra",
+    "moana": "pontevedra",
+    "bueu": "pontevedra",
+    "caldas de reis": "pontevedra",
+    "mos": "pontevedra",
+    "gondomar": "pontevedra",
+    "vilanova de arousa": "pontevedra",
+    "a guarda": "pontevedra",
+    "tomino": "pontevedra",
     "santa cruz de tenerife": "santa_cruz_tenerife",
     "tenerife": "santa_cruz_tenerife",
     "la palma": "santa_cruz_tenerife",

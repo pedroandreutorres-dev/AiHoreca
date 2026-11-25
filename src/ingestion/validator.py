@@ -421,9 +421,13 @@ def _check_monetary_row_label_parity(
     raw_pdf_text = _extract_manifest_pdf_text(pdf_path, manifest_entry, sort=True)
     pdf_labels: set[str] = set()
     for line in raw_pdf_text.splitlines():
+        if len(line.strip()) > 360:
+            continue
         decs = list(_SPANISH_DECIMAL_RE.finditer(line))
         if len(decs) >= 2:
             prefix = line[: decs[0].start()]
+            if len(prefix.strip()) > 200:
+                continue
             for word in _ROW_LABEL_WORD_RE.findall(prefix.lower()):
                 pdf_labels.add(word)
 

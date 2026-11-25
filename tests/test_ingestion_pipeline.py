@@ -2941,5 +2941,223 @@ class TestACorunaIngestionAndRetrieval(unittest.TestCase):
         self.assertIn(art14.chunk_id, ids_44)
 
 
+class TestPontevedraIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el convenio colectivo de Pontevedra (BOPPO 209/2025, 100% CPU)."""
+
+    def test_pontevedra_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "Pontevedra",
+            "Vigo",
+            "Vilagarcía de Arousa",
+            "Sanxenxo",
+            "Redondela",
+            "Cangas",
+            "Marín",
+            "O Porriño",
+            "Lalín",
+            "Baiona",
+            "Tui",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "pontevedra")
+            self.assertEqual(_canonicalize_llm_province(alias), "pontevedra")
+        self.assertEqual(_pretty_territory_label("pontevedra"), "Pontevedra")
+
+    def test_pontevedra_strict_validation_and_cpu_table_extraction(self) -> None:
+        pontevedra_md = PROCESSED_DATA_DIR / "convenio_pontevedra.md"
+        if not pontevedra_md.exists():
+            self.skipTest("Convenio de Pontevedra no disponible en data/processed/")
+
+        report = validate_document(pontevedra_md, strict=True)
+        self.assertTrue(report.passed, msg=f"convenio_pontevedra.md falló validación estricta: {report.issues}")
+        self.assertEqual(report.error_count, 0, msg=f"Errores: {report.issues}")
+        self.assertEqual(report.warning_count, 0, msg=f"Warnings: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(pontevedra_md, boundaries_cache=cache)
+        self.assertEqual(len(chunks), 63)
+        self.assertTrue(all(c.territorio == "pontevedra" for c in chunks))
+        self.assertTrue(all(c.subsector == "general" for c in chunks))
+
+        raw_md = pontevedra_md.read_text(encoding="utf-8")
+        self.assertNotIn("Deputación de Pontevedra", raw_md)
+        self.assertNotIn("sede.depo.gal", raw_md)
+        self.assertIn("| Plus Manutención | 38,74 | 38,74 |", raw_md)
+        self.assertIn("| Jefe/a de Recepción | 2 | 2 | 3 |", raw_md)
+        self.assertIn("| Antiguo Nivel 6 ⇨ Complemento personal | 35,69€ | 37,11€ |", raw_md)
+
+        def _to_doc(ch: LegalChunk) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=0.8,
+                rerank_score=0.8,
+            )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        niveles_tbl = _to_doc(next(c for c in chunks if "2.- Niveles y salario base" in c.articulo))
+        pluses_tbl = _to_doc(next(c for c in chunks if "Pluses para los años" in c.articulo))
+        art42_tbl = _to_doc(next(c for c in chunks if c.articulo.startswith("Art. 42.")))
+        desc_est = _to_doc(next(c for c in chunks if "1.- Descripción de establecimientos" in c.articulo))
+        cat_p1 = _to_doc(
+            next(c for c in chunks if "CATEGORÍAS ACUERDO LABORAL" in c.articulo and "Cocinero/a" in c.text)
+        )
+
+        self.assertEqual(store._extract_chunk_year(niveles_tbl), 2025)
+        self.assertTrue(store._is_monetary_table(niveles_tbl))
+        self.assertFalse(store._is_auxiliary_concepts_table(niveles_tbl))
+        self.assertTrue(store._is_auxiliary_concepts_table(pluses_tbl))
+        self.assertTrue(store._is_auxiliary_concepts_table(art42_tbl))
+        self.assertTrue(store._is_classification_level_table(desc_est))
+        self.assertTrue(store._is_classification_level_table(cat_p1))
+        self.assertTrue(store._matches_primary_role_stem(cat_p1, ["cociner"]))
+
+    def test_pontevedra_retrieval_selection_gd45_and_gd46(self) -> None:
+        pontevedra_md = PROCESSED_DATA_DIR / "convenio_pontevedra.md"
+        if not pontevedra_md.exists():
+            self.skipTest("Convenio de Pontevedra no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(pontevedra_md, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_pon_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_pon_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        niveles_tbl = next(c for c in chunks if "2.- Niveles y salario base" in c.articulo)
+        pluses_tbl = next(c for c in chunks if "Pluses para los años" in c.articulo)
+        art42_tbl = next(c for c in chunks if c.articulo.startswith("Art. 42."))
+        desc_est = next(c for c in chunks if "1.- Descripción de establecimientos" in c.articulo)
+        cat_cocinero = next(
+            c for c in chunks if "CATEGORÍAS ACUERDO LABORAL" in c.articulo and "Cocinero/a" in c.text
+        )
+        cat_camarero = next(
+            c for c in chunks if "CATEGORÍAS ACUERDO LABORAL" in c.articulo and "Camarero/a (" in c.text
+        )
+        art14 = next(c for c in chunks if c.articulo.startswith("Art. 14º"))
+        art31 = next(c for c in chunks if c.articulo.startswith("Art. 31º"))
+        art32 = next(c for c in chunks if c.articulo.startswith("Art. 32º"))
+        art36 = next(c for c in chunks if c.articulo.startswith("Art. 36º"))
+        extra = [
+            _to_doc(c, 0.25)
+            for c in chunks
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {art14.chunk_id, art31.chunk_id, art32.chunk_id, art36.chunk_id}
+        ][:3]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_45: debe elegir 2.- Niveles y salario base sobre Art. 42, más Pluses, Cocinero/a, Descripción establecimientos y Art. 31º
+        pool_45 = [
+            _to_doc(art42_tbl, 0.99),
+            _to_doc(pluses_tbl, 0.95),
+            _to_doc(art31, 0.92),
+            _to_doc(desc_est, 0.78),
+            _to_doc(cat_cocinero, 0.72),
+            _to_doc(niveles_tbl, 0.65),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_45 = store.rerank_and_select_by_territory(
+            candidates=pool_45,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Vigo (Pontevedra). ¿Qué salario base mensual y anual me corresponden en 2026 según las tablas vigentes en ultraactividad, cuántas pagas extraordinarias tengo al año y cuánto es el plus de manutención?",
+            territorios=["pontevedra"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina, Grupo Profesional II)",
+        )
+        ids_45 = {d.chunk_id for d in sel_45}
+        self.assertIn(niveles_tbl.chunk_id, ids_45)
+        self.assertIn(pluses_tbl.chunk_id, ids_45)
+        self.assertIn(cat_cocinero.chunk_id, ids_45)
+        self.assertIn(desc_est.chunk_id, ids_45)
+        self.assertIn(art31.chunk_id, ids_45)
+        self.assertNotIn(art42_tbl.chunk_id, ids_45)
+
+        # Escenario GD_46: debe elegir 2.- Niveles y salario base, Camarero/a, Descripción establecimientos y Art. 14º/32º/36º sin robar slots por pluses de manutención
+        pool_46 = [
+            _to_doc(art42_tbl, 0.99),
+            _to_doc(pluses_tbl, 0.97),
+            _to_doc(art14, 0.91),
+            _to_doc(art32, 0.90),
+            _to_doc(art36, 0.89),
+            _to_doc(desc_est, 0.75),
+            _to_doc(cat_camarero, 0.70),
+            _to_doc(niveles_tbl, 0.65),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_46 = store.rerank_and_select_by_territory(
+            candidates=pool_46,
+            query="Soy camarero en un restaurante de 2 tenedores en Sanxenxo (Pontevedra) en 2026. ¿Cuál es mi salario base mensual y anual, cuál es la jornada anual máxima, cómo se retribuye la nocturnidad si trabajo hasta las 02:00 y cuánto se cobra por plus de transporte?",
+            territorios=["pontevedra"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, Grupo Profesional II)",
+        )
+        ids_46 = {d.chunk_id for d in sel_46}
+        self.assertIn(niveles_tbl.chunk_id, ids_46)
+        self.assertIn(cat_camarero.chunk_id, ids_46)
+        self.assertIn(desc_est.chunk_id, ids_46)
+        self.assertIn(art14.chunk_id, ids_46)
+        self.assertIn(art32.chunk_id, ids_46)
+        self.assertIn(art36.chunk_id, ids_46)
+        self.assertNotIn(art42_tbl.chunk_id, ids_46)
+        self.assertNotIn(pluses_tbl.chunk_id, ids_46)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,7 +73,12 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"n[úu]mero\s*\|\s*zenbakia\b|"
     r"www\.gipuzkoa\.eus\b|"
     r"lg\.?:?\s*s\.?s\.?\s*\d+|"
-    r"eusko\s+jaurlaritza"
+    r"eusko\s+jaurlaritza|"
+    r"edita:\s*deputaci[oó]n\s+de\s+pontevedra\b|"
+    r"boppo$|"
+    r"n[úu]m\.?$|"
+    r"pode\s+verificar\s+a\s+integridade\s+deste\s+documento\b|"
+    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:"
     r").*$"
 )
 
@@ -263,7 +268,15 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
             r"^(?:Art[íi]culo|ART[ÍI]CULO|Artigo|ARTIGO|Article|ARTICLE|Art\.|ART\.)(?:\.-|\.|:)?\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
         ):
-            cleaned_lines.append(f"\n### {stripped}\n")
+            inline_art = re.match(
+                r"^((?:Art[íi]culo|ART[ÍI]CULO|Artigo|ARTIGO|Article|ARTICLE|Art\.|ART\.)(?:\.-|\.|:)?\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?\s*(?:\.-|\.|:)?\s+[^.\n]{3,95}\.)\s+([A-ZÁÉÍÓÚÑ¿¡].{15,})$",
+                stripped,
+            )
+            if inline_art:
+                cleaned_lines.append(f"\n### {inline_art.group(1).strip()}\n")
+                cleaned_lines.append(inline_art.group(2).strip())
+            else:
+                cleaned_lines.append(f"\n### {stripped}\n")
         elif (
             len(stripped) <= 120
             and stripped.startswith(("DISPOSICIÓN", "Disposición"))
@@ -291,6 +304,15 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
             and re.match(
                 r"^(?:Tabla(?:s)?\s+salarial(?:es)?|TABLA(?:S)?\s+SALARIAL(?:ES)?|T[áa]boa(?:s)?\s+salarial(?:is|es)?|T[ÁA]BOA(?:S)?\s+SALARIA(?:IS|LES)?)\b[^\n]*\b20[23]\d\b[^\n]*$",
                 stripped,
+            )
+        ):
+            cleaned_lines.append(f"\n### {stripped}\n")
+        elif (
+            len(stripped) <= 95
+            and re.match(
+                r"^(?:\d+\.-?\s+(?:Descripci[óo]n\s+de\s+establecimientos|Niveles\s+y\s+salario\s+base|Categor[íi]as\s+y\s+niveles)|Pluses\s+para\s+los\s+a[ñn]os\s+20[23]\d)\b[^\n]*$",
+                stripped,
+                flags=re.IGNORECASE,
             )
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
@@ -325,7 +347,10 @@ _TABLE_EXTRACTION_PROMPT = (
     "categorías profesionales, niveles o conceptos económicos, aunque en el PDF su celda de cabecera aparezca "
     "en blanco o combinada: crea siempre una primera columna explícita (p. ej. `Categoría / Puesto` u "
     "`Ocupación / Puesto`) y transcribe íntegramente el nombre literal de cada fila y de cada cabecera de "
-    "columna sin recortar letras ni truncar encabezados."
+    "columna sin recortar letras ni truncar encabezados. Cuando una tabla tenga varias filas de cabecera "
+    "jerárquica o celdas agrupadas horizontalmente (colspan), colápsalas en una única fila de cabeceras "
+    "explícitas y autocontenidas (p. ej. `TIPO A 5*`, `TIPO A 4*`, ..., `TIPO C Especial`, `TIPO D Secc. 6ª y 8ª`) "
+    "sin dejar columnas con encabezado vacío."
 )
 
 _SCANNED_OCR_PROMPT = (
@@ -852,6 +877,7 @@ def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
                         "\n," in cell
                         or ",\n" in cell
                         or len(_SPANISH_DECIMALS_RE.findall(cell)) >= 2
+                        or re.search(r"(?:\d\s+[.,](?:\s+[.,])?|\d€?\s*,)", cell)
                     ):
                         return False
         return True
@@ -874,13 +900,13 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
     return _normalize_spanish_thousands(out)
 
 
-def _extract_vector_table_md_by_clip(
+def _collect_vector_table_raw_rows(
     page: pymupdf.Page,
     table: object,
     *,
     bilingual_right_es: bool = False,
-) -> str:
-    """Reconstruye en CPU una tabla vectorial extrayendo texto por rectángulo de celda (`clip`) para evitar fusión de decimales."""
+) -> tuple[list[list[str]], list[bool], list[tuple[float, float]]]:
+    """Extrae filas y límites X de columnas desde las celdas vectoriales de PyMuPDF."""
     table_rect = pymupdf.Rect(table.bbox)
     table_width = max(1.0, float(table_rect.width or 1.0))
     page_width = float(page.rect.width or 0.0)
@@ -952,7 +978,17 @@ def _extract_vector_table_md_by_clip(
             old_x0, old_x1 = cell_x_bounds[c_pos]
             cell_x_bounds[c_pos] = (min(old_x0, float(cell_rect.x0)), max(old_x1, float(cell_rect.x1)))
 
-            d = page.get_text("dict", clip=cell_rect)
+            query_rect = (
+                pymupdf.Rect(
+                    max(0.0, cell_rect.x0 - 10.0),
+                    cell_rect.y0,
+                    cell_rect.x1,
+                    cell_rect.y1,
+                )
+                if (not bilingual_right_es and c_pos == 0)
+                else cell_rect
+            )
+            d = page.get_text("dict", clip=query_rect)
             y_buckets: dict[int, list[tuple[float, float, str]]] = {}
             for blk in d.get("blocks", []):
                 if blk.get("type") != 0:
@@ -961,7 +997,11 @@ def _extract_vector_table_md_by_clip(
                     lx0, ly0, lx1, ly1 = ln["bbox"]
                     cx = (lx0 + lx1) / 2.0
                     cy = (ly0 + ly1) / 2.0
-                    if not (cell_rect.x0 <= cx <= cell_rect.x1 and cell_rect.y0 <= cy <= cell_rect.y1):
+                    if not (
+                        query_rect.x0 <= cx <= cell_rect.x1
+                        and lx1 >= cell_rect.x0 - 2.0
+                        and cell_rect.y0 <= cy <= cell_rect.y1
+                    ):
                         continue
                     raw_txt = _normalize_unicode_spaces(
                         "".join(sp.get("text", "") for sp in ln.get("spans", []))
@@ -1035,7 +1075,7 @@ def _extract_vector_table_md_by_clip(
                 row_colspans.append(is_colspan_row)
 
     if not raw_rows:
-        return ""
+        return [], [], []
 
     # Divide columnas colapsadas por líder de puntos cuando >=2 sub-columnas están alineadas horizontalmente (ej. Nivel ... Total mes (€))
     if bilingual_right_es and len(raw_rows) >= 3:
@@ -1096,24 +1136,38 @@ def _extract_vector_table_md_by_clip(
                     spanish_start_idx = ri
                     break
             if spanish_start_idx is None:
-                return ""
+                return [], [], []
             raw_rows = raw_rows[spanish_start_idx:]
             row_colspans = row_colspans[spanish_start_idx:]
         else:
             whole_tbl_txt = " ".join(non_empty_rows_txt)
             if _is_coofficial_non_spanish_text(whole_tbl_txt):
-                return ""
+                return [], [], []
 
     ncols = max(len(r) for r in raw_rows)
     padded = [r + [""] * (ncols - len(r)) for r in raw_rows]
     keep_cols = [c for c in range(ncols) if any(r[c] for r in padded)]
     if not keep_cols:
-        return ""
+        return [], [], []
     trimmed = [[r[c] for c in keep_cols] for r in padded]
+    kept_x_bounds = [
+        cell_x_bounds[c] if c < len(cell_x_bounds) else (0.0, 0.0)
+        for c in keep_cols
+    ]
+    return trimmed, row_colspans, kept_x_bounds
 
-    def _esc(val: str) -> str:
-        return val.replace("|", "/").strip()
 
+def _escape_md_cell(val: str) -> str:
+    return val.replace("|", "/").strip()
+
+
+def _collapse_table_headers_and_body(
+    trimmed: list[list[str]],
+    row_colspans: list[bool],
+    *,
+    bilingual_right_es: bool = False,
+) -> tuple[list[str], list[str], list[list[str]], int]:
+    """Colapsa cabeceras jerárquicas multi-fila y normaliza filas con valores monetarios fusionados."""
     banner_headings: list[str] = []
     orig_row_idx = 0
     while (
@@ -1127,12 +1181,10 @@ def _extract_vector_table_md_by_clip(
             and any(_SPANISH_DECIMALS_RE.search(c) for c in trimmed[1][1:])
         )
     ):
-        banner_headings.append(f"### {_esc(trimmed[0][0])}")
+        banner_headings.append(f"### {_escape_md_cell(trimmed[0][0])}")
         trimmed = trimmed[1:]
         row_colspans = row_colspans[1:]
         orig_row_idx += 1
-
-    banner_heading = ("\n\n".join(banner_headings) + "\n\n") if banner_headings else ""
 
     def _merge_header_rows(top_row: list[str], sub_row: list[str], default_col0: str = "") -> list[str]:
         merged = [top_row[0] or sub_row[0] or default_col0]
@@ -1148,9 +1200,53 @@ def _extract_vector_table_md_by_clip(
                 merged.append(sub_h)
         return merged
 
-    if len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
+    consumed_header_rows = orig_row_idx
+    if (
+        len(trimmed) >= 4
+        and trimmed[0][0]
+        and not trimmed[1][0]
+        and not trimmed[2][0]
+        and sum(1 for c in trimmed[0][1:] if c) >= 2
+        and sum(1 for c in trimmed[1][1:] if c) >= 2
+        and any(trimmed[2][1:])
+        and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1] + trimmed[2]))
+    ):
+        hdr = [trimmed[0][0]]
+        last_top = ""
+        for ci in range(1, len(trimmed[0])):
+            if trimmed[0][ci]:
+                last_top = trimmed[0][ci]
+            leaf = trimmed[2][ci] or trimmed[1][ci]
+            if last_top and leaf:
+                hdr.append(f"{last_top} - {leaf}")
+            else:
+                hdr.append(last_top or leaf)
+        body = trimmed[3:]
+        consumed_header_rows += 3
+    elif (
+        len(trimmed) >= 3
+        and trimmed[0][0]
+        and not trimmed[1][0]
+        and any(trimmed[1][1:])
+        and not all(trimmed[1][1:])
+        and all(
+            len(c.strip()) <= 10 and not _SPANISH_DECIMALS_RE.search(c)
+            for c in trimmed[1][1:]
+            if c
+        )
+    ):
+        hdr = [
+            f"{trimmed[0][i]} ({trimmed[1][i].strip()})".strip()
+            if i < len(trimmed[1]) and trimmed[1][i]
+            else trimmed[0][i]
+            for i in range(len(trimmed[0]))
+        ]
+        body = trimmed[2:]
+        consumed_header_rows += 2
+    elif len(trimmed) >= 2 and not trimmed[1][0] and all(trimmed[1][1:]):
         hdr = _merge_header_rows(trimmed[0], trimmed[1])
         body = trimmed[2:]
+        consumed_header_rows += 2
     elif (
         len(trimmed) >= 2
         and not trimmed[0][0]
@@ -1161,6 +1257,7 @@ def _extract_vector_table_md_by_clip(
     ):
         hdr = _merge_header_rows(trimmed[0], trimmed[1])
         body = trimmed[2:]
+        consumed_header_rows += 2
     elif (
         len(trimmed) >= 3
         and not trimmed[0][0]
@@ -1172,6 +1269,7 @@ def _extract_vector_table_md_by_clip(
     ):
         hdr = _merge_header_rows(trimmed[0], trimmed[2], default_col0="Categoría / Nivel")
         body = [trimmed[1], *trimmed[3:]]
+        consumed_header_rows += 3
     elif (
         len(trimmed) >= 2
         and any(not c for c in trimmed[0])
@@ -1182,24 +1280,29 @@ def _extract_vector_table_md_by_clip(
     ):
         hdr = [f"{trimmed[0][i]} {trimmed[1][i]}".strip() for i in range(len(trimmed[0]))]
         body = trimmed[2:]
+        consumed_header_rows += 2
     elif banner_headings:
         hdr = [f"Columna {idx + 1}" for idx in range(len(trimmed[0]))]
         body = trimmed
     else:
         hdr = list(trimmed[0])
         body = trimmed[1:]
+        consumed_header_rows += 1
+
+    if hdr and not _escape_md_cell(hdr[0]) and any(_escape_md_cell(r[0]) for r in body if r):
+        hdr[0] = "Concepto / Nivel"
 
     # Rellenar cabeceras vacías en columnas [1:] para evitar SPLIT_COLSPAN_HEADER manteniendo nombres distintos
     if bilingual_right_es:
-        seen_headers: set[str] = {_esc(hdr[0]).lower()} if hdr else set()
+        seen_headers: set[str] = {_escape_md_cell(hdr[0]).lower()} if hdr else set()
         for ci in range(1, len(hdr)):
-            if not _esc(hdr[ci]):
+            if not _escape_md_cell(hdr[ci]):
                 col_has_dec = any(_SPANISH_DECIMALS_RE.search(r[ci]) for r in body if ci < len(r))
                 candidate = "Importe / Valor" if (col_has_dec and ci == 1) else f"Columna {ci + 1}"
                 if candidate.lower() in seen_headers:
                     candidate = f"Observaciones ({ci + 1})"
                 hdr[ci] = candidate
-            seen_headers.add(_esc(hdr[ci]).lower())
+            seen_headers.add(_escape_md_cell(hdr[ci]).lower())
 
         # Reagrupa filas de descripción partidas verticalmente cuando la fila i carece de valor y la fila i+1 aporta el importe
         merged_body: list[list[str]] = []
@@ -1233,13 +1336,63 @@ def _extract_vector_table_md_by_clip(
             bi += 1
         body = merged_body
 
+    # Separa valores monetarios finales fusionados en columna 0 cuando la fila carece de líneas verticales internas
+    fixed_body: list[list[str]] = []
+    mon_tok = r"(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2}(?:\s*€)?"
+    for r in body:
+        row_vals = list(r)
+        if len(row_vals) >= 3 and row_vals[0] and all(not c for c in row_vals[1:]):
+            n_trail = len(row_vals) - 1
+            m_trail = re.match(
+                rf"^(.*?)\s+({mon_tok}(?:\s+{mon_tok}){{{n_trail - 1}}})$",
+                row_vals[0].strip(),
+            )
+            if m_trail:
+                extracted = re.findall(mon_tok, m_trail.group(2))
+                if len(extracted) == n_trail:
+                    row_vals = [m_trail.group(1).strip(), *[v.strip() for v in extracted]]
+        fixed_body.append(row_vals)
+
+    return banner_headings, hdr, fixed_body, consumed_header_rows
+
+
+def _format_markdown_table(
+    banner_headings: list[str],
+    hdr: list[str],
+    body: list[list[str]],
+) -> str:
+    """Formatea encabezados de sección opcionales y una tabla Markdown GFM alineada."""
+    banner_heading = ("\n\n".join(banner_headings) + "\n\n") if banner_headings else ""
     md_lines = [
-        "| " + " | ".join(_esc(c) for c in hdr) + " |",
+        "| " + " | ".join(_escape_md_cell(c) for c in hdr) + " |",
         "| " + " | ".join(["---"] * len(hdr)) + " |",
     ]
     for r in body:
-        md_lines.append("| " + " | ".join(_esc(c) for c in r) + " |")
+        padded_r = list(r) + [""] * max(0, len(hdr) - len(r))
+        md_lines.append("| " + " | ".join(_escape_md_cell(c) for c in padded_r[: len(hdr)]) + " |")
     return banner_heading + "\n".join(md_lines)
+
+
+def _extract_vector_table_md_by_clip(
+    page: pymupdf.Page,
+    table: object,
+    *,
+    bilingual_right_es: bool = False,
+) -> str:
+    """Reconstruye en CPU una tabla vectorial extrayendo texto por rectángulo de celda (`clip`) para evitar fusión de decimales."""
+    trimmed, row_colspans, _ = _collect_vector_table_raw_rows(
+        page,
+        table,
+        bilingual_right_es=bilingual_right_es,
+    )
+    if not trimmed:
+        return ""
+    banner_headings, hdr, body, _ = _collapse_table_headers_and_body(
+        trimmed,
+        row_colspans,
+        bilingual_right_es=bilingual_right_es,
+    )
+    return _format_markdown_table(banner_headings, hdr, body)
 
 
 def _format_dotted_leader_block_to_md(block_text: str) -> Optional[str]:
@@ -1463,9 +1616,209 @@ def _extract_bilingual_right_es_page_cpu(page: pymupdf.Page) -> str:
     return _normalize_spanish_thousands(out)
 
 
+def _extract_continuation_matrix_from_next_page(
+    page: pymupdf.Page,
+    next_page: pymupdf.Page,
+    min_y0: float,
+) -> Optional[tuple[float, str]]:
+    """Reconstruye en CPU una matriz de tabla sin rejilla completa usando el esquema X de la página siguiente."""
+    try:
+        next_finder = next_page.find_tables()
+    except Exception:
+        return None
+    next_tables = (
+        [t for t in next_finder.tables if t.col_count >= 5 and t.row_count >= 5]
+        if next_finder and next_finder.tables
+        else []
+    )
+    if not next_tables:
+        return None
+
+    page_height = float(page.rect.height or 842.0)
+    page_dict = page.get_text("dict")
+    all_lines: list[tuple[float, float, float, float, str]] = []
+    for blk in page_dict.get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        for ln in blk.get("lines", []):
+            lx0, ly0, lx1, ly1 = ln["bbox"]
+            txt = _normalize_unicode_spaces(
+                "".join(sp.get("text", "") for sp in ln.get("spans", []))
+            ).strip()
+            if txt:
+                all_lines.append((float(ly0), float(ly1), float(lx0), float(lx1), txt))
+    all_lines.sort(key=lambda item: (round(item[0], 1), round(item[2], 1)))
+
+    for next_tbl in next_tables:
+        trimmed, row_colspans, col_x_bounds = _collect_vector_table_raw_rows(next_page, next_tbl)
+        if not trimmed or len(col_x_bounds) < 5:
+            continue
+        banner_headings, hdr, _, hdr_consumed = _collapse_table_headers_and_body(
+            trimmed, row_colspans
+        )
+        if not hdr or len(hdr) != len(col_x_bounds) or "columna 1" in [h.lower() for h in hdr]:
+            continue
+
+        markers: list[str] = []
+        if banner_headings:
+            markers.append(re.sub(r"^#+\s*", "", banner_headings[0]).strip())
+        if hdr[0] and hdr[0] != "Concepto / Nivel":
+            markers.append(hdr[0].strip())
+        markers = [m.lower() for m in markers if len(m) >= 6]
+        if not markers:
+            continue
+
+        cont_y0: Optional[float] = None
+        for ly0, _, _, _, txt in all_lines:
+            if ly0 < min_y0 - 2.0:
+                continue
+            low = txt.lower()
+            if any(m[:28] in low or low in m for m in markers):
+                cont_y0 = ly0
+                break
+        if cont_y0 is None:
+            continue
+
+        leaf_x_bounds = list(col_x_bounds)
+        best_widths = [x1 - x0 for x0, x1 in leaf_x_bounds]
+        for row_obj in next_tbl.rows:
+            if sum(1 for c in row_obj.cells if c is not None) < len(leaf_x_bounds) // 2:
+                continue
+            for ci, cb in enumerate(row_obj.cells):
+                if cb is None or ci >= len(leaf_x_bounds):
+                    continue
+                cx0, _, cx1, _ = cb
+                w = float(cx1) - float(cx0)
+                if 0.0 < w < best_widths[ci]:
+                    best_widths[ci] = w
+                    leaf_x_bounds[ci] = (float(cx0), float(cx1))
+        col_x_bounds = leaf_x_bounds
+
+        raw_hdr_blob = " ".join(c.lower() for r in trimmed[:hdr_consumed] for c in r if c)
+        raw_hdr_cells = {
+            re.sub(r"\s+", " ", c).strip().lower()
+            for r in trimmed[:hdr_consumed]
+            for c in r
+            if c and c.strip()
+        }
+        max_col_x1 = col_x_bounds[-1][1]
+        zone_lines = [
+            item
+            for item in all_lines
+            if item[0] >= cont_y0 - 2.0
+            and item[0] <= page_height - 40.0
+            and item[2] <= max_col_x1 + 15.0
+            and not _BULLETIN_HEADER_NOISE.match(item[4])
+        ]
+        if not zone_lines:
+            continue
+
+        in_header_zone = True
+        mapped_lines: list[tuple[float, bool, int, str]] = []
+        for ly0, _, lx0, lx1, txt in zone_lines:
+            norm_txt = re.sub(r"\s+", " ", txt).strip()
+            low_txt = norm_txt.lower()
+            is_section_banner = bool(
+                re.match(r"^(?:[ÁA]REA\s+FUNCIONAL|GRUPO\s+PROFESIONAL)\b", norm_txt, re.IGNORECASE)
+            )
+            if in_header_zone and not is_section_banner:
+                is_hdr_tok = (
+                    low_txt in raw_hdr_cells
+                    or (len(low_txt) >= 3 and low_txt in raw_hdr_blob)
+                    or low_txt in {"2ª y", "tabernas", "secc. 6º", "y 8", "3ª y 4ª", "1ª y 2ª"}
+                )
+                if is_hdr_tok:
+                    continue
+                if lx0 < col_x_bounds[0][1] and len(norm_txt) >= 4:
+                    in_header_zone = False
+            if is_section_banner:
+                mapped_lines.append((ly0, True, 0, norm_txt))
+                continue
+            cx = (lx0 + lx1) / 2.0
+            best_ci = min(
+                range(len(col_x_bounds)),
+                key=lambda ci: (
+                    0.0 if col_x_bounds[ci][0] - 4.0 <= cx <= col_x_bounds[ci][1] + 4.0 else 1.0,
+                    abs(((col_x_bounds[ci][0] + col_x_bounds[ci][1]) / 2.0) - cx),
+                ),
+            )
+            mapped_lines.append((ly0, False, best_ci, norm_txt))
+
+        y_rows: list[tuple[bool, list[str], dict[int, str]]] = []
+        current_y: Optional[float] = None
+        curr_is_banner = False
+        curr_col0: list[str] = []
+        curr_vals: dict[int, str] = {}
+        for ly0, is_banner, ci, txt in mapped_lines:
+            if is_banner or current_y is None or curr_is_banner or abs(ly0 - current_y) > 3.5:
+                if curr_col0 or curr_vals:
+                    y_rows.append((curr_is_banner, curr_col0, curr_vals))
+                current_y = ly0
+                curr_is_banner = is_banner
+                curr_col0 = [txt] if ci == 0 else []
+                curr_vals = {ci: txt} if (not is_banner and ci > 0) else {}
+            else:
+                if ci == 0:
+                    curr_col0.append(txt)
+                else:
+                    curr_vals[ci] = f"{curr_vals[ci]} {txt}".strip() if ci in curr_vals else txt
+        if curr_col0 or curr_vals:
+            y_rows.append((curr_is_banner, curr_col0, curr_vals))
+
+        logical_rows: list[tuple[bool, list[str], dict[int, str]]] = []
+        for is_banner, col0_parts, vals in y_rows:
+            c0_str = " ".join(col0_parts).strip()
+            if is_banner:
+                logical_rows.append((True, [c0_str], {}))
+                continue
+            if not c0_str and vals:
+                for prev_idx in range(len(logical_rows) - 1, -1, -1):
+                    p_ban, _, p_vals = logical_rows[prev_idx]
+                    if p_ban:
+                        break
+                    if not p_vals:
+                        p_vals.update(vals)
+                        break
+                continue
+            if logical_rows and not logical_rows[-1][0]:
+                prev_parts = logical_rows[-1][1]
+                prev_blob = " ".join(prev_parts)
+                unclosed_paren = prev_blob.count("(") > prev_blob.count(")")
+                closes_or_cont = (
+                    (")" in c0_str and "(" not in c0_str)
+                    or prev_blob.endswith((",", "-"))
+                    or (bool(c0_str) and c0_str[0].islower())
+                )
+                if unclosed_paren or (closes_or_cont and not vals):
+                    if prev_blob.endswith("-"):
+                        prev_parts[-1] = f"{prev_parts[-1][:-1]}{c0_str}".strip()
+                    else:
+                        prev_parts.append(c0_str)
+                    for k_ci, v_str in vals.items():
+                        logical_rows[-1][2][k_ci] = v_str
+                    continue
+            logical_rows.append((False, [c0_str] if c0_str else [], dict(vals)))
+
+        body: list[list[str]] = []
+        for _, col0_parts, vals in logical_rows:
+            row_cells = [""] * len(hdr)
+            row_cells[0] = " ".join(col0_parts).strip()
+            for ci, val in vals.items():
+                if 0 < ci < len(row_cells):
+                    row_cells[ci] = val
+            if any(row_cells):
+                body.append(row_cells)
+
+        if len(body) >= 3 and any(any(r[1:]) for r in body):
+            return cont_y0, _format_markdown_table(banner_headings, hdr, body)
+
+    return None
+
+
 def _extract_vector_tables_page_cpu(
     page: pymupdf.Page,
     layout: str = "single_column",
+    next_page: Optional[pymupdf.Page] = None,
 ) -> Optional[str]:
     """Extrae en CPU páginas mixtas (texto + tablas vectoriales) usando `clip` por celda y guardrail de paridad."""
     try:
@@ -1481,6 +1834,7 @@ def _extract_vector_tables_page_cpu(
         return None
 
     page_width = float(page.rect.width or 0.0)
+    page_height = float(page.rect.height or 842.0)
     mid_x = page_width / 2.0
     table_rects = [pymupdf.Rect(t.bbox) for t in tables]
 
@@ -1497,11 +1851,23 @@ def _extract_vector_tables_page_cpu(
             )
             raw_items.append((rect, is_wide, table_md))
 
+    cont_y0: Optional[float] = None
+    if next_page is not None and layout == "single_column" and table_rects:
+        max_tbl_y1 = max(tr.y1 for tr in table_rects)
+        cont = _extract_continuation_matrix_from_next_page(page, next_page, max_tbl_y1)
+        if cont is not None:
+            cont_y0, cont_md = cont
+            raw_items.append(
+                (pymupdf.Rect(0.0, cont_y0, page_width, page_height), False, cont_md)
+            )
+
     for blk in page.get_text("blocks"):
         if len(blk) < 7 or blk[6] != 0 or not str(blk[4]).strip():
             continue
         br = pymupdf.Rect(float(blk[0]), float(blk[1]), float(blk[2]), float(blk[3]))
         cx, cy = (br.x0 + br.x1) / 2.0, (br.y0 + br.y1) / 2.0
+        if cont_y0 is not None and (cy >= cont_y0 - 2.0 or br.y1 >= cont_y0 - 2.0 or br.x0 >= page_width * 0.90):
+            continue
         if any(
             tr.x0 - 2.0 <= cx <= tr.x1 + 2.0 and tr.y0 - 2.0 <= cy <= tr.y1 + 2.0
             for tr in table_rects
@@ -1930,7 +2296,12 @@ def extract_hybrid_markdown(
                 )
                 markdown_parts.append(_extract_clean_vector_table_page_cpu(doc, p_idx))
             else:
-                clip_md = _extract_vector_tables_page_cpu(page, layout=layout)
+                next_page_obj = doc[p_idx + 1] if p_idx + 1 <= end_idx else None
+                clip_md = _extract_vector_tables_page_cpu(
+                    page,
+                    layout=layout,
+                    next_page=next_page_obj,
+                )
                 if clip_md is not None and _markdown_table_is_healthy(clip_md):
                     flush_coord_table_stream()
                     flush_table_batch()
