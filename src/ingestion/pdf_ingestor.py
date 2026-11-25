@@ -80,7 +80,9 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"boppo$|"
     r"n[úu]m\.?$|"
     r"pode\s+verificar\s+a\s+integridade\s+deste\s+documento\b|"
-    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:"
+    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:|"
+    r"boc\.cantabria\.es\b|"
+    r"cve-20[12]\d-\d{3,6}\b"
     r").*$"
 )
 
@@ -919,6 +921,10 @@ def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
                 )
             ):
                 return False
+            for row_obj in table.rows or []:
+                non_none_y1 = [float(pymupdf.Rect(c).y1) for c in row_obj.cells if c is not None]
+                if len(non_none_y1) >= 2 and (max(non_none_y1) - min(non_none_y1)) > 4.0:
+                    return False
             for row in rows:
                 for cell in row:
                     if cell and (
@@ -1002,12 +1008,22 @@ def _collect_vector_table_raw_rows(
     raw_row_segs: list[list[list[tuple[float, str]]]] = []
     cell_x_bounds: list[tuple[float, float]] = []
     row_colspans: list[bool] = []
+    active_vspans: dict[int, tuple[float, str]] = {}
+    last_row_tails_vspan_end: Optional[float] = None
     for row in table.rows:
         orig_cells = (
             [row.cells[ci] for ci in valid_orig_cols]
             if valid_orig_cols is not None
             else list(row.cells)
         )
+        non_none_rects = [pymupdf.Rect(c) for c in orig_cells if c is not None]
+        row_ref_y0 = min((float(r.y0) for r in non_none_rects), default=0.0)
+        row_ref_y1 = min((float(r.y1) for r in non_none_rects), default=0.0)
+        row_ref_cy = (row_ref_y0 + row_ref_y1) / 2.0
+        for vci in list(active_vspans):
+            if row_ref_cy >= active_vspans[vci][0] - 1.5:
+                del active_vspans[vci]
+
         is_colspan_row = (
             len(orig_cells) >= 2
             and orig_cells[0] is not None
@@ -1015,12 +1031,19 @@ def _collect_vector_table_raw_rows(
             and float(pymupdf.Rect(orig_cells[0]).width) >= (table_width * 0.70 if valid_orig_cols is None else table_width * 0.30)
         )
         col_lines: list[list[tuple[int, str, list[tuple[float, str]]]]] = []
+        row_new_vspans: dict[int, float] = {}
         any_multi = False
         for c_pos, cb in enumerate(orig_cells):
             if cb is None:
                 col_lines.append([])
                 continue
             cell_rect = pymupdf.Rect(cb)
+            if (
+                not is_colspan_row
+                and len(non_none_rects) >= 2
+                and float(cell_rect.y1) > row_ref_y1 + 4.0
+            ):
+                row_new_vspans[c_pos] = float(cell_rect.y1)
             while len(cell_x_bounds) <= c_pos:
                 cell_x_bounds.append((float(cell_rect.x0), float(cell_rect.x1)))
             old_x0, old_x1 = cell_x_bounds[c_pos]
@@ -1103,9 +1126,20 @@ def _collect_vector_table_raw_rows(
         )
 
         if any_multi and multi_col_clusters >= 2:
+            last_row_tails_vspan_end = None
             for clus in y_clusters:
                 cset = set(clus)
                 sub = [" ".join(t for yk, t, _ in cl if yk in cset).strip() for cl in col_lines]
+                if not is_colspan_row:
+                    for c_pos in range(len(sub)):
+                        if (
+                            not sub[c_pos]
+                            and c_pos < len(orig_cells)
+                            and orig_cells[c_pos] is None
+                            and c_pos in active_vspans
+                            and row_ref_cy < active_vspans[c_pos][0] - 1.5
+                        ):
+                            sub[c_pos] = active_vspans[c_pos][1]
                 sub_segs = [
                     [sg for yk, _, sgs in cl if yk in cset for sg in sgs]
                     for cl in col_lines
@@ -1114,13 +1148,72 @@ def _collect_vector_table_raw_rows(
                     raw_rows.append(sub)
                     raw_row_segs.append(sub_segs)
                     row_colspans.append(False)
+            if (
+                raw_rows
+                and row_new_vspans
+                and (len(raw_rows) > 1 or any(_SPANISH_DECIMALS_RE.search(v) for v in raw_rows[-1]))
+            ):
+                for vci, y1_end in row_new_vspans.items():
+                    if vci < len(raw_rows[-1]) and raw_rows[-1][vci]:
+                        active_vspans[vci] = (y1_end, raw_rows[-1][vci])
         else:
             joined = [" ".join(t for _, t, _ in cl).strip() for cl in col_lines]
             joined_segs = [[sg for _, _, sgs in cl for sg in sgs] for cl in col_lines]
+            if (
+                raw_rows
+                and last_row_tails_vspan_end is not None
+                and not is_colspan_row
+                and not row_colspans[-1]
+                and orig_cells
+                and orig_cells[0] is not None
+                and all(c is None for c in orig_cells[1:])
+                and joined[0]
+                and row_ref_cy < last_row_tails_vspan_end - 1.5
+            ):
+                raw_rows[-1][0] = joined[0]
+                if joined_segs and raw_row_segs[-1]:
+                    raw_row_segs[-1][0] = joined_segs[0]
+                last_row_tails_vspan_end = None
+                continue
+
+            if not is_colspan_row:
+                for c_pos in range(len(joined)):
+                    if (
+                        not joined[c_pos]
+                        and c_pos < len(orig_cells)
+                        and orig_cells[c_pos] is None
+                        and c_pos in active_vspans
+                        and row_ref_cy < active_vspans[c_pos][0] - 1.5
+                    ):
+                        joined[c_pos] = active_vspans[c_pos][1]
+
             if any(joined):
                 raw_rows.append(joined)
                 raw_row_segs.append(joined_segs)
                 row_colspans.append(is_colspan_row)
+                tail_vspan_ends = [
+                    row_new_vspans[ci]
+                    for ci in range(1, len(joined))
+                    if joined[ci] and ci in row_new_vspans
+                ]
+                non_empty_tails = sum(1 for ci in range(1, len(joined)) if joined[ci])
+                if (
+                    not is_colspan_row
+                    and not joined[0]
+                    and non_empty_tails > 0
+                    and len(tail_vspan_ends) == non_empty_tails
+                ):
+                    last_row_tails_vspan_end = min(tail_vspan_ends)
+                else:
+                    last_row_tails_vspan_end = None
+                if row_new_vspans and (
+                    len(raw_rows) > 1 or any(_SPANISH_DECIMALS_RE.search(v) for v in joined)
+                ):
+                    for vci, y1_end in row_new_vspans.items():
+                        if vci < len(joined) and joined[vci]:
+                            active_vspans[vci] = (y1_end, joined[vci])
+            else:
+                last_row_tails_vspan_end = None
 
     if not raw_rows:
         return [], [], []
@@ -1373,12 +1466,73 @@ def _collapse_table_headers_and_body(
         hdr = [f"{trimmed[0][i]} {trimmed[1][i]}".strip() for i in range(len(trimmed[0]))]
         body = trimmed[2:]
         consumed_header_rows += 2
+    elif (
+        len(trimmed) >= 2
+        and not trimmed[0][0]
+        and all(trimmed[0][1:])
+        and trimmed[1][0]
+        and all(not c for c in trimmed[1][1:])
+        and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
+        and re.search(
+            r"(?i)\b(?:grupo|nivel|categor[íi]a|puesto|concepto|clase|c[óo]digo|escala)\b",
+            trimmed[1][0],
+        )
+    ):
+        hdr = [trimmed[1][0], *trimmed[0][1:]]
+        body = trimmed[2:]
+        consumed_header_rows += 2
+    elif (
+        len(trimmed) >= 3
+        and trimmed[0][0]
+        and all(trimmed[0][1:])
+        and not trimmed[1][0]
+        and any(trimmed[1][1:])
+        and not all(trimmed[1][1:])
+        and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
+        and all(
+            len(c.strip()) <= 18 and not re.search(r"\d", c)
+            for c in trimmed[1][1:]
+            if c
+        )
+    ):
+        hdr = [
+            f"{trimmed[0][i]} {trimmed[1][i].strip()}".strip()
+            if i < len(trimmed[1]) and trimmed[1][i]
+            else trimmed[0][i]
+            for i in range(len(trimmed[0]))
+        ]
+        body = trimmed[2:]
+        consumed_header_rows += 2
     elif banner_headings or _is_headless_table_start(trimmed):
         hdr = _synthesize_headless_headers(trimmed)
         body = trimmed
     else:
         hdr = list(trimmed[0])
         body = trimmed[1:]
+        consumed_header_rows += 1
+
+    if (
+        hdr
+        and all(hdr)
+        and len(body) >= 2
+        and not body[0][0]
+        and any(body[0][1:])
+        and not all(body[0][1:])
+        and any(body[1][1:])
+        and not _SPANISH_DECIMALS_RE.search(" ".join(body[0]))
+        and all(
+            len(c.strip()) <= 18 and not re.search(r"\d", c)
+            for c in body[0][1:]
+            if c
+        )
+    ):
+        hdr = [
+            f"{hdr[i]} {body[0][i].strip()}".strip()
+            if i < len(body[0]) and body[0][i]
+            else hdr[i]
+            for i in range(len(hdr))
+        ]
+        body = body[1:]
         consumed_header_rows += 1
 
     if hdr and not _escape_md_cell(hdr[0]) and any(_escape_md_cell(r[0]) for r in body if r):
@@ -1953,19 +2107,46 @@ def _extract_vector_tables_page_cpu(
                 (pymupdf.Rect(0.0, cont_y0, page_width, page_height), False, cont_md)
             )
 
-    for blk in page.get_text("blocks"):
-        if len(blk) < 7 or blk[6] != 0 or not str(blk[4]).strip():
+    dict_data = page.get_text("dict")
+    for blk in dict_data.get("blocks", []):
+        if blk.get("type") != 0:
             continue
-        br = pymupdf.Rect(float(blk[0]), float(blk[1]), float(blk[2]), float(blk[3]))
-        cx, cy = (br.x0 + br.x1) / 2.0, (br.y0 + br.y1) / 2.0
-        if cont_y0 is not None and (cy >= cont_y0 - 2.0 or br.y1 >= cont_y0 - 2.0 or br.x0 >= page_width * 0.90):
+        outside_lines: list[tuple[float, float, float, float, str]] = []
+        for ln in blk.get("lines", []):
+            lx0, ly0, lx1, ly1 = [float(v) for v in ln.get("bbox", (0, 0, 0, 0))]
+            ltxt = "".join(sp.get("text", "") for sp in ln.get("spans", []))
+            if not ltxt.strip():
+                continue
+            lcx, lcy = (lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0
+            if cont_y0 is not None and (lcy >= cont_y0 - 2.0 or ly1 >= cont_y0 - 2.0 or lx0 >= page_width * 0.90):
+                continue
+            if any(
+                tr.x0 - 2.0 <= lcx <= tr.x1 + 2.0 and tr.y0 - 2.0 <= lcy <= tr.y1 + 2.0
+                for tr in table_rects
+            ):
+                continue
+            outside_lines.append((lx0, ly0, lx1, ly1, ltxt))
+        if not outside_lines:
             continue
-        if any(
-            tr.x0 - 2.0 <= cx <= tr.x1 + 2.0 and tr.y0 - 2.0 <= cy <= tr.y1 + 2.0
-            for tr in table_rects
+        br = pymupdf.Rect(
+            min(it[0] for it in outside_lines),
+            min(it[1] for it in outside_lines),
+            max(it[2] for it in outside_lines),
+            max(it[3] for it in outside_lines),
+        )
+        blk_text = "\n".join(it[4] for it in outside_lines).strip()
+        if not blk_text:
+            continue
+        raw_blk_txt = _normalize_unicode_spaces(blk_text).strip()
+        if (
+            re.fullmatch(r"20[23]\d", raw_blk_txt)
+            and br.y0 >= 60.0
+            and br.y1 <= page_height - 55.0
+            and any(tr.y0 >= br.y0 - 5.0 for tr in table_rects)
         ):
-            continue
-        plain_md = _format_plain_page_to_markdown(str(blk[4]).strip())
+            plain_md = f"### TABLA SALARIAL {raw_blk_txt}"
+        else:
+            plain_md = _format_plain_page_to_markdown(blk_text)
         if not plain_md.strip():
             continue
         is_wide = (

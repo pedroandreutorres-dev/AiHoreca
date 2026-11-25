@@ -3412,5 +3412,235 @@ class TestAsturiasIngestionAndRetrieval(unittest.TestCase):
         self.assertNotIn(noc_2026_intro.chunk_id, ids_48)
 
 
+class TestCantabriaIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el convenio colectivo de Cantabria (BOC 173/2026)."""
+
+    def test_cantabria_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "Cantabria",
+            "Comunidad Autónoma de Cantabria",
+            "Santander",
+            "Torrelavega",
+            "Castro Urdiales",
+            "Castro-Urdiales",
+            "Camargo",
+            "Maliaño",
+            "Piélagos",
+            "El Astillero",
+            "Laredo",
+            "Santoña",
+            "Los Corrales de Buelna",
+            "Santa Cruz de Bezana",
+            "Reinosa",
+            "Suances",
+            "Colindres",
+            "Cabezón de la Sal",
+            "Santillana del Mar",
+            "San Vicente de la Barquera",
+            "Comillas",
+            "Potes",
+            "Noja",
+            "Ampuero",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "cantabria")
+            self.assertEqual(_canonicalize_llm_province(alias), "cantabria")
+        self.assertEqual(_pretty_territory_label("cantabria"), "Cantabria")
+
+    def test_cantabria_strict_validation_and_cpu_table_extraction(self) -> None:
+        cant_md = PROCESSED_DATA_DIR / "convenio_cantabria.md"
+        if not cant_md.exists():
+            self.skipTest("Convenio de Cantabria no disponible en data/processed/")
+
+        report = validate_document(cant_md, strict=True)
+        self.assertTrue(report.passed, msg=f"convenio_cantabria.md falló validación estricta: {report.issues}")
+        self.assertEqual(report.error_count, 0, msg=f"Errores en convenio_cantabria.md: {report.issues}")
+        self.assertEqual(report.warning_count, 0, msg=f"Warnings en convenio_cantabria.md: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cant_md, boundaries_cache=cache)
+        self.assertEqual(len(chunks), 92)
+        self.assertTrue(all(c.territorio == "cantabria" and c.subsector == "general" for c in chunks))
+
+        raw_txt = cant_md.read_text(encoding="utf-8")
+        self.assertNotIn("boc.cantabria.es", raw_txt.lower())
+        self.assertNotIn("CVE-2026-6643", raw_txt)
+        self.assertNotIn("|  | PROFESIONAL | MES |  |", raw_txt)
+        self.assertNotIn("23,750,10", raw_txt)
+
+        # Verificación de expansión de rowspan vertical, cabeceras limpias y años 2026-2029
+        for yr in (2026, 2027, 2028, 2029):
+            self.assertIn(f"### TABLA SALARIAL {yr}", raw_txt)
+        self.assertEqual(raw_txt.count("| GRUPO | CATEGORÍA PROFESIONAL | SALARIO MES | SALARIO ANUAL (15 PAGAS) |"), 4)
+        self.assertEqual(raw_txt.count("| Antigüedad 3 | 10 AÑOS | + 10 % | + 10 % |"), 4)
+        self.assertIn("| II | COCINERO | 1.323,06 € | 19.845,90 € |", raw_txt)
+        self.assertIn("| II | CAMARERO | 1.270,03 € | 19050,45 € |", raw_txt)
+        self.assertIn("| III | CAMARERO PISOS | 1.214,51 € | 18.217,65 € |", raw_txt)
+        self.assertIn("| II | COCINERO | 1.375,98 € | 20.639,70 € |", raw_txt)
+        self.assertIn("| II | COCINERO | 1.424,14 € | 21.362,10 € |", raw_txt)
+        self.assertIn("| II | COCINERO | 1.473,98 € | 22.109,70 € |", raw_txt)
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        table_chunks = [c for c in chunks if c.tipo_contenido == "tabla_salarial"]
+        self.assertEqual(len(table_chunks), 4)
+        extracted_years = [
+            store._extract_chunk_year(
+                RetrievedDocument(
+                    chunk_id=c.chunk_id,
+                    source_file=c.source_file,
+                    norma_titulo=c.norma_titulo,
+                    capa_normativa=c.capa_normativa,
+                    territorio=c.territorio,
+                    subsector=c.subsector,
+                    titulo_o_capitulo=c.titulo_o_capitulo,
+                    articulo=c.articulo,
+                    tipo_contenido=c.tipo_contenido,
+                    text=c.text,
+                    score=0.8,
+                    rerank_score=0.8,
+                )
+            )
+            for c in table_chunks
+        ]
+        self.assertEqual(extracted_years, [2026, 2027, 2028, 2029])
+
+    def test_cantabria_retrieval_selection_gd49_and_gd50(self) -> None:
+        cant_md = PROCESSED_DATA_DIR / "convenio_cantabria.md"
+        if not cant_md.exists():
+            self.skipTest("Convenio de Cantabria no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cant_md, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_cant_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_cant_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        t2026 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2026")
+        t2027 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2027")
+        t2028 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2028")
+        t2029 = next(c for c in chunks if c.articulo == "TABLA SALARIAL 2029")
+        art20 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 20."))
+        art24 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 24."))
+        art27 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 27."))
+        art37 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 37."))
+        art40 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 40."))
+        art42 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 42."))
+        art43 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 43."))
+        art44 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 44."))
+        art46 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 46.") and "Parte 1/2" in c.articulo)
+        da5 = next(c for c in chunks if "DISPOSICION ADICIONAL QUINTA" in c.articulo)
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_49: prioriza Tabla 2026 sobre 2027-2029 y retiene Arts. 40, 43 y 46
+        pool_49 = [
+            _to_doc(t2029, 0.99),
+            _to_doc(t2028, 0.98),
+            _to_doc(t2027, 0.97),
+            _to_doc(art37, 0.95),
+            _to_doc(da5, 0.94),
+            _to_doc(art40, 0.85),
+            _to_doc(art46, 0.84),
+            _to_doc(art43, 0.78),
+            _to_doc(t2026, 0.65),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_49 = store.rerank_and_select_by_territory(
+            candidates=pool_49,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Santander (Cantabria) en 2026. ¿Cuál es mi salario base mensual y anual en 2026, cuántas pagas extraordinarias tengo al año y en qué meses se abonan, qué cuantía mensual tiene el complemento por manutención y cuánto es el plus compensatorio de formación?",
+            territorios=["cantabria"],
+            use_cohere_rerank=False,
+            role_context="Cocinero (Grupo II, Área Funcional 2ª Cocina)",
+        )
+        ids_49 = {d.chunk_id for d in sel_49}
+        self.assertIn(t2026.chunk_id, ids_49)
+        self.assertNotIn(t2027.chunk_id, ids_49)
+        self.assertNotIn(t2028.chunk_id, ids_49)
+        self.assertNotIn(t2029.chunk_id, ids_49)
+        self.assertIn(art40.chunk_id, ids_49)
+        self.assertIn(art43.chunk_id, ids_49)
+        self.assertIn(art46.chunk_id, ids_49)
+
+        # Escenario GD_50: prioriza Tabla 2026 sobre 2027-2029 y retiene Arts. 20, 24, 27, 42 y 44
+        pool_50 = [
+            _to_doc(t2029, 0.99),
+            _to_doc(t2028, 0.98),
+            _to_doc(t2027, 0.97),
+            _to_doc(da5, 0.94),
+            _to_doc(art20, 0.91),
+            _to_doc(art27, 0.90),
+            _to_doc(art44, 0.89),
+            _to_doc(art42, 0.88),
+            _to_doc(art24, 0.85),
+            _to_doc(t2026, 0.65),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_50 = store.rerank_and_select_by_territory(
+            candidates=pool_50,
+            query="Soy camarero en un restaurante en Torrelavega (Cantabria) en 2026. ¿Cuál es mi salario base mensual y anual, cuál es la jornada laboral anual máxima y el descanso semanal mínimo, cuántos días de vacaciones me corresponden, cómo se retribuye el complemento por nocturnidad y qué recargo mínimo tienen las horas extraordinarias?",
+            territorios=["cantabria"],
+            use_cohere_rerank=False,
+            role_context="Camarero (Grupo II, Área Funcional 3ª Restaurante)",
+        )
+        ids_50 = {d.chunk_id for d in sel_50}
+        self.assertIn(t2026.chunk_id, ids_50)
+        self.assertNotIn(t2027.chunk_id, ids_50)
+        self.assertNotIn(t2028.chunk_id, ids_50)
+        self.assertNotIn(t2029.chunk_id, ids_50)
+        self.assertIn(art20.chunk_id, ids_50)
+        self.assertIn(art24.chunk_id, ids_50)
+        self.assertIn(art27.chunk_id, ids_50)
+        self.assertIn(art42.chunk_id, ids_50)
+        self.assertIn(art44.chunk_id, ids_50)
+
+
 if __name__ == "__main__":
     unittest.main()

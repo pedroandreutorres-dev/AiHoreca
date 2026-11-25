@@ -401,5 +401,20 @@
       2026
     ],
     "justificacion": "BOPA n.º 44 (05/03/2026), Cód. 2026-01536, código REGCON 33000605011979: Acta 01/2026 de la Comisión Paritaria (12/02/2026) y Tablas Salariales y de Nocturnidad vigentes para 2026 (+3,0% Art. 28, Niveles I-XI, Economato, Paga Extra de Santa Marta y Anexo VIII de Nocturnidad por tramos de horas), omitiendo pág. 1 de resolución administrativa."
+  },
+  "convenio_cantabria.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "single_column",
+    "territorio": "cantabria",
+    "start_page": 2,
+    "end_page": 33,
+    "expected_years": [
+      2026,
+      2027,
+      2028,
+      2029
+    ],
+    "justificacion": "BOC de Cantabria n.º 173 (08/09/2026), CVE-2026-6643, código REGCON 39000605011982: Convenio Colectivo del sector de Hostelería de la Comunidad Autónoma de Cantabria 2026-2029. Omite la pág. 1 de resolución administrativa de registro y las págs. 34-36 (organigrama gráfico de flujo y modelo de formulario en blanco), e incluye íntegramente el articulado (Arts. 1-56 y Disposiciones Adicionales 1ª-6ª en págs. 2-19), el Anexo I de Tablas Salariales 2026, 2027, 2028 y 2029 (15 pagas y escala de antigüedad en págs. 20-23) y el Anexo II de Medidas y Protocolo frente al acoso LGTBI+ (págs. 24-33)."
   }
 }

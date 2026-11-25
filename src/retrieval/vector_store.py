@@ -1377,6 +1377,16 @@ class AiHorecaVectorStore:
             r"(?i)economato",
             "economato cooperativas de consumo ayuda economato extrasalarial",
         ),
+        (
+            "manutencion",
+            r"(?i)\bmanutenci[óo]n\b",
+            "complemento por manutención manutencion comidas cenas especie alojamiento",
+        ),
+        (
+            "formacion",
+            r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n",
+            "plus compensatorio de formación complemento por formación planes de formación",
+        ),
     )
 
     def retrieve_territory_candidates(
@@ -1428,6 +1438,10 @@ class AiHorecaVectorStore:
             topic_boosts.append("jornada anual xornada laboral vacaciones vacacións descanso semanal")
         if re.search(r"(?i)economato", query):
             topic_boosts.append("cooperativas de consumo ayuda de economato extrasalarial")
+        if re.search(r"(?i)\bmanutenci[óo]n\b", query):
+            topic_boosts.append("complemento por manutención comidas cenas especie alojamiento")
+        if re.search(r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n", query):
+            topic_boosts.append("plus compensatorio de formación complemento por formación 14 pagas")
         if is_remuneration_query and not topic_boosts:
             topic_boosts.append("gratificaciones extraordinarias gratificacións extraordinarias pagas extras salario base")
 
@@ -2032,6 +2046,14 @@ class AiHorecaVectorStore:
                     (
                         r"(?i)economato",
                         r"(?i)economato|cooperativas?\s+de\s+consumo",
+                    ),
+                    (
+                        r"(?i)\bmanutenci[óo]n\b",
+                        r"(?i)manutenci[óo]n",
+                    ),
+                    (
+                        r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n",
+                        r"(?i)formaci[óo]n",
                     ),
                     (
                         r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",

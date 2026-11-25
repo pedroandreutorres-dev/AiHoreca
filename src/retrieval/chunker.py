@@ -69,7 +69,9 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"n[úu]m\.|"
     r"pode\s+verificar\s+a\s+integridade.*|"
     r"https?://sede\.depo\.gal\S*|"
-    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:.*"
+    r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:.*|"
+    r"boc\.cantabria\.es.*|"
+    r"cve-20[12]\d-\d{3,6}.*"
     r")$"
 )
 
@@ -151,6 +153,41 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "formentera": "baleares",
     "bcn": "barcelona",
     "catalunya bcn": "catalunya",
+    "comunidad autonoma de cantabria": "cantabria",
+    "santander": "cantabria",
+    "torrelavega": "cantabria",
+    "castro urdiales": "cantabria",
+    "castro-urdiales": "cantabria",
+    "camargo": "cantabria",
+    "maliano": "cantabria",
+    "pielagos": "cantabria",
+    "el astillero": "cantabria",
+    "astillero": "cantabria",
+    "laredo": "cantabria",
+    "santona": "cantabria",
+    "los corrales de buelna": "cantabria",
+    "corrales de buelna": "cantabria",
+    "santa cruz de bezana": "cantabria",
+    "bezana": "cantabria",
+    "reinosa": "cantabria",
+    "suances": "cantabria",
+    "colindres": "cantabria",
+    "cabezon de la sal": "cantabria",
+    "santillana del mar": "cantabria",
+    "san vicente de la barquera": "cantabria",
+    "comillas": "cantabria",
+    "potes": "cantabria",
+    "noja": "cantabria",
+    "isla": "cantabria",
+    "arnuero": "cantabria",
+    "medio cudeyo": "cantabria",
+    "solares": "cantabria",
+    "marina de cudeyo": "cantabria",
+    "pedrena": "cantabria",
+    "somo": "cantabria",
+    "ribamontan al mar": "cantabria",
+    "ampuero": "cantabria",
+    "ramales de la victoria": "cantabria",
     "castello": "castellon",
     "ciudad real": "ciudad_real",
     "gerona": "girona",

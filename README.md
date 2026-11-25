@@ -6,7 +6,7 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 2. **VI Acuerdo Laboral Estatal de Hostelería — ALEH VI** (áreas funcionales 1ª a 6ª, grupos profesionales y faltas/sanciones).
 3. **Convenios colectivos provinciales y autonómicos** (tablas salariales y condiciones específicas de cada territorio).
 
-**Territorios indexados actualmente (2.153 fragmentos en Qdrant Cloud):**
+**Territorios indexados actualmente (2.245 fragmentos en Qdrant Cloud):**
 - **Comunidad de Madrid**
 - **Cataluña** (*Barcelona, Girona, Tarragona y Lleida*)
 - **Islas Baleares** (*Mallorca, Menorca, Ibiza y Formentera*)
@@ -23,6 +23,7 @@ Asistente de consultas laborales para el sector de hostelería y turismo en Espa
 - **A Coruña**
 - **Pontevedra**
 - **Asturias** *(Principado de Asturias)*
+- **Cantabria**
 
 ---
 
@@ -71,7 +72,7 @@ AiHoreca/
 │   ├── ingestion/            # Extracción PDF a Markdown y aplicación de erratas
 │   ├── retrieval/            # Chunker e indexación/búsqueda híbrida en Qdrant
 │   ├── graph/                # Flujo en LangGraph, esquemas Pydantic y verificador numérico
-│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (48 casos)
+│   ├── evaluation/           # Evaluador RAGAS y tests de regresión (50 casos)
 │   └── app/                  # Streamlit (streaming y Rayos-X), servicio, CLI y auditor diario
 ├── requirements.txt
 └── README.md
@@ -107,7 +108,7 @@ python -m src.retrieval.vector_store --sync-to-cloud
 ```
 
 ### 3. Ejecución y tests de regresión
-El proyecto cuenta con una suite unitaria/canario en CPU (**74 tests** en `tests/`) y una batería de **48 casos de prueba (`GD_01`–`GD_48`)** con soporte de reanudación incremental (`--resume`). La regresión completa `--quick --force` alcanzó el `100%` (`32/32`) hasta Las Palmas, y los casos de Santa Cruz de Tenerife (`GD_33`–`GD_34`), Cádiz (`GD_35`–`GD_36`), Granada (`GD_37`–`GD_38`), Guipúzcoa (`GD_39`–`GD_40`), Álava (`GD_41`–`GD_42`), A Coruña (`GD_43`–`GD_44`), Pontevedra (`GD_45`–`GD_46`) y Asturias (`GD_47`–`GD_48`) quedaron verificados *end-to-end* verbatim (`0` alucinaciones numéricas) junto con comprobación directa (Qdrant + Cohere) sobre provincias salariales previas. La línea base semántica RAGAS está fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
+El proyecto cuenta con una suite unitaria/canario en CPU (**77 tests** en `tests/`) y una batería de **50 casos de prueba (`GD_01`–`GD_50`)** con soporte de reanudación incremental (`--resume`). La regresión completa `--quick --force` alcanzó el `100%` (`32/32`) hasta Las Palmas, y los casos de Santa Cruz de Tenerife (`GD_33`–`GD_34`), Cádiz (`GD_35`–`GD_36`), Granada (`GD_37`–`GD_38`), Guipúzcoa (`GD_39`–`GD_40`), Álava (`GD_41`–`GD_42`), A Coruña (`GD_43`–`GD_44`), Pontevedra (`GD_45`–`GD_46`), Asturias (`GD_47`–`GD_48`) y Cantabria (`GD_49`–`GD_50`) quedaron verificados *end-to-end* verbatim (`0` alucinaciones numéricas) junto con comprobación directa (Qdrant + Cohere) sobre provincias salariales previas. La línea base semántica RAGAS está fijada en [`data/processed/evaluation_baseline.json`](data/processed/evaluation_baseline.json) sobre los 24 casos previos (`0.979` en *faithfulness* y `0.997` en *answer relevancy*):
 
 ```powershell
 # Gate de Calidad del corpus Markdown Silver + suite de ingesta en CPU (0 tokens API)
