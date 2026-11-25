@@ -153,7 +153,6 @@ class SessionMemoryStore:
 
     def get_slots(self, session_id: str) -> SessionContextSlots:
         """Recupera los slots de memoria de trabajo (Working Memory) de una sesión."""
-        self.ensure_session(session_id)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -176,7 +175,6 @@ class SessionMemoryStore:
 
     def get_compact_history(self, session_id: str, max_turns: int = 4) -> list[dict[str, str]]:
         """Devuelve una ventana deslizante compacta de los últimos `max_turns` turnos para el router."""
-        self.ensure_session(session_id)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -324,7 +322,9 @@ class SessionMemoryStore:
                 "[INTERACCION_SIN_CONSULTA_BBDD] Invitó al usuario a plantear una consulta laboral concreta de hostelería."
             )
         elif route == "ask_clarification":
-            if not new_territorio and not new_cat_aleh:
+            if state.get("es_comparativa_global"):
+                requested_slot = "selección de provincias para comparativa interprovincial"
+            elif not new_territorio and not new_cat_aleh:
                 requested_slot = "provincia y puesto de trabajo"
             elif new_territorio and not new_cat_aleh:
                 requested_slot = "puesto de trabajo"
@@ -630,11 +630,10 @@ class SessionMemoryStore:
         os.replace(tmp_csv, target_csv)
         return target_txt, target_csv
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, min_turns: int = 0) -> list[dict[str, Any]]:
         """Lista todas las sesiones almacenadas con sus slots activos y número de turnos."""
         with self._connect() as conn:
-            rows = conn.execute(
-                """
+            base_sql = """
                 SELECT s.session_id, s.title, s.active_territorio,
                        s.active_oficio_coloquial, s.active_categoria_aleh,
                        s.active_area_funcional_aleh, s.pending_clarification_query,
@@ -643,14 +642,17 @@ class SessionMemoryStore:
                 FROM sessions s
                 LEFT JOIN session_turns t ON s.session_id = t.session_id
                 GROUP BY s.session_id
-                ORDER BY s.updated_at DESC
-                """
-            ).fetchall()
+            """
+            if min_turns > 0:
+                base_sql += f" HAVING COUNT(t.id) >= {int(min_turns)}"
+            base_sql += " ORDER BY s.updated_at DESC"
+            rows = conn.execute(base_sql).fetchall()
         return [dict(r) for r in rows]
 
     def delete_session(self, session_id: str) -> None:
         """Elimina una sesión y todos sus turnos asociados."""
         with self._connect() as conn:
+            conn.execute("DELETE FROM session_turns WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
 
     def purge_inactive_sessions(self, retention_days: int) -> int:
@@ -674,4 +676,15 @@ class SessionMemoryStore:
             for sid in stale:
                 conn.execute("DELETE FROM session_turns WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
-        return len(stale)
+
+            # Limpieza complementaria de sesiones fantasma sin turnos (visitas de página sin interacción)
+            orphans = [
+                r["session_id"]
+                for r in conn.execute(
+                    "SELECT session_id FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_turns)"
+                ).fetchall()
+            ]
+            for sid in orphans:
+                conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+
+        return len(stale) + len(orphans)

@@ -46,18 +46,17 @@ def _parse_models_tuple(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 
 GEMINI_LITE_MODEL = (os.getenv("GEMINI_LITE_MODEL") or "gemini-3.1-flash-lite").strip()
-GEMINI_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or "gemini-3.5-flash-lite").strip()
+GEMINI_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or "gemini-3.1-flash-lite").strip()
 GEMINI_REASONING_MODEL = (os.getenv("GEMINI_REASONING_MODEL") or "gemini-3.5-flash-lite").strip()
 GEMINI_FALLBACK_MODELS = _parse_models_tuple(
     os.getenv("GEMINI_FALLBACK_MODELS", ""),
     (
-        "gemini-3.5-flash-lite",
-        "gemini-3-flash-preview",
         "gemini-3.1-flash-lite",
-        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
         "gemini-3.6-flash",
-        "gemini-3.7-flash",
-        "gemini-3.8-flash",
     ),
 )
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -145,8 +144,8 @@ def get_google_api_key(api_key: Optional[str] = None) -> str:
 
 
 def get_genai_client(api_key: Optional[str] = None) -> genai.Client:
-    """Instancia el cliente oficial de Google GenAI SDK con timeout de 60s para lotes multimodales."""
+    """Instancia el cliente oficial de Google GenAI SDK con v1beta y timeout de 60s."""
     return genai.Client(
         api_key=get_google_api_key(api_key),
-        http_options=types.HttpOptions(timeout=60000),
+        http_options=types.HttpOptions(timeout=60000, api_version="v1beta"),
     )

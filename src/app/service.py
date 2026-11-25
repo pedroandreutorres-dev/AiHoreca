@@ -182,9 +182,9 @@ class AiHorecaEngineService:
         sid = session_id or f"ses-{uuid.uuid4().hex[:6]}"
         return self.memory_store.ensure_session(session_id=sid, title=title)
 
-    def list_active_sessions(self) -> list[SessionSummary]:
+    def list_active_sessions(self, min_turns: int = 0) -> list[SessionSummary]:
         """Devuelve todas las sesiones persistidas en SQLite ordenadas por actividad reciente."""
-        rows = self.memory_store.list_sessions()
+        rows = self.memory_store.list_sessions(min_turns=min_turns)
         return [SessionSummary.model_validate(r) for r in rows]
 
     def list_visitor_sessions(self, visitor_session_ids: list[str]) -> list[SessionSummary]:

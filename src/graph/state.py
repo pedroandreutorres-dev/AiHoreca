@@ -125,6 +125,13 @@ class QueryAnalysisSchema(BaseModel):
             "False únicamente si TODA la consulta es general del convenio o estatuto y aplica por igual sin importar el puesto (ej. cuántos días de vacaciones anuales hay, cuántas pagas extras tiene el convenio, cuál es la jornada máxima anual o días de permiso por mudanza/matrimonio)."
         ),
     )
+    es_comparativa_global: bool = Field(
+        default=False,
+        description=(
+            "True si el usuario solicita una comparativa general o abierta entre todas las provincias, 'de cada provincia', 'todas las provincias', "
+            "o si indica explícitamente que 'da igual la provincia' o que busca una visión comparativa interprovincial sin ceñirse a un centro de trabajo único."
+        ),
+    )
     oficio_coloquial_detectado: Optional[str] = Field(
         default=None,
         description=(
@@ -261,7 +268,7 @@ class StepUsageRecord(BaseModel):
     step: str = Field(description="Identificador del paso o nodo (ej. analyze_and_route, synthesize_response, rerank_cohere).")
     provider: str = Field(default="gemini_llm", description="Proveedor o subsistema (gemini_llm, gemini_embedding, cohere_rerank).")
     model: str = Field(default="", description="Nombre exacto del modelo utilizado.")
-    status: str = Field(default="ok", description="Estado del paso: ok, cache_hit, failed_429, failed_503_504, failed_truncated, failed_other.")
+    status: str = Field(default="ok", description="Estado del paso: ok, cache_hit, failed_429, failed_503_504, failed_404, failed_truncated, failed_other.")
     input_tokens: int = Field(default=0, description="Tokens de entrada reportados por el servidor (prompt_token_count).")
     output_tokens: int = Field(default=0, description="Tokens de salida reportados por el servidor (candidates_token_count).")
     thoughts_tokens: int = Field(default=0, description="Tokens de razonamiento interno si el modelo los reporta (thoughts_token_count).")
@@ -295,6 +302,7 @@ class TurnUsageSummary(BaseModel):
     llm_failovers: int = 0
     rate_limit_429_count: int = 0
     server_503_504_count: int = 0
+    not_found_404_count: int = 0
     truncated_retries: int = 0
     steps: list[StepUsageRecord] = Field(default_factory=list)
 
@@ -338,6 +346,8 @@ def build_turn_usage_summary(state: dict[str, Any] | None) -> TurnUsageSummary:
                 summary.rate_limit_429_count += 1
             elif rec.status == "failed_503_504":
                 summary.server_503_504_count += 1
+            elif rec.status == "failed_404":
+                summary.not_found_404_count += 1
             elif rec.status == "failed_truncated":
                 summary.truncated_retries += 1
         elif rec.provider == "gemini_embedding":
@@ -373,6 +383,7 @@ class LegalGraphState(TypedDict, total=False):
     requiere_consulta_normativa_bbdd: bool
     requiere_convenio_provincial: bool
     requiere_puesto_o_categoria: bool
+    es_comparativa_global: bool
     datos_completos: bool
     route_decision: RouteDecision
     oficio_coloquial_detectado: Optional[str]

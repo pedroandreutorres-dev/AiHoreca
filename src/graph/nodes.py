@@ -55,12 +55,25 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
-# Cooldown en memoria por modelo ante cuotas (429) vs saturación transitoria (503/504)
+# Cooldown en memoria por modelo ante cuotas (429) vs saturación transitoria (503/504) vs modelo inexistente (404)
 _MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 _MODEL_QUOTA_COOLDOWN_UNTIL: dict[str, float] = {}
 _COOLDOWN_SECONDS = 45.0
 _QUOTA_COOLDOWN_SECONDS = 120.0
+_NOT_FOUND_COOLDOWN_SECONDS = 86400.0  # 24h para modelos no existentes o retirados de la API
 _TRANSIENT_RETRY_BACKOFFS: tuple[float, ...] = (8.0, 15.0, 25.0)
+
+# Atajo determinista de CPU para saludos y despedidas conversacionales aislados (0 tokens, <1ms)
+_GREETING_OR_FAREWELL_RE = re.compile(
+    r"^[¡¿]*(?:hola(?:\s+qu[eé]\s+tal|\s+buenas(?:\s+tardes|\s+noches)?)?|buenos\s+d[ií]as|buenas\s+(?:tardes|noches)|buenas|qu[eé]\s+tal|saludos|adi[oó]s|hasta\s+luego|hasta\s+pronto|muchas\s+gracias|gracias)\b[!.? ]*$",
+    re.IGNORECASE,
+)
+
+# Detección determinista de solicitudes de comparativa abierta/global o indiferencia provincial
+_GLOBAL_COMPARISON_RE = re.compile(
+    r"\b(?:cada|todas?\s+las)\s+provincias?|da\s+igual\s+(?:en\s+qu[eé]\s+)?provincia|en\s+ninguna\s+provincia|de\s+toda\s+espa[nñ]a|comparativa\s+general|ranking\s+de\s+provincias\b",
+    re.IGNORECASE,
+)
 
 AUTONOMOUS_COMMUNITY_EXPANSION: dict[str, list[str]] = {
     "catalunya": ["barcelona", "girona", "tarragona", "lleida", "catalunya"],
@@ -274,8 +287,10 @@ def _call_structured_llm(
     temperature: float = 0.0,
     usage_out: Optional[list[dict[str, Any]]] = None,
     step_name: str = "llm_call",
+    timeout_ms: Optional[int] = None,
+    thinking_level: Optional[str] = None,
 ) -> tuple[T, str]:
-    """Ejecuta una llamada estructurada (JSON Schema Pydantic) con failover multi-modelo y reintento acotado ante 503/504."""
+    """Ejecuta una llamada estructurada (JSON Schema Pydantic) con failover multi-modelo, control de thoughts y reintento acotado ante 503/504."""
     client = get_genai_client()
     candidate_models: list[str] = [preferred_model]
     for m in GEMINI_FALLBACK_MODELS:
@@ -293,13 +308,15 @@ def _call_structured_llm(
         (
             m
             for m in candidate_models
-            if m not in fresh_models and _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now
+            if m not in fresh_models
+            and _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now
+            and _MODEL_COOLDOWN_UNTIL.get(m, 0.0) <= now + 3600.0
         ),
         key=lambda m: _MODEL_COOLDOWN_UNTIL.get(m, 0.0),
     )
-    round_models: list[str] = fresh_models + transient_cooled_models
+    round_models: list[str] = fresh_models if fresh_models else transient_cooled_models
     if not round_models:
-        round_models = candidate_models
+        round_models = [m for m in candidate_models if _MODEL_COOLDOWN_UNTIL.get(m, 0.0) <= now + 3600.0] or candidate_models
 
     last_error: Optional[Exception] = None
     max_rounds = 1 + len(_TRANSIENT_RETRY_BACKOFFS)
@@ -320,16 +337,35 @@ def _call_structured_llm(
                 "total_tokens": 0,
             }
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=temperature,
-                        response_mime_type="application/json",
-                        response_schema=schema,
-                    ),
-                )
+                gen_config_kwargs: dict[str, Any] = {
+                    "system_instruction": system_instruction,
+                    "temperature": temperature,
+                    "response_mime_type": "application/json",
+                    "response_schema": schema,
+                }
+                if timeout_ms is not None:
+                    gen_config_kwargs["http_options"] = types.HttpOptions(timeout=timeout_ms)
+                if thinking_level is not None:
+                    gen_config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**gen_config_kwargs),
+                    )
+                except Exception as cfg_exc:
+                    if "thinking" in str(cfg_exc).lower() and "thinking_config" in gen_config_kwargs:
+                        fallback_kwargs = dict(gen_config_kwargs)
+                        fallback_kwargs.pop("thinking_config", None)
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(**fallback_kwargs),
+                        )
+                    else:
+                        raise
+
                 attempt_usage = _extract_genai_usage(response)
                 if response.parsed is not None and isinstance(response.parsed, schema):
                     parsed_obj = response.parsed
@@ -368,6 +404,9 @@ def _call_structured_llm(
                 is_transient_err = any(
                     code in err_str for code in ("503", "504", "UNAVAILABLE", "DEADLINE_EXCEEDED")
                 )
+                is_not_found_err = any(
+                    code in err_str for code in ("404", "NOT_FOUND", "is not found", "not supported for generateContent")
+                )
                 is_truncated_err = "truncada prematuramente" in err_str.lower()
                 fail_status = (
                     "failed_429"
@@ -375,7 +414,11 @@ def _call_structured_llm(
                     else (
                         "failed_503_504"
                         if is_transient_err
-                        else ("failed_truncated" if is_truncated_err else "failed_other")
+                        else (
+                            "failed_404"
+                            if is_not_found_err
+                            else ("failed_truncated" if is_truncated_err else "failed_other")
+                        )
                     )
                 )
                 if usage_out is not None:
@@ -402,6 +445,14 @@ def _call_structured_llm(
                         _QUOTA_COOLDOWN_SECONDS,
                     )
                     continue
+                if is_not_found_err:
+                    _MODEL_COOLDOWN_UNTIL[model_name] = time.time() + _NOT_FOUND_COOLDOWN_SECONDS
+                    logger.warning(
+                        "Modelo %s no encontrado/no soportado en la API (404: %s). Quarantined 24h y probando fallback...",
+                        model_name,
+                        err_str[:120],
+                    )
+                    continue
                 if is_transient_err:
                     _MODEL_COOLDOWN_UNTIL[model_name] = time.time() + _COOLDOWN_SECONDS
                     transient_failed_in_call.add(model_name)
@@ -422,6 +473,7 @@ def _call_structured_llm(
                 for m in candidate_models
                 if m not in quota_failed_in_call
                 and _MODEL_QUOTA_COOLDOWN_UNTIL.get(m, 0.0) <= now_after
+                and _MODEL_COOLDOWN_UNTIL.get(m, 0.0) <= now_after + 3600.0
             ]
             if not next_models:
                 break
@@ -454,6 +506,34 @@ class AiHorecaGraphNodes:
         query = state.get("query", "").strip()
         history = state.get("conversation_history") or []
         slots = SessionContextSlots.model_validate(state.get("session_slots") or {})
+
+        # 0. Atajo determinista CPU para saludos y despedidas conversacionales aislados (0 tokens, latencia <1ms)
+        if not slots.pending_clarification_query and _GREETING_OR_FAREWELL_RE.match(query):
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            timings = dict(state.get("node_timings_ms") or {})
+            timings["analyze_and_route"] = elapsed_ms
+            models_used = dict(state.get("models_used") or {})
+            models_used["analyze_and_route"] = "cpu_deterministic_shortcut"
+            return {
+                "effective_query": query,
+                "intent": "HOSPITALITY_CORE",
+                "motivo_clasificacion": "Saludo o cortesía inicial sin consulta jurídica (atajo determinista CPU)",
+                "provincia_detectada": None,
+                "territorio_normalizado": slots.active_territorio,
+                "territorios_normalizados": [slots.active_territorio] if slots.active_territorio else [],
+                "requiere_consulta_normativa_bbdd": False,
+                "requiere_convenio_provincial": False,
+                "requiere_puesto_o_categoria": False,
+                "es_comparativa_global": False,
+                "datos_completos": False,
+                "route_decision": "ask_clarification",
+                "oficio_coloquial_detectado": slots.active_oficio_coloquial,
+                "categoria_profesional_aleh": slots.active_categoria_aleh,
+                "area_funcional_aleh": slots.active_area_funcional_aleh,
+                "query_busqueda_hibrida": query,
+                "node_timings_ms": timings,
+                "models_used": models_used,
+            }
 
         supported_inline, _ = _format_supported_territories_display(self.indexed_territories)
         indexed_list_str = (
@@ -494,7 +574,9 @@ class AiHorecaGraphNodes:
             "   - `requiere_puesto_o_categoria`: Marca `True` cuando para responder la pregunta con exactitud sea imprescindible saber el puesto o categoría profesional del trabajador "
             "(ej. consultar cuál es su sueldo/salario base, calcular el precio de su hora extra, nivel salarial o periodo de prueba según grupo profesional). "
             "Si la consulta incluye varias preguntas y al menos una de ellas depende del puesto (ej. pregunta por el sueldo Y por las pagas extras), marca `True`. "
-            "Marca `False` únicamente cuando TODA la consulta sea general del convenio o estatuto y aplique igual a todos los puestos (ej. cuántos días de vacaciones anuales corresponden, cuántas pagas extras hay al año, jornada máxima anual o días de permiso por mudanza/matrimonio).\n\n"
+            "Marca `False` únicamente cuando TODA la consulta sea general del convenio o estatuto y aplique igual a todos los puestos (ej. cuántos días de vacaciones anuales corresponden, cuántas pagas extras hay al año, jornada máxima anual o días de permiso por mudanza/matrimonio).\n"
+            "   - `es_comparativa_global`: Marca `True` si el usuario solicita una comparativa general o abierta entre todas las provincias "
+            "('de cada provincia', 'todas las provincias', 'qué provincia paga más') o si indica explícitamente que no trabaja en una provincia concreta o que 'da igual la provincia'.\n\n"
             "4. TRADUCTOR DE OFICIOS COLOQUIALES AL VI ALEH (PROHIBIDO ADIVINAR EL PUESTO POR EL TIPO DE NEGOCIO):\n"
             "   - **REGLA ESTRICTA**: Si el usuario solo menciona el tipo de establecimiento ('trabaja en un bar', 'en un restaurante', 'en un hotel', 'en una cafetería') pero **NO especifica qué puesto u oficio desempeña** (ni consta en `SLOTS ACTIVOS DE LA SESIÓN`), DEBES dejar `oficio_coloquial_detectado = null` y `categoria_profesional_aleh = null`. Jamás des por hecho ni inventes un puesto.\n"
             "   - Cuando el usuario SÍ indique un puesto u oficio (en el turno actual o heredado de los slots de la sesión), mapéalo a su denominación técnica en el VI ALEH:\n"
@@ -527,6 +609,8 @@ class AiHorecaGraphNodes:
             temperature=0.0,
             usage_out=step_usage,
             step_name="analyze_and_route",
+            timeout_ms=15000,
+            thinking_level="minimal",
         )
 
         # 1. Resolución de Provincias (list[str]) con Precedencia Temporal Estricta (Turno Actual > Slots):
@@ -602,6 +686,11 @@ class AiHorecaGraphNodes:
         )
         missing_prov = bool(analysis.requiere_convenio_provincial and not territorio_norm)
         missing_role = bool(analysis.requiere_puesto_o_categoria and not cat_aleh_resuelta)
+        is_global_comp = bool(
+            getattr(analysis, "es_comparativa_global", False)
+            or _GLOBAL_COMPARISON_RE.search(query)
+            or _GLOBAL_COMPARISON_RE.search(effective_query)
+        )
 
         if intent in ("OUT_OF_SCOPE", "UNSUPPORTED_PROVINCE"):
             requiere_bbdd = False
@@ -630,6 +719,7 @@ class AiHorecaGraphNodes:
             "requiere_consulta_normativa_bbdd": requiere_bbdd,
             "requiere_convenio_provincial": analysis.requiere_convenio_provincial,
             "requiere_puesto_o_categoria": analysis.requiere_puesto_o_categoria,
+            "es_comparativa_global": is_global_comp,
             "datos_completos": datos_completos,
             "route_decision": route_decision,
             "oficio_coloquial_detectado": oficio_resuelto,
@@ -713,6 +803,12 @@ class AiHorecaGraphNodes:
         _, supported_bullets = _format_supported_territories_display(self.indexed_territories)
         territories_block = "\n".join(supported_bullets)
 
+        is_global_comp = bool(
+            state.get("es_comparativa_global")
+            or _GLOBAL_COMPARISON_RE.search(state.get("query", ""))
+            or _GLOBAL_COMPARISON_RE.search(state.get("effective_query", ""))
+        )
+
         if not requiere_bbdd:
             profile_parts: list[str] = []
             if terr:
@@ -736,6 +832,25 @@ class AiHorecaGraphNodes:
                 f"{territories_block}"
             )
             warn_msg = "Cortocircuito conversacional activado (sin pregunta normativa concreta: 0 llamadas a BBDD)."
+        elif is_global_comp:
+            msg = (
+                "### Comparativa Interprovincial y Suelo Normativo Estatal (Hostelería)\n\n"
+                "En el sector de hostelería y turismo en España **no existe un convenio colectivo estatal único que fije los salarios, jornadas ni vacaciones**, "
+                "sino una estructura descentralizada compuesta por **más de 50 convenios colectivos provinciales y autonómicos independientes**, "
+                "cada uno acordado en su propia mesa de negociación colectiva.\n\n"
+                "#### 1. Mínimos Legales Comunes: Estatuto de los Trabajadores (ET) y VI ALEH\n"
+                "Con independencia de la provincia o territorio donde se presten servicios, todo profesional de hostelería cuenta con el siguiente suelo normativo indisponible:\n"
+                "- **Vacaciones (Art. 38.1 ET)**: Mínimo legal estatal de **30 días naturales** al año (los convenios provinciales pueden igualar o mejorar esta duración, por ejemplo fijando días laborables o festivos adicionales, pero nunca rebajarla).\n"
+                "- **Jornada máxima (Art. 34.1 ET)**: Límite general de **40 horas semanales** de promedio en cómputo anual (~1.826 horas anuales). La mayoría de convenios provinciales de hostelería mejoran este tope situándolo habitualmente entre 1.770 h y 1.800 h al año.\n"
+                "- **Pagas extraordinarias (Art. 31 ET)**: Mínimo de **dos gratificaciones extraordinarias** al año (verano y Navidad), con opción a una 3ª paga pactada en numerosos convenios provinciales.\n"
+                "- **Descanso semanal (Art. 37.1 ET)**: Mínimo de **día y medio ininterrumpido** semanal (acumulable en periodos de hasta 14 días).\n"
+                "- **Clasificación y régimen disciplinario**: Homogeneizado a nivel estatal por el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** (Áreas Funcionales y Grupos Profesionales del I al III).\n\n"
+                "#### 2. Cómo generar una tabla comparativa exacta y contrastada\n"
+                "Para poder contrastar las cláusulas y tablas oficiales vigentes en una tabla comparativa detallada, **indícame qué provincias o territorios deseas comparar** (puedes elegir las que quieras de entre las disponibles actualmente):\n\n"
+                f"{territories_block}\n\n"
+                "*(Por ejemplo: «Compara las vacaciones y la jornada anual entre **Madrid**, **Barcelona**, **Baleares** y **Álava**» o cualquier combinación de las anteriores)*."
+            )
+            warn_msg = "Gatekeeper contextual ofreció el suelo estatutario estatal (ET) y solicitó seleccionar las provincias deseadas para la comparativa interprovincial."
         elif missing_prov and missing_role:
             msg = (
                 "### Información Requerida para el Cálculo (Provincia y Puesto de Trabajo)\n\n"

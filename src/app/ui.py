@@ -32,7 +32,7 @@ def _init_ui_state(service: AiHorecaEngineService) -> None:
         st.session_state.turn_telemetry_cache = {}
 
     if "visitor_session_ids" not in st.session_state or not st.session_state.visitor_session_ids:
-        initial_sid = service.create_session()
+        initial_sid = f"ses-{uuid.uuid4().hex[:6]}"
         st.session_state.visitor_session_ids = [initial_sid]
         st.session_state.active_session_id = initial_sid
     elif "active_session_id" not in st.session_state:
@@ -311,14 +311,14 @@ def _render_sidebar(service: AiHorecaEngineService) -> str:
         sessions = service.list_visitor_sessions(visitor_sids)
         session_ids = [s.session_id for s in sessions]
         if st.session_state.active_session_id not in session_ids:
-            service.create_session(st.session_state.active_session_id)
-            sessions = service.list_visitor_sessions(visitor_sids)
-            session_ids = [s.session_id for s in sessions]
+            session_ids.insert(0, st.session_state.active_session_id)
 
         session_labels = {
             s.session_id: f"{s.session_id} ({s.num_turns}t | {s.active_territorio or 'sin prov.'})"
             for s in sessions
         }
+        if st.session_state.active_session_id not in session_labels:
+            session_labels[st.session_state.active_session_id] = f"{st.session_state.active_session_id} (nueva)"
 
         selected_sid = st.selectbox(
             "Sesión Activa",
@@ -333,14 +333,13 @@ def _render_sidebar(service: AiHorecaEngineService) -> str:
         col_new, col_del = st.columns(2)
         with col_new:
             if st.button("+ Nueva Sesión", use_container_width=True):
-                new_sid = service.create_session()
+                new_sid = f"ses-{uuid.uuid4().hex[:6]}"
                 st.session_state.visitor_session_ids.insert(0, new_sid)
                 st.session_state.active_session_id = new_sid
                 st.rerun()
         with col_del:
             if st.button("Limpiar Sesión", use_container_width=True):
                 service.reset_or_delete_session(st.session_state.active_session_id)
-                service.create_session(st.session_state.active_session_id)
                 st.session_state.turn_telemetry_cache.pop(st.session_state.active_session_id, None)
                 st.rerun()
 
