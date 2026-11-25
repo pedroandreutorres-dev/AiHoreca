@@ -84,6 +84,21 @@ _CANONICAL_PROVINCE_MAP: dict[str, str] = {
     "la coruna": "a_coruna",
     "a coruna": "a_coruna",
     "coruna": "a_coruna",
+    "santiago": "a_coruna",
+    "santiago de compostela": "a_coruna",
+    "compostela": "a_coruna",
+    "ferrol": "a_coruna",
+    "naron": "a_coruna",
+    "carballo": "a_coruna",
+    "oleiros": "a_coruna",
+    "arteixo": "a_coruna",
+    "culleredo": "a_coruna",
+    "ames": "a_coruna",
+    "ribeira": "a_coruna",
+    "betanzos": "a_coruna",
+    "cambre": "a_coruna",
+    "boiro": "a_coruna",
+    "noia": "a_coruna",
     "araba": "alava",
     "araba/alava": "alava",
     "araba / alava": "alava",
@@ -988,7 +1003,10 @@ class AiHorecaGraphNodes:
         """Normaliza referencias cruzadas internas ('Art. 24º', 'Anexo II', 'Disposición adicional décima')."""
         flat = re.sub(r"\s+", " ", _normalize_text(raw_match)).strip(" .,:;()")
         if ref_type == "articulo":
-            m = re.search(r"art(?:iculo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?", flat)
+            m = re.search(
+                r"art(?:ic(?:ulo|le)|igo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?",
+                flat,
+            )
             if m:
                 suffix = f" {m.group(2)}" if m.group(2) else ""
                 return f"art {m.group(1)}{suffix}"
@@ -1023,7 +1041,7 @@ class AiHorecaGraphNodes:
 
         if ref_type == "articulo":
             surface_art = re.sub(
-                r"\bart(?:iculo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?",
+                r"\bart(?:ic(?:ulo|le)|igo)?\.?\s*(\d+)(?:\.\d+)*\s*[ºª]?(?:\s+(bis|ter|quater))?",
                 lambda m: f"art {m.group(1)}" + (f" {m.group(2)}" if m.group(2) else ""),
                 surface,
             )
@@ -1056,15 +1074,15 @@ class AiHorecaGraphNodes:
         """Detecta remisiones normativas internas ausentes o cobertura territorial baja tras Cohere Rerank."""
         disp_re = re.compile(
             r"(?i)disposici[oó]n\s+(?:adicional|transitoria|final)\s+"
-            r"(?:[uú]nica|primera|segunda|tercera|cuarta|quinta|sexta|s[eé]ptima|octava|novena|"
+            r"(?:[uú]nica|primeira|primera|segunda|terceira|tercera|cuarta|quinta|sexta|s[eé]ptima|octava|novena|"
             r"d[eé]cima|und[eé]cima|duod[eé]cima|decimotercera|decimocuarta|\d+[ªº]?)\b"
         )
         anexo_re = re.compile(r"(?i)\banexo\s+(?:[IVXLCDM]+|\d+|[uú]nico)\b")
         remission_art_re = re.compile(
             r"(?i)(?:previst[oa]s?|establecid[oa]s?|regulad[oa]s?|dispuest[oa]s?|indicad[oa]s?|"
-            r"recogid[oa]s?|remite(?:n)?|conforme|seg[úu]n(?:\s+lo\s+(?:previsto|dispuesto))?)"
-            r"\s+(?:en\s+(?:el|los)|al|a\s+lo\s+(?:dispuesto|previsto)\s+en\s+el)\s+"
-            r"(art(?:[íi]culo)?\.?\s*\d+(?:\.\d+)*\s*[ºª]?(?:\s+(?:bis|ter|quater))?\b)"
+            r"recogid[oa]s?|recollid[oa]s?|remite(?:n)?|rem[íi]tese|conforme|seg[úu]n(?:\s+lo\s+(?:previsto|dispuesto))?)"
+            r"\s+(?:en\s+(?:el|los|o)|al|ao|no|do|a\s+lo\s+(?:dispuesto|previsto)\s+en\s+(?:el|o))\s+"
+            r"(art(?:[íi]c(?:ulo|le)|igo)?\.?\s*\d+(?:\.\d+)*\s*[ºª]?(?:\s+(?:bis|ter|quater))?\b)"
         )
         ext_suffix_re = re.compile(
             r"(?i)^\s*(?:y\s+\d+\s*)?(?:de(?:l| la)?\s+)?(?:"
@@ -1535,11 +1553,11 @@ class AiHorecaGraphNodes:
         combined_corpus = "\n".join(d.text for d in docs)
         norm_corpus_numbers = {
             cls._normalize_number_token(m.group(0))
-            for m in re.finditer(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b|\b\d+(?:\.\d+)?\b", combined_corpus)
+            for m in re.finditer(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b|\b\d+(?:[.,]\d+)?\b", combined_corpus)
         }
         norm_query_numbers = {
             cls._normalize_number_token(m.group(0))
-            for m in re.finditer(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b|\b\d+(?:\.\d+)?\b", user_query)
+            for m in re.finditer(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b|\b\d+(?:[.,]\d+)?\b", user_query)
         }
         # Constantes universales de calendario/jornada (12 meses, 11 meses laborables, 14/15 pagas, 30 días, 40h semanales, base 1 y 100%)
         standard_constants = {"1", "11", "12", "14", "15", "30", "40", "100"}
@@ -1679,7 +1697,7 @@ class AiHorecaGraphNodes:
 
         has_citations = len(synthesis.citas_normativas) > 0 and bool(
             re.search(
-                r"(?i)\b(?:art[íi]culos?\b|arts?\.(?=\s|\d|$)|arts?\s+\d|anexos?\b|tablas?\b|disposici[óo]n(?:es)?\b)",
+                r"(?i)\b(?:art[íi]culos?|artigos?|articles?|arts?\.(?=\s|\d|$)|arts?\s+\d|anexos?\b|tablas?\b|t[áa]boas?\b|disposici[óo]n(?:es|s)?\b)",
                 synthesis.respuesta_final_markdown,
             )
         )

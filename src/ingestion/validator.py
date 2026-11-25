@@ -33,8 +33,8 @@ from src.retrieval.chunker import chunk_markdown_document
 from src.retrieval.schemas import RetrievedDocument
 from src.retrieval.vector_store import AiHorecaVectorStore
 
-# Importes en formato español con 2 decimales (ej. "12,50" o "1.623,07")
-_SPANISH_DECIMAL_RE = re.compile(r"(?<!\d)\d{1,3}(?:\.\d{3})*,\d{2}\b")
+# Importes en formato español con 2 decimales (con o sin punto de millar, ej. "12,50", "1279,94" o "1.623,07")
+_SPANISH_DECIMAL_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}\b")
 _THOUSANDS_SPACE_RE = re.compile(r"(?<!\d)\d{1,2}(?:\.\s+|\s+\.)\d{3},\d{2}\b")
 _HTML_TABLE_RE = re.compile(r"<\s*/?(?:table|tr|td|th|thead|tbody)\b", re.IGNORECASE)
 _BR_TAG_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)

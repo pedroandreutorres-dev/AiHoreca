@@ -43,8 +43,9 @@ logger = logging.getLogger(__name__)
 
 _BULLETIN_HEADER_NOISE = re.compile(
     r"(?i)^(?:"
-    r"bolet[íi]n\s+oficial\s+de|"
-    r"b\.?\s*o\.?\s*p\.?(?:\s+de\b|\s+n[úu]m\.?\b)|"
+    r"bolet[íi]n\s+oficial\s+d[ae]\b|"
+    r"b\.?\s*o\.?\s*p\.?(?:\s+d[ae]\b|\s+n[úu]m\.?\b)|"
+    r"bop$|"
     r"butllet[íi]\s+oficial\s+de|"
     r"edita\s+excma\.?\s+diputaci[óo]n?\s+provincial|"
     r"b\.?\s*o\.?\s*c\.?\s*m\.?(?:\s+n[úu]m)?|"
@@ -53,18 +54,20 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"cve-dogc-|cve:\s*[a-z0-9-]+|issn\s+\d|"
     r"centro\s+de\s+ediciones\s+de\s+la\s+diputaci[óo]n|"
     r"https?://\S+|www\.\S+|e-mail:\s*\S+|tel[ée]fonos?:\s*\d|"
-    r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*de\s*\d+)?|"
+    r"p[áa]g(?:ina)?\.?\s*\d+(?:\s*(?:de|/)\s*\d+)?|"
     r"fasc[íi]culo\s+\d+|"
     r"n[º°o]\.?\s*\d+\s+de\s+\d{1,2}/\d{2}/\d{4}|"
     r"n[º°o]\.?\s*\d+\s*[-•]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b|"
+    r"\[?n[úu]m(?:ero)?\.?\s*\d+\]?(?:\s*[-•]?\s*p[áa]gina\s*\d+)?$|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
-    r"n[úu]m(?:ero)?\.?\s*\d+$|"
+    r"n[úu]mero\s+de\s+anuncio\b|"
     r"\d{1,5}\s*/\s*20[12]\d$|"
-    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}$|"
+    r"20[12]\d/\d{3,6}$|"
+    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+de\s+\d{4}$|"
     r"d\.?\s*l\.?\s*:?\s*[a-z]{1,3}[\s-]*\d+|"
     r"20[12]\d-\d{5}$|"
     r"\d{1,3}/\d{1,3}$|"
-    r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}|"
+    r"(?:lunes|luns|martes|mi[ée]rcoles|m[ée]rcores|jueves|xoves|viernes|venres|s[áa]bado|domingo),?\s+\d+\s+(?:de\s+)?\w+\s+de\s+\d{4}|"
     r"(?:e?k\\?cv\s+gao-[a-z0-9-]+)|"
     r"gipuzkoako\s+aldizkari\s+ofiziala|"
     r"n[úu]mero\s*\|\s*zenbakia\b|"
@@ -209,7 +212,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
     idx = 0
     while idx < len(raw_lines):
         curr = raw_lines[idx].strip()
-        if re.fullmatch(r"(?i)art[íi]culo", curr) and idx + 1 < len(raw_lines):
+        if re.fullmatch(r"(?i)(?:art[íi]culo|artigo|article)", curr) and idx + 1 < len(raw_lines):
             nxt = raw_lines[idx + 1].strip()
             if re.fullmatch(
                 r"(?i)\d+(?:\s*(?:º|\.º|BIS|TER|QUATER|bis|ter|quater))?\.?(?:\s+.*)?",
@@ -226,7 +229,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
                         and any(ch.isalpha() for ch in nxt2)
                         and not _BULLETIN_HEADER_NOISE.match(nxt2)
                         and not re.match(
-                            r"(?i)^(?:art[íi]culo|cap[íi]tulo|t[íi]tulo|anexo|disposici[óo]n)\b",
+                            r"(?i)^(?:art[íi]culo|artigo|article|cap[íi]tulo|t[íi]tulo|anexo|disposici[óo]n)\b",
                             nxt2,
                         )
                     ):
@@ -257,14 +260,27 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
         ):
             cleaned_lines.append(f"\n## {stripped}\n")
         elif re.match(
-            r"^(?:Art[íi]culo(?:\.-|\.)?|ART[ÍI]CULO(?:\.-|\.)?|Art\.|ART\.)\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
+            r"^(?:Art[íi]culo|ART[ÍI]CULO|Artigo|ARTIGO|Article|ARTICLE|Art\.|ART\.)(?:\.-|\.|:)?\s*\d+(?!\d)(?!\s*(?:º|\.º)?\s+(?:ET\b|del?\s+(?:vigente\s+|presente\s+)?(?:Estatuto|Real\s+Decreto|convenio|Ley)))",
             stripped,
+        ):
+            cleaned_lines.append(f"\n### {stripped}\n")
+        elif (
+            len(stripped) <= 120
+            and stripped.startswith(("DISPOSICIÓN", "Disposición"))
+            and re.match(
+                r"^(?:DISPOSICI[ÓO]N|Disposici[óo]n)\s+(?:ADICIONAL|Adicional|TRANSITORIA|Transitoria|DEROGATORIA|Derogatoria|FINAL|Final)\s+(?:[ÚU]NICA|[ÚU]nica|PRIMEIRA|Primeira|PRIMERA|Primera|SEGUNDA|Segunda|TERCEIRA|Terceira|TERCERA|Tercera|CUARTA|Cuarta|QUINTA|Quinta|SEXTA|Sexta|S[ÉE]PTIMA|S[ée]ptima|OCTAVA|Octava|NOVENA|Novena|D[ÉE]CIMA|D[ée]cima|\d+[ªº]?)\b(?![,;])",
+                stripped,
+            )
+            and not re.search(
+                r"(?i)\bdel?\s+(?:presente\s+|vigente\s+|citado\s+)?(?:convenio|estatuto|real\s+decreto|ley)\b",
+                stripped,
+            )
         ):
             cleaned_lines.append(f"\n### {stripped}\n")
         elif (
             stripped == stripped.upper()
             and re.match(
-                r"^(?:TABLAS?\s+SALARIAL(?:ES)?\s+20[23]\d\b[^\n]*|INCREMENTO\s+20[23]\d\b[^\n]*)$",
+                r"^(?:T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b[^\n]*|TABLAS?\s+SALARIAL(?:ES)?\s+20[23]\d\b[^\n]*|SALARIO\s+BASE\s+(?:MENSUAL|MANSUAL|ANUAL)\s+20[23]\d\b[^\n]*|HORAS?\s+EXTRAS?\s+20[23]\d\b[^\n]*|INCREMENTO\s+20[23]\d\b[^\n]*)$",
                 stripped,
             )
         ):
@@ -273,7 +289,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
             len(stripped) <= 90
             and not stripped.endswith(".")
             and re.match(
-                r"^(?:Tabla(?:s)?\s+salarial(?:es)?|TABLA(?:S)?\s+SALARIAL(?:ES)?)\b[^\n]*\b20[23]\d\b[^\n]*$",
+                r"^(?:Tabla(?:s)?\s+salarial(?:es)?|TABLA(?:S)?\s+SALARIAL(?:ES)?|T[áa]boa(?:s)?\s+salarial(?:is|es)?|T[ÁA]BOA(?:S)?\s+SALARIA(?:IS|LES)?)\b[^\n]*\b20[23]\d\b[^\n]*$",
                 stripped,
             )
         ):
@@ -358,7 +374,7 @@ def _clean_gemini_markdown_output(text: str) -> str:
     return _normalize_spanish_thousands(cleaned).strip()
 
 
-_SPANISH_DECIMALS_RE = re.compile(r"(?<!\d)\d{1,3}(?:\.\d{3})*,\d{2}\b")
+_SPANISH_DECIMALS_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}\b")
 
 
 def _count_missing_spanish_decimals(pdf_text: str, md_text: str) -> tuple[int, int, list[str]]:
@@ -802,19 +818,19 @@ def _page_has_complex_table(page: pymupdf.Page) -> bool:
         return True
     # Respaldo para tablas salariales sin bordes vectoriales: distinguir listas tabulares cortas de prosa jurídica
     euro_count = text.count("€")
-    decimal_amounts = len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", text_no_hours))
-    if euro_count < 6 and decimal_amounts < 8:
-        return False
+    decimal_amounts = len(_SPANISH_DECIMALS_RE.findall(text_no_hours))
     short_amount_lines = sum(
         1
         for ln in lines
         if len(ln) <= 85
         and re.search(
-            r"\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:€|euros?)?\.?\s*$",
+            r"(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}\s*(?:€|euros?)?\.?\s*$",
             ln,
             re.IGNORECASE,
         )
     )
+    if euro_count < 6 and decimal_amounts < 8 and not (short_amount_lines >= 5 and len(text) < 2500):
+        return False
     return short_amount_lines >= 5 or len(text) < 4500
 
 
@@ -835,7 +851,7 @@ def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
                     if cell and (
                         "\n," in cell
                         or ",\n" in cell
-                        or len(re.findall(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b", cell)) >= 2
+                        or len(_SPANISH_DECIMALS_RE.findall(cell)) >= 2
                     ):
                         return False
         return True
@@ -1540,6 +1556,250 @@ def _extract_vector_tables_page_cpu(
     return _normalize_spanish_thousands(out)
 
 
+def _markdown_table_is_healthy(md_text: str) -> bool:
+    """Verifica determinísticamente que ninguna tabla Markdown extraída tenga columnas colapsadas o cabeceras rotas."""
+    lines = (md_text or "").splitlines()
+    idx = 0
+    found_table = False
+    has_context_above = False
+    while idx < len(lines):
+        if idx + 1 < len(lines):
+            hdr_ln = lines[idx].strip()
+            sep_ln = lines[idx + 1].strip()
+            if hdr_ln.startswith("|") and sep_ln.startswith("|") and "---" in sep_ln:
+                found_table = True
+                headers = [c.strip() for c in hdr_ln.strip("|").split("|")]
+                if not (headers[0] if headers else "").strip() and not has_context_above:
+                    return False
+                if "columna 1" in [h.lower() for h in headers] and len(headers) >= 2:
+                    return False
+                if any(not h for h in headers[1:]):
+                    return False
+                if _SPANISH_DECIMALS_RE.search(hdr_ln):
+                    return False
+                cursor = idx + 2
+                while cursor < len(lines):
+                    row_ln = lines[cursor].strip()
+                    if not row_ln.startswith("|") or "---" in row_ln:
+                        break
+                    cells = [c.strip() for c in row_ln.strip("|").split("|")]
+                    if len(cells) != len(headers):
+                        return False
+                    col0 = cells[0] if cells else ""
+                    if len(_SPANISH_DECIMALS_RE.findall(col0)) >= 2:
+                        return False
+                    if (
+                        len(cells) >= 2
+                        and _SPANISH_DECIMALS_RE.search(col0)
+                        and re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,}", col0)
+                        and any(_SPANISH_DECIMALS_RE.search(c) for c in cells[1:])
+                    ):
+                        return False
+                    if re.search(
+                        r"(?i)\b(?:SALARIO\s+BASE\s+(?:MENSUAL|MANSUAL|ANUAL)|HORAS?\s+EXTRAS?)\s+20[23]\d\b",
+                        row_ln,
+                    ):
+                        return False
+                    cursor += 1
+                has_context_above = False
+                idx = cursor
+                continue
+        if lines[idx].strip():
+            has_context_above = True
+        idx += 1
+    return found_table
+
+
+def _parse_coordinate_scale_headers(line: str) -> Optional[list[str]]:
+    """Detecta cabeceras multi-columna típicas de escalas hosteleras (estrellas, tenedores, tazas, categorías)."""
+    clean = _normalize_unicode_spaces(line).strip()
+    if not clean:
+        return None
+    if re.fullmatch(r"(?i)SALARIO\s+BASE(?:\s+ANUAL|\s+MENSUAL)?", clean):
+        return ["Categoría profesional", "Hora extra (€ / Salario base)"]
+
+    scale_pat = re.compile(
+        r"(?i)\b\d+\s*\*|\b\d+\s*TAZAS?\b|\b(?:LUXO|PRIMEIRA|SEGUNDA|TERCEIRA|CUARTA|ESPECIAL|PRIMERA|TERCERA)\b"
+    )
+    matches = scale_pat.findall(clean)
+    if len(matches) < 2:
+        return None
+    remainder = re.sub(r"[\s,|/.-]+", "", scale_pat.sub("", clean))
+    if remainder:
+        return None
+
+    normalized_cols: list[str] = []
+    for tok in matches:
+        t = re.sub(r"\s+", " ", tok).strip()
+        t = re.sub(r"^(\d+)\s+\*$", r"\1*", t)
+        t = re.sub(r"^(\d+)(TAZAS?)$", r"\1 \2", t, flags=re.IGNORECASE)
+        if t not in normalized_cols:
+            normalized_cols.append(t)
+    return ["Categoría profesional", *normalized_cols] if len(normalized_cols) >= 2 else None
+
+
+def _extract_coordinate_table_stream_cpu(
+    doc: pymupdf.Document,
+    page_indices: list[int],
+) -> Optional[str]:
+    """Reconstruye en CPU tablas salariales continuas multi-página usando coordenadas `(y0, x0)` de PyMuPDF."""
+    if not page_indices:
+        return None
+
+    ordered_lines: list[str] = []
+    pdf_raw_chunks: list[str] = []
+    for p_idx in page_indices:
+        page = doc[p_idx]
+        pdf_raw_chunks.append(page.get_text("text"))
+        pw = float(page.rect.width or 595.0)
+        ph = float(page.rect.height or 842.0)
+        d = page.get_text("dict")
+        rows_by_y: dict[float, list[tuple[float, str]]] = {}
+        for blk in d.get("blocks", []):
+            if blk.get("type") != 0:
+                continue
+            for ln in blk.get("lines", []):
+                x0, y0, _x1, y1 = ln["bbox"]
+                if pw > 0.0 and x0 > pw * 0.90 and ph > pw:
+                    continue
+                txt = _normalize_unicode_spaces(
+                    "".join(sp.get("text", "") for sp in ln.get("spans", []))
+                ).strip()
+                if not txt:
+                    continue
+                if _BULLETIN_HEADER_NOISE.match(txt) or (
+                    (y0 < 85.0 or y1 > ph - 45.0) and re.search(r"(?i)p[áa]gina|bop|número", txt)
+                ):
+                    continue
+                matched_y = next((ky for ky in rows_by_y if abs(ky - y0) <= 2.5), None)
+                if matched_y is None:
+                    matched_y = float(y0)
+                    rows_by_y[matched_y] = []
+                rows_by_y[matched_y].append((float(x0), txt))
+
+        for y_key in sorted(rows_by_y):
+            joined = " ".join(
+                seg for _, seg in sorted(rows_by_y[y_key], key=lambda item: item[0])
+            )
+            joined = re.sub(r"\s{2,}", " ", joined).strip()
+            if not joined or _BULLETIN_HEADER_NOISE.match(joined):
+                continue
+            # Reensambla líneas partidas de Área Funcional (ej. '... Pista' + 'para Catering')
+            if (
+                ordered_lines
+                and re.match(r"(?i)^[ÁA]REA\s+FUNCIONAL\b", ordered_lines[-1])
+                and not _SPANISH_DECIMALS_RE.search(joined)
+                and joined.strip() != "CATERING"
+                and not re.match(
+                    r"(?i)^(?:GRUPO\b|SECCI[ÓO]N\b|SALARIO\b|HORAS\b|BARRAS\b|T[ÁA]BOAS\b)",
+                    joined,
+                )
+                and _parse_coordinate_scale_headers(joined) is None
+                and len(joined) <= 45
+            ):
+                ordered_lines[-1] = f"{ordered_lines[-1]} {joined}".strip()
+                continue
+            ordered_lines.append(joined)
+
+    if not ordered_lines:
+        return None
+
+    out_blocks: list[str] = []
+    active_banner: Optional[str] = None
+    active_section: Optional[str] = None
+    active_cols: Optional[list[str]] = None
+    table_rows: list[list[str]] = []
+    pending_subheads: list[str] = []
+
+    def _esc(val: str) -> str:
+        return val.replace("|", "/").strip()
+
+    def _flush_open_table() -> None:
+        nonlocal table_rows, pending_subheads
+        if not table_rows or not active_cols:
+            table_rows = []
+            pending_subheads = []
+            return
+        title_parts = [p for p in (active_banner, active_section) if p]
+        heading = " - ".join(title_parts) if title_parts else "Tabla Salarial"
+        ncols = len(active_cols)
+        md_tbl = [
+            f"### {_esc(heading)}",
+            "",
+            "| " + " | ".join(_esc(c) for c in active_cols) + " |",
+            "| " + " | ".join(["---"] * ncols) + " |",
+        ]
+        for row in table_rows:
+            padded = (row + [""] * ncols)[:ncols]
+            md_tbl.append("| " + " | ".join(_esc(c) for c in padded) + " |")
+        out_blocks.append("\n".join(md_tbl))
+        table_rows = []
+        pending_subheads = []
+
+    for line in ordered_lines:
+        dec_matches = _SPANISH_DECIMALS_RE.findall(line)
+        if dec_matches:
+            first_m = _SPANISH_DECIMALS_RE.search(line)
+            label = line[: first_m.start()].strip(" -–:|") if first_m else ""
+            if not label:
+                return None
+            if active_cols is None:
+                if len(dec_matches) == 1:
+                    active_cols = ["Categoría profesional", "Importe (€)"]
+                else:
+                    active_cols = ["Categoría profesional"] + [
+                        f"Categoría {i + 1}" for i in range(len(dec_matches))
+                    ]
+            if len(dec_matches) != len(active_cols) - 1:
+                return None
+            for sub in pending_subheads:
+                table_rows.append([f"**{sub}**"] + [""] * (len(active_cols) - 1))
+            pending_subheads.clear()
+            table_rows.append([label, *dec_matches])
+            continue
+
+        if re.fullmatch(r"(?i)t[áa]boas?\s+salaria(?:is|les)\.?", line):
+            _flush_open_table()
+            out_blocks.append("## TÁBOAS SALARIAIS")
+        elif re.match(
+            r"(?i)^(?:SALARIO\s+BASE\s+(?:MENSUAL|MANSUAL|ANUAL)|HORAS?\s+EXTRAS?)\s+20[23]\d\b",
+            line,
+        ):
+            _flush_open_table()
+            active_banner = re.sub(r"(?i)\bMANSUAL\b", "MENSUAL", line).strip()
+            active_cols = None
+        elif re.match(r"(?i)^SECCI[ÓO]N\s+\d+[ªa]?\b", line) or line.strip() in (
+            "CATERING",
+            "BARRAS AMERICANAS",
+        ):
+            if active_banner is None:
+                out_blocks.append(f"- {line.strip()}")
+            else:
+                _flush_open_table()
+                active_section = line.strip()
+                active_cols = None
+        elif (parsed_cols := _parse_coordinate_scale_headers(line)) is not None:
+            if table_rows:
+                _flush_open_table()
+            active_cols = parsed_cols
+        else:
+            if table_rows and active_cols:
+                table_rows.append([f"**{line}**"] + [""] * (len(active_cols) - 1))
+            elif active_banner is not None:
+                pending_subheads.append(line)
+            else:
+                out_blocks.append(line)
+
+    _flush_open_table()
+    result = "\n\n".join(blk for blk in out_blocks if blk.strip()).strip()
+    if "| ---" not in result or not _markdown_table_is_healthy(result):
+        return None
+    missing_total, _, _ = _count_missing_spanish_decimals("\n".join(pdf_raw_chunks), result)
+    if missing_total > 0:
+        return None
+    return _normalize_spanish_thousands(result)
+
+
 def extract_hybrid_markdown(
     pdf_path: Path,
     boundary: DocumentBoundary | DocumentManifestEntry,
@@ -1559,6 +1819,7 @@ def extract_hybrid_markdown(
 
     markdown_parts: list[str] = []
     pending_table_pages: list[int] = []
+    pending_coord_table_pages: list[int] = []
     pending_scanned_pages: list[int] = []
 
     def _client() -> genai.Client:
@@ -1581,6 +1842,26 @@ def extract_hybrid_markdown(
         )
         markdown_parts.append(table_md)
         pending_table_pages = []
+
+    def flush_coord_table_stream() -> None:
+        nonlocal pending_coord_table_pages
+        if not pending_coord_table_pages:
+            return
+        human_pages = [p + 1 for p in pending_coord_table_pages]
+        coord_md = _extract_coordinate_table_stream_cpu(doc, pending_coord_table_pages)
+        if coord_md is not None:
+            flush_table_batch()
+            logger.info(
+                "  -> Extrayendo flujo continuo de tablas por coordenadas (págs. %s) en CPU (0%% déficit decimal)...",
+                human_pages,
+            )
+            markdown_parts.append(coord_md)
+            pending_coord_table_pages = []
+            return
+        pages_fallback = list(pending_coord_table_pages)
+        pending_coord_table_pages = []
+        for cp_idx in pages_fallback:
+            enqueue_table_page(doc[cp_idx], cp_idx)
 
     def flush_scanned_batch() -> None:
         nonlocal pending_scanned_pages
@@ -1608,6 +1889,7 @@ def extract_hybrid_markdown(
     for p_idx in range(start_idx, end_idx + 1):
         human_page = p_idx + 1
         if human_page in skip_pages:
+            flush_coord_table_stream()
             flush_table_batch()
             flush_scanned_batch()
             logger.info("  -> Omitiendo página %d por directiva skip_pages del manifiesto.", human_page)
@@ -1616,11 +1898,13 @@ def extract_hybrid_markdown(
         page = doc[p_idx]
 
         if human_page in force_gemini_pages:
+            flush_coord_table_stream()
             flush_scanned_batch()
             enqueue_table_page(page, p_idx)
             continue
 
         if layout == "scanned_ocr" or _is_scanned_page(page):
+            flush_coord_table_stream()
             flush_table_batch()
             pending_scanned_pages.append(p_idx)
             if len(pending_scanned_pages) >= max_table_batch_size:
@@ -1629,6 +1913,7 @@ def extract_hybrid_markdown(
 
         flush_scanned_batch()
         if layout == "bilingual_right_es":
+            flush_coord_table_stream()
             flush_table_batch()
             bilingual_md = _extract_bilingual_right_es_page_cpu(page)
             if bilingual_md:
@@ -1637,6 +1922,7 @@ def extract_hybrid_markdown(
 
         if _page_has_complex_table(page):
             if _has_clean_vector_table_grid(page):
+                flush_coord_table_stream()
                 flush_table_batch()
                 logger.info(
                     "  -> Extrayendo tabla con rejilla vectorial limpia (pág. %d) en CPU (pymupdf4llm)...",
@@ -1645,7 +1931,8 @@ def extract_hybrid_markdown(
                 markdown_parts.append(_extract_clean_vector_table_page_cpu(doc, p_idx))
             else:
                 clip_md = _extract_vector_tables_page_cpu(page, layout=layout)
-                if clip_md is not None:
+                if clip_md is not None and _markdown_table_is_healthy(clip_md):
+                    flush_coord_table_stream()
                     flush_table_batch()
                     logger.info(
                         "  -> Extrayendo tablas vectoriales por clip de celda (pág. %d) en CPU (0%% déficit decimal)...",
@@ -1653,8 +1940,9 @@ def extract_hybrid_markdown(
                     )
                     markdown_parts.append(clip_md)
                 else:
-                    enqueue_table_page(page, p_idx)
+                    pending_coord_table_pages.append(p_idx)
         else:
+            flush_coord_table_stream()
             flush_table_batch()
             raw_page_text = (
                 _extract_double_column_page_text(page)
@@ -1663,6 +1951,7 @@ def extract_hybrid_markdown(
             )
             markdown_parts.append(_format_plain_page_to_markdown(raw_page_text))
 
+    flush_coord_table_stream()
     flush_table_batch()
     flush_scanned_batch()
     doc.close()

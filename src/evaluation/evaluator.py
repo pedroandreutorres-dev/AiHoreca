@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -390,13 +391,22 @@ def evaluate_golden_dataset(
                 )
                 cit_recall = round(cit_hits / len(tc.expected_citation_keywords), 4)
 
-            # Hit rate de cifras del Ground Truth en contexto + respuesta
+            # Hit rate de cifras del Ground Truth en contexto + respuesta (aceptando variante con o sin punto de millar)
             combined_eval_surface = f"{combined_docs_meta_and_text}\n{final_resp.lower()}"
+            combined_eval_surface_no_thousands = re.sub(
+                r"(?<=\d)\.(?=\d{3}\b)",
+                "",
+                combined_eval_surface,
+            )
             if not tc.expected_numbers_any:
                 num_hit = 1.0
             else:
                 matched_nums = sum(
-                    1 for num in tc.expected_numbers_any if num.lower() in combined_eval_surface
+                    1
+                    for num in tc.expected_numbers_any
+                    if num.lower() in combined_eval_surface
+                    or re.sub(r"(?<=\d)\.(?=\d{3}\b)", "", num.lower())
+                    in combined_eval_surface_no_thousands
                 )
                 # Si al menos las cifras principales de la tabla/artículo están presentes, calculamos ratio
                 num_hit = round(min(1.0, matched_nums / max(1, len(tc.expected_numbers_any) - 1)), 4)

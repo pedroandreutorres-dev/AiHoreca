@@ -2725,5 +2725,221 @@ class TestAlavaIngestionAndRetrieval(unittest.TestCase):
         self.assertIn(art16.chunk_id, ids_42)
 
 
+class TestACorunaIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el Convenio Colectivo de Hostelería de A Coruña (BOP n.º 209 y 216/2026)."""
+
+    def test_a_coruna_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "A Coruña",
+            "a coruna",
+            "La Coruña",
+            "Coruña",
+            "Santiago de Compostela",
+            "Santiago",
+            "Compostela",
+            "Ferrol",
+            "Narón",
+            "Carballo",
+            "Oleiros",
+            "Arteixo",
+            "Culleredo",
+            "Ribeira",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "a_coruna")
+            self.assertEqual(_canonicalize_llm_province(alias), "a_coruna")
+        self.assertEqual(_pretty_territory_label("a_coruna"), "A Coruña")
+
+    def test_a_coruna_strict_validation_and_coofficial_matching(self) -> None:
+        base_md = PROCESSED_DATA_DIR / "convenio_a_coruna.md"
+        par_md = PROCESSED_DATA_DIR / "convenio_a_coruna_paritaria_2026.md"
+        if not base_md.exists() or not par_md.exists():
+            self.skipTest("Convenio de A Coruña no disponible en data/processed/")
+
+        for path in (base_md, par_md):
+            report = validate_document(path, strict=True)
+            self.assertTrue(report.passed, msg=f"{path.name} falló validación estricta: {report.issues}")
+            self.assertEqual(report.error_count, 0, msg=f"Errores en {path.name}: {report.issues}")
+            self.assertEqual(report.warning_count, 0, msg=f"Warnings en {path.name}: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks_base = chunk_markdown_document(base_md, boundaries_cache=cache)
+        chunks_par = chunk_markdown_document(par_md, boundaries_cache=cache)
+        self.assertEqual(len(chunks_base), 86)
+        self.assertEqual(len(chunks_par), 2)
+        self.assertTrue(all(c.territorio == "a_coruna" for c in chunks_base + chunks_par))
+        self.assertTrue(all(c.subsector == "general" for c in chunks_base + chunks_par))
+
+        def _to_doc(ch: LegalChunk) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=0.8,
+                rerank_score=0.8,
+            )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        s1_m_p1 = _to_doc(next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 1/2)" in c.articulo))
+        s1_m_p2 = _to_doc(next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 2/2)" in c.articulo))
+        s3_m = _to_doc(next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 3ª" in c.articulo))
+        s3_he = _to_doc(next(c for c in chunks_base if "HORAS EXTRAS 2026 - SECCIÓN 3ª" in c.articulo))
+
+        self.assertEqual(store._extract_chunk_year(s1_m_p1), 2026)
+        self.assertTrue(store._is_monetary_table(s1_m_p1))
+        self.assertFalse(store._is_auxiliary_concepts_table(s1_m_p1))
+        self.assertTrue(store._is_auxiliary_concepts_table(s3_he))
+
+        self.assertTrue(store._matches_primary_role_stem(s1_m_p1, ["cociner"]))
+        self.assertFalse(store._matches_primary_role_stem(s1_m_p2, ["cociner"]))
+        self.assertTrue(store._matches_primary_role_stem(s3_m, ["camarer"]))
+
+    def test_a_coruna_retrieval_selection_gd43_and_gd44(self) -> None:
+        base_md = PROCESSED_DATA_DIR / "convenio_a_coruna.md"
+        par_md = PROCESSED_DATA_DIR / "convenio_a_coruna_paritaria_2026.md"
+        if not base_md.exists() or not par_md.exists():
+            self.skipTest("Convenio de A Coruña no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks_base = chunk_markdown_document(base_md, boundaries_cache=cache)
+        chunks_par = chunk_markdown_document(par_md, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_cor_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_cor_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        s1_m_p1 = next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 1/2)" in c.articulo)
+        s1_m_p2 = next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 2/2)" in c.articulo)
+        s1_a_p1 = next(c for c in chunks_base if "SALARIO BASE ANUAL 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 1/2)" in c.articulo)
+        s1_he_p1 = next(c for c in chunks_base if "HORAS EXTRAS 2026 - SECCIÓN 1ª" in c.articulo and "(Parte 1/2)" in c.articulo)
+        s3_m = next(c for c in chunks_base if "SALARIO BASE MENSUAL 2026 - SECCIÓN 3ª" in c.articulo)
+        s3_he = next(c for c in chunks_base if "HORAS EXTRAS 2026 - SECCIÓN 3ª" in c.articulo)
+
+        art6 = next(c for c in chunks_base if c.articulo.startswith("Artigo 6.-"))
+        art6_bis = next(c for c in chunks_base if c.articulo.startswith("Artigo 6 bis"))
+        art9 = next(c for c in chunks_base if c.articulo.startswith("Artigo 9.-"))
+        art11 = next(c for c in chunks_base if c.articulo.startswith("Artigo 11.-"))
+        art14 = next(c for c in chunks_base if c.articulo.startswith("Artigo 14.-"))
+        paritaria = next(c for c in chunks_par if c.tipo_contenido == "articulo")
+        extra = [
+            _to_doc(c, 0.25)
+            for c in chunks_base
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {art6.chunk_id, art6_bis.chunk_id, art9.chunk_id, art11.chunk_id, art14.chunk_id}
+        ][:3]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_43: Cocinero hotel 4* en Santiago (debe elegir SECCIÓN 1ª Parte 1/2 mensual y anual sobre Parte 2/2, HORAS EXTRAS o SECCIÓN 3ª)
+        pool_43 = [
+            _to_doc(s1_he_p1, 0.99),
+            _to_doc(s1_m_p2, 0.98),
+            _to_doc(s3_m, 0.95),
+            _to_doc(art6, 0.92),
+            _to_doc(art6_bis, 0.90),
+            _to_doc(paritaria, 0.88),
+            _to_doc(art9, 0.72),
+            _to_doc(s1_m_p1, 0.65),
+            _to_doc(s1_a_p1, 0.60),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_43 = store.rerank_and_select_by_territory(
+            candidates=pool_43,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Santiago de Compostela (A Coruña). ¿Qué salario base mensual y anual me corresponden en 2026, cuántas pagas extraordinarias tengo al año, cuánto es el plus de transporte y cómo aplica la paga única de 500 € del 2025?",
+            territorios=["a_coruna"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina, Grupo Profesional II)",
+        )
+        ids_43 = {d.chunk_id for d in sel_43}
+        self.assertIn(s1_m_p1.chunk_id, ids_43)
+        self.assertIn(s1_a_p1.chunk_id, ids_43)
+        self.assertNotIn(s1_he_p1.chunk_id, ids_43)
+        self.assertNotIn(s1_m_p2.chunk_id, ids_43)
+        self.assertIn(art6.chunk_id, ids_43)
+        self.assertIn(art6_bis.chunk_id, ids_43)
+        self.assertIn(art9.chunk_id, ids_43)
+
+        # Escenario GD_44: Camarero restaurante 2ª en Ferrol con jornada, nocturnidad y horas extra (debe elegir SALARIO BASE MENSUAL SECCIÓN 3ª + HORAS EXTRAS SECCIÓN 3ª)
+        pool_44 = [
+            _to_doc(s1_m_p2, 0.99),
+            _to_doc(s1_he_p1, 0.98),
+            _to_doc(art11, 0.91),
+            _to_doc(art14, 0.89),
+            _to_doc(s3_m, 0.70),
+            _to_doc(s3_he, 0.65),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_44 = store.rerank_and_select_by_territory(
+            candidates=pool_44,
+            query="Soy camarero en un restaurante de categoría segunda en Ferrol (A Coruña) en 2026. ¿Cuál es mi salario base mensual, cuál es la jornada anual ordinaria y descanso semanal, cómo se retribuye la nocturnidad entre las 22:00 y las 02:00 y cuánto vale cada hora extraordinaria?",
+            territorios=["a_coruna"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, Grupo Profesional II)",
+        )
+        ids_44 = {d.chunk_id for d in sel_44}
+        self.assertIn(s3_m.chunk_id, ids_44)
+        self.assertIn(s3_he.chunk_id, ids_44)
+        self.assertNotIn(s1_m_p2.chunk_id, ids_44)
+        self.assertNotIn(s1_he_p1.chunk_id, ids_44)
+        self.assertIn(art11.chunk_id, ids_44)
+        self.assertIn(art14.chunk_id, ids_44)
+
+
 if __name__ == "__main__":
     unittest.main()

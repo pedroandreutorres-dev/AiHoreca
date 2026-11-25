@@ -34,17 +34,23 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"verificable\s+en\s+https?://\S+|"
     r"sec\.\s+[ivx]+\.\s+p[áa]g\.\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*(?:•|-)?\s*p[áa]gina\s*\d+.*|"
+    r"\[?n[úu]m(?:ero)?\.?\s*\d+\]?(?:\s*[-•]?\s*p[áa]gina\s*\d+)?|"
+    r"n[úu]mero\s+de\s+anuncio.*|"
+    r"p[áa]gina\s+\d+\s*/\s*\d+|"
+    r"20[12]\d/\d{3,6}|"
+    r"www\.dacoruna\.gal.*|"
     r"\**n[úu]m(?:ero)?\.?\s*\d+\b.*(?:fasc[íi]culo|sec\.\s+[ivx]+|p[áa]g\.?\s*\d+).*|"
     r"https?://\S+\s+d\.?\s*l\.?\s*:?\s*[a-z]{1,3}[\s-]*\d+.*|"
     r"fasc[íi]culo\s+\d+.*|"
-    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+\d{4}|"
+    r"\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+de\s+\d{4}|"
     r"boletin@dipuleon\.es|"
     r"bocm-\d+-\d+|"
     r"bocm|"
-    r"b\.?\s*o\.?\s*p\.?(?:\s+de\b|\s+n[úu]m\.?\b).*|"
+    r"b\.?\s*o\.?\s*p\.?(?:\s+d[ae]\b|\s+n[úu]m\.?\b).*|"
+    r"bop|"
     r"n[º°]\.?\s*\d+\s*[-–—]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b.*|"
     r"#*\s*b\s*<mark>o</mark>\s*\*\*<mark>cm</mark>\*\*|"
-    r"(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo),?\s+\d+\s+de\s+\w+\s+de\s+\d{4}|"
+    r"(?:lunes|luns|martes|mi[ée]rcoles|m[ée]rcores|jueves|xoves|viernes|venres|s[áa]bado|domingo),?\s+\d+\s+de\s+\w+\s+de\s+\d{4}|"
     r"===\s*document\s+parser\s+messages\s*===|"
     r"warning:\s*rapidocr\s+is\s+missing.*|"
     r"cve:\s*\d{8}-\d+-\d+.*|"
@@ -62,21 +68,22 @@ _STANDALONE_TABLE_SECTION_RE = re.compile(
     r"(?i)^#{1,3}\s+\**((?:SECCI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA|SEXTA|S[ÉE]PTIMA|OCTAVA|NOVENA|\d+)|"
     r"ESTABLECIMIENTOS\s+DE\s+LA\s+SECCI[ÓO]N|"
     r"TABLAS?\s+SALARIAL(?:ES)?|"
+    r"T[ÁA]BOAS?\s+SALARIA(?:IS|LES)|"
     r"CONVENIO\s+PROVINCIAL|"
     r"Conceptos\s+econ[óo]micos\s+no\s+incluidos\s+en\s+las\s+tablas\s+salariales|"
     r"Desde\s+\d{2}/\d{2}/202\d)[^\n]*?)\**$"
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b)[^\n]*?)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b)[^\n]*?)\**$"
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIAL(?:ES)?\s+(?:A[ÑN]OS?\s+(?:DEL\s+\d{2}/\d{2}/)?|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|INCREMENTO\s+2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**(?:TABLAS?\s+SALARIAL(?:ES)?\s+(?:A[ÑN]OS?\s+(?:DEL\s+\d{2}/\d{2}/)?|PARA\s+EL\s+A[ÑN]O\s+)?2\.?02[3-9][^\n]*|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\s+2\.?02[3-9][^\n]*|SALARIO\s+BASE\s+(?:MENSUAL|MANSUAL|ANUAL)\s+2\.?02[3-9][^\n]*|HORAS?\s+EXTRAS?\s+2\.?02[3-9][^\n]*|INCREMENTO\s+2\.?02[3-9][^\n]*|[A-D]\)\s*(?:Barcelona|Tarragona|Girona|Lleida)[^\n]*)\**$"
 )
 
 _ARTICLE_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo(?:\.-|\.)?|Art\.)\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:\.|\s*[-–—])\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:Art[íi]culo|Artigo|Article|Art\.)(?:\.-|\.)?\s*\d+(?:\s*(?:º|\.º))?(?:\s*(?:bis|ter|quater))?(?:\s*$|(?:(?:\.|\s*[-–—]|(?<=\bbis):|(?<=\bter):|(?<=\bquater):))\s*(?!(?:de\s+la\s+Ley|del\s+Estatuto|del\s+Real\s+Decreto))[^\n]*?))\**$"
 )
 
 _DISPOSITION_START_RE = re.compile(
@@ -98,6 +105,21 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "la coruna": "a_coruna",
     "a coruna": "a_coruna",
     "coruna": "a_coruna",
+    "santiago": "a_coruna",
+    "santiago de compostela": "a_coruna",
+    "compostela": "a_coruna",
+    "ferrol": "a_coruna",
+    "naron": "a_coruna",
+    "carballo": "a_coruna",
+    "oleiros": "a_coruna",
+    "arteixo": "a_coruna",
+    "culleredo": "a_coruna",
+    "ames": "a_coruna",
+    "ribeira": "a_coruna",
+    "betanzos": "a_coruna",
+    "cambre": "a_coruna",
+    "boiro": "a_coruna",
+    "noia": "a_coruna",
     "araba": "alava",
     "araba/alava": "alava",
     "araba / alava": "alava",
@@ -510,7 +532,7 @@ def chunk_markdown_document(
         if art_match:
             flush_section()
             art_title = re.sub(r"^#{1,4}\s*", "", stripped).strip("* ")
-            if re.fullmatch(r"(?i)(?:Art[íi]culo|Art\.)\s*\d+(?:\.º|º)?\.?", art_title):
+            if re.fullmatch(r"(?i)(?:Art[íi]culo|Artigo|Article|Art\.)\s*\d+(?:\.º|º)?\.?", art_title):
                 lookahead = idx + 1
                 while lookahead < len(lines) and not lines[lookahead].strip():
                     lookahead += 1
@@ -606,7 +628,11 @@ def chunk_markdown_document(
             )
             if pipe_count >= 3:
                 tipo_contenido: ContentType = "tabla_salarial"
-            elif "anexo" in chapter.lower() or "disposición" in article.lower():
+            elif (
+                "anexo" in chapter.lower()
+                or "disposición" in article.lower()
+                or "disposicion" in article.lower()
+            ):
                 tipo_contenido = "anexo_o_disposicion"
             else:
                 tipo_contenido = "articulo"

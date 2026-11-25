@@ -665,18 +665,18 @@ class AiHorecaVectorStore:
         return max(years) if years else 0
 
     _SPANISH_MONTHS: dict[str, int] = {
-        "ene": 1, "enero": 1,
-        "feb": 2, "febrero": 2,
+        "ene": 1, "enero": 1, "xaneiro": 1,
+        "feb": 2, "febrero": 2, "febreiro": 2,
         "mar": 3, "marzo": 3,
         "abr": 4, "abril": 4,
-        "may": 5, "mayo": 5,
-        "jun": 6, "junio": 6,
-        "jul": 7, "julio": 7,
+        "may": 5, "mayo": 5, "maio": 5,
+        "jun": 6, "junio": 6, "xuño": 6, "xuno": 6,
+        "jul": 7, "julio": 7, "xullo": 7,
         "ago": 8, "agosto": 8,
-        "sep": 9, "sept": 9, "septiembre": 9, "setiembre": 9,
-        "oct": 10, "octubre": 10,
-        "nov": 11, "noviembre": 11,
-        "dic": 12, "diciembre": 12,
+        "sep": 9, "sept": 9, "septiembre": 9, "setiembre": 9, "setembro": 9,
+        "oct": 10, "octubre": 10, "outubro": 10,
+        "nov": 11, "noviembre": 11, "novembro": 11,
+        "dic": 12, "diciembre": 12, "decembro": 12,
     }
 
     @classmethod
@@ -930,6 +930,39 @@ class AiHorecaVectorStore:
             )
         )
 
+    _COOFFICIAL_STEM_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+        "cociner": ("cociner", "cociñeir", "cuiner"),
+        "cociñeir": ("cociñeir", "cociner", "cuiner"),
+        "cuiner": ("cuiner", "cociner", "cociñeir"),
+        "cocin": ("cocin", "cociñ", "cuin"),
+        "cociñ": ("cociñ", "cocin", "cuin"),
+        "camarer": ("camarer", "camareir", "cambrer"),
+        "camareir": ("camareir", "camarer", "cambrer"),
+        "cambrer": ("cambrer", "camarer", "camareir"),
+        "ayudant": ("ayudant", "axudant", "ajudant"),
+        "axudant": ("axudant", "ayudant", "ajudant"),
+        "ajudant": ("ajudant", "ayudant", "axudant"),
+        "jef": ("jef", "xef"),
+        "xef": ("xef", "jef"),
+        "conserj": ("conserj", "conserx", "conserg"),
+        "conserx": ("conserx", "conserj", "conserg"),
+        "reposter": ("reposter", "reposteir"),
+        "reposteir": ("reposteir", "reposter"),
+        "limpiez": ("limpiez", "limpez", "netej"),
+        "limpez": ("limpez", "limpiez", "netej"),
+        "mantenimient": ("mantenimient", "mantement", "manteniment"),
+        "mantement": ("mantement", "mantenimient", "manteniment"),
+        "encargad": ("encargad", "encarregat"),
+    }
+
+    @classmethod
+    def _stem_variants(cls, stem: str) -> tuple[str, ...]:
+        """Devuelve variantes morfológicas equivalentes en lenguas cooficiales para una raíz léxica."""
+        for pref, variants in cls._COOFFICIAL_STEM_EQUIVALENTS.items():
+            if stem.startswith(pref):
+                return variants
+        return (stem,)
+
     @staticmethod
     def _build_role_stems(role_context: Optional[str]) -> list[str]:
         """Extrae raíces léxicas morfológicas (eliminando solo sufijo de género/número) del puesto detectado."""
@@ -941,17 +974,28 @@ class AiHorecaVectorStore:
             stems.append(stem if len(stem) >= 4 else w)
         return stems
 
-    @staticmethod
-    def _matches_role_stem(doc: RetrievedDocument, role_stems: list[str]) -> bool:
+    @classmethod
+    def _line_matches_all_stems(cls, surface: str, role_stems: list[str]) -> bool:
+        """Comprueba si cada raíz léxica (o su equivalente cooficial) aparece en la cadena."""
+        return all(
+            any(var in surface for var in cls._stem_variants(stem))
+            for stem in role_stems
+        )
+
+    @classmethod
+    def _matches_role_stem(cls, doc: RetrievedDocument, role_stems: list[str]) -> bool:
         """Comprueba si todas las raíces léxicas del oficio coexisten en una misma línea del fragmento."""
         if not role_stems:
             return False
-        return any(all(stem in line for stem in role_stems) for line in doc.text.lower().splitlines())
+        return any(
+            cls._line_matches_all_stems(line, role_stems)
+            for line in doc.text.lower().splitlines()
+        )
 
     _SUBORDINATE_ROLE_RE = re.compile(
-        r"(?i)\b(?:ayudante(?:/a)?|auxiliar|aprendiz|segundo|segunda|2\.?[ºª]|subgobernante|subdirector|sub)\b"
+        r"(?i)\b(?:ayudante(?:/a)?|axudante(?:/a)?|ajudant|auxiliar|aprendiz|segundo|segunda|2\.?[ºª]|subgobernante|subgob\.?/a|subdirector|sub)\b"
     )
-    _SUBORDINATE_STEMS = ("ayudant", "auxiliar", "aprendiz", "segund", "pinch")
+    _SUBORDINATE_STEMS = ("ayudant", "axudant", "ajudant", "auxiliar", "aprendiz", "segund", "pinch")
 
     @classmethod
     def _matches_primary_role_stem(cls, doc: RetrievedDocument, role_stems: list[str]) -> bool:
@@ -963,7 +1007,7 @@ class AiHorecaVectorStore:
         )
         asks_pisos = any(s.startswith("pis") for s in role_stems)
         for raw_line in doc.text.lower().splitlines():
-            if not all(stem in raw_line for stem in role_stems):
+            if not cls._line_matches_all_stems(raw_line, role_stems):
                 continue
             cells = (
                 [c.strip() for c in raw_line.strip("|").split("|")]
@@ -971,14 +1015,14 @@ class AiHorecaVectorStore:
                 else [raw_line]
             )
             matching_cells = [
-                c for c in cells if all(stem in c for stem in role_stems)
+                c for c in cells if cls._line_matches_all_stems(c, role_stems)
             ]
             targets = matching_cells or [raw_line]
             for target in targets:
                 sub_items = [
                     p.strip()
                     for p in re.split(r"[,;]", target)
-                    if p.strip() and all(stem in p for stem in role_stems)
+                    if p.strip() and cls._line_matches_all_stems(p, role_stems)
                 ] or [target]
                 for item in sub_items:
                     if not allow_subordinate and cls._SUBORDINATE_ROLE_RE.search(item):
@@ -998,19 +1042,19 @@ class AiHorecaVectorStore:
         (
             "apartamentos",
             re.compile(
-                r"(?i)\b(?:apartamento(?:s)?|aparthotel|camping(?:s)?|vivienda\s+vacacional)\b"
+                r"(?i)\b(?:apartamento(?:s)?|aparthotel|camping(?:s)?|vivienda(?:s)?\s+(?:vacacional(?:es)?|(?:de\s+(?:alquiler|uso)\s+)?tur[íi]stic[ao]s?)|vivendas?\s+de\s+aluguer\s+tur[íi]stico)\b"
             ),
         ),
         (
             "colectividades",
             re.compile(
-                r"(?i)\b(?:catering|colectividades|comedor(?:es)?\s+(?:escolar|hospital|empresa)|club(?:es)?\s+privado|cafeter[íi]a\s+(?:de\s+(?:un\s+)?)?hospital|cafeter[íi]a\s+hospitalaria)\b"
+                r"(?i)\b(?:catering|colectividades|comedor(?:es)?\s+(?:escolar(?:es)?|hospital|empresa)|club(?:es)?\s+privado|cafeter[íi]a\s+(?:de\s+(?:un\s+)?)?hospital|cafeter[íi]a\s+hospitalaria)\b"
             ),
         ),
         (
             "lujo_ocio_especial",
             re.compile(
-                r"(?i)\b(?:casino(?:s)?|campo(?:s)?\s+de\s+golf|sal[óo]n(?:es)?\s+de\s+juegos?|bingo|sala(?:s)?\s+de\s+fiestas?|lujo|5\s+tenedores)\b"
+                r"(?i)\b(?:casino(?:s)?|campo(?:s)?\s+de\s+golf|sal[óo]n(?:es)?\s+de\s+juegos?|bingo|sala(?:s)?\s+de\s+fiestas?|lujo|5\s+tenedores|barra\s+americana)\b"
             ),
         ),
         (
@@ -1023,24 +1067,24 @@ class AiHorecaVectorStore:
 
     _DOC_SUBSECTOR_INCLUDE: dict[str, re.Pattern[str]] = {
         "hospedaje": re.compile(
-            r"\b(?:hotel(?:es)?|hostal(?:es)?|pensi[óo]n(?:es)?|hospedaje|alojamiento|h\s*[1-5]\*)\b"
+            r"\b(?:hote(?:is|l(?:es)?)|hosta(?:is|l(?:es)?)|pensi[óo]n(?:es|s)?|pousadas?|hospedaje|alojamiento|h\s*[1-5]\*)\b"
         ),
         "apartamentos": re.compile(
-            r"\b(?:apartamento(?:s)?|aptos?|camping(?:s)?|vivienda\s+vacacional)\b"
+            r"\b(?:apartamento(?:s)?|aptos?|camping(?:s)?|vivienda\s+vacacional|hoteis\s+apartamentos)\b"
         ),
         "colectividades": re.compile(
             r"\b(?:colectividades|catering|club(?:es)?\s+privado)\b"
         ),
         "lujo_ocio_especial": re.compile(
-            r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|bares?\s+lujo|lujo)\b"
+            r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|salas?\s+de\s+festa|barras?\s+americanas?|bares?\s+lujo|lujo)\b"
         ),
         "restauracion": re.compile(
-            r"\b(?:restauraci[óo]n(?:\s+y\s+ocio)?|restaurantes?|rtes\b|bares?\b|cafet(?:er[íi]as?|\.)?|tabernas?|chiringuitos?|ocio\s+nocturno|clasificaci[óo]n\s+3d)\b"
+            r"\b(?:restauraci[óo]n(?:\s+y\s+ocio)?|restaurantes?|rtes\b|casas?\s+de\s+comidas|bares?\b|cafet(?:ar[íi]as?|er[íi]as?|\.)?|tabernas?|chiringuitos?|ocio\s+nocturno|clasificaci[óo]n\s+3d)\b"
         ),
     }
 
     _DOC_RESTAURACION_EXCLUDE_RE = re.compile(
-        r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|apartamentos|colectividades|catering)\b"
+        r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|salas?\s+de\s+festa|barras?\s+americanas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|tabernas?\s+que\s+non\s+serven\s+comidas|apartamentos|colectividades|catering)\b"
     )
 
     _SPLIT_TERRITORIES_CACHE: Optional[tuple[tuple[int, int], set[str]]] = None
@@ -1156,11 +1200,11 @@ class AiHorecaVectorStore:
             doc.text,
             flags=re.IGNORECASE,
         )
-        return len(re.findall(r"\b\d{1,3}(?:\.\s?\d{3})*,\d{2}\b", text_no_hours)) >= 4
+        return len(re.findall(r"\b(?:\d{1,3}(?:\.\s?\d{3})+|\d+),\d{2}\b", text_no_hours)) >= 4
 
     @staticmethod
     def _is_auxiliary_concepts_table(doc: RetrievedDocument) -> bool:
-        """Identifica sub-tablas secundarias de pluses/conceptos retributivos sueltos (sin escala salarial por puestos)."""
+        """Identifica sub-tablas secundarias de pluses/conceptos retributivos o horas extras (sin escala de salario base)."""
         if doc.tipo_contenido != "tabla_salarial":
             return False
         body_head = doc.text.split("\n\n", 1)[-1][:260]
@@ -1172,7 +1216,7 @@ class AiHorecaVectorStore:
         surface = f"{doc.titulo_o_capitulo} {doc.articulo} {body_head}"
         return bool(
             re.search(
-                r"(?i)\b(?:otros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servicios?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
+                r"(?i)\b(?:otros\s+conceptos|outros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|pluses\s+y\s+complementos|horas?\s+extras?\b|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servi[cz]os?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
                 surface,
             )
         )
@@ -1292,23 +1336,23 @@ class AiHorecaVectorStore:
     _TOPIC_BM25_SPECS: tuple[tuple[str, str, str], ...] = (
         (
             "pagas_extra",
-            r"(?i)pagas?\s+extra|gratificaci[óo]n",
-            "pagas extraordinarias gratificaciones extraordinarias",
+            r"(?i)pagas?\s+extra|gratificaci[óo][ns]",
+            "pagas extraordinarias gratificaciones extraordinarias gratificacións extraordinarias",
         ),
         (
             "horas_extra",
             r"(?i)horas?\s+extra|divisor\s+anual",
-            "horas extraordinarias valor hora ordinaria recargo divisor anual",
+            "horas extraordinarias horas extras valor hora ordinaria recargo divisor anual",
         ),
         (
             "nocturnidad",
             r"(?i)nocturn",
-            "nocturnidad jornada nocturna horas nocturnas recargo",
+            "nocturnidad nocturnidade jornada nocturna xornada nocturna horas nocturnas recargo",
         ),
         (
             "jornada",
-            r"(?i)jornada\s+(?:de\s+trabajo|laboral|anual|m[áa]xima)|horas?\s+anuales?",
-            "jornada de trabajo jornada laboral jornada máxima anual horas anuales 40 horas semanales",
+            r"(?i)(?:jornada|xornada)\s+(?:de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|horas?\s+anua(?:les|is)",
+            "jornada de trabajo jornada laboral xornada laboral xornada de traballo jornada máxima anual horas anuales 40 horas semanales",
         ),
         (
             "descanso_semanal",
@@ -1317,13 +1361,13 @@ class AiHorecaVectorStore:
         ),
         (
             "vacaciones",
-            r"(?i)vacaciones",
-            "vacaciones anuales días naturales periodo disfrute",
+            r"(?i)vacaci[óo]n(?:es|s)",
+            "vacaciones vacacións anuales días naturales periodo disfrute desfrute",
         ),
         (
             "ipc",
-            r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria",
-            "revisión salarial ipc comisión paritaria cláusula garantía",
+            r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
+            "revisión salarial ipc comisión paritaria cláusula garantía paga única plus transporte",
         ),
     )
 
@@ -1364,18 +1408,18 @@ class AiHorecaVectorStore:
         )
 
         topic_boosts: list[str] = []
-        if re.search(r"(?i)pagas?\s+extra|gratificaci[óo]n", query):
-            topic_boosts.append("gratificaciones extraordinarias pagas extraordinarias pagas extras")
+        if re.search(r"(?i)pagas?\s+extra|gratificaci[óo][ns]", query):
+            topic_boosts.append("gratificaciones extraordinarias gratificacións extraordinarias pagas extraordinarias pagas extras")
         if re.search(r"(?i)horas?\s+extra|divisor\s+anual", query):
-            topic_boosts.append("horas extraordinarias valor hora normal divisor anual")
+            topic_boosts.append("horas extraordinarias horas extras valor hora normal divisor anual")
         if re.search(r"(?i)nocturn", query):
-            topic_boosts.append("jornada nocturna horas nocturnas nocturnidad")
-        if re.search(r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria", query):
-            topic_boosts.append("revisión salarial ipc comisión paritaria cláusula garantía")
-        if re.search(r"(?i)jornada|vacaciones|descanso", query):
-            topic_boosts.append("jornada anual vacaciones descanso semanal")
+            topic_boosts.append("jornada nocturna xornada nocturna horas nocturnas nocturnidad nocturnidade")
+        if re.search(r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte", query):
+            topic_boosts.append("revisión salarial ipc comisión paritaria cláusula garantía paga única plus transporte")
+        if re.search(r"(?i)jornada|xornada|vacaci[óo]n|descanso", query):
+            topic_boosts.append("jornada anual xornada laboral vacaciones vacacións descanso semanal")
         if is_remuneration_query and not topic_boosts:
-            topic_boosts.append("gratificaciones extraordinarias pagas extras salario base")
+            topic_boosts.append("gratificaciones extraordinarias gratificacións extraordinarias pagas extras salario base")
 
         pay_sparse_vec = (
             self._get_query_sparse_vec(f"{search_query} {' '.join(topic_boosts)}")
@@ -1425,7 +1469,7 @@ class AiHorecaVectorStore:
                     "provincia": norm_p,
                     "tipo_contenido": "tabla_salarial",
                     "subsector": agreement_subsector,
-                    "top_k": max(top_k_per_layer * 4, 20),
+                    "top_k": max(top_k_per_layer * 6, 36),
                     "dense_query_vec": d_vec,
                     "sparse_query_vec": s_vec,
                     "include_vectors": include_vectors,
@@ -1571,10 +1615,24 @@ class AiHorecaVectorStore:
         euro_tables = [t for t in filtered_tables if self._is_monetary_table(t)]
         level_tables = [t for t in filtered_tables if t not in euro_tables]
         preferred_euro_ids = self._select_preferred_monetary_tables(euro_tables, explicit_years)
-        if preferred_euro_ids:
-            latest_euro = [t for t in euro_tables if t.chunk_id in preferred_euro_ids]
-            older_euro = [t for t in euro_tables if t.chunk_id not in preferred_euro_ids]
-            euro_tables = latest_euro + older_euro
+        query_subsector = self._extract_query_establishment_subsector(clean_q)
+        asks_hours_extra_q = bool(re.search(r"(?i)horas?\s+extra(?:ordinaria)?s?", clean_q))
+        asks_aux_q = bool(
+            re.search(
+                r"(?i)\b(?:plus|manutenci[óo]n|herramientas|ropa|seguro|quebranto|alojamiento)\b",
+                clean_q,
+            )
+        )
+        if euro_tables:
+            euro_tables.sort(
+                key=lambda t: (
+                    bool(preferred_euro_ids) and t.chunk_id not in preferred_euro_ids,
+                    bool(query_subsector) and not self._doc_matches_establishment_subsector(t, query_subsector),
+                    self._is_auxiliary_concepts_table(t) and not (asks_hours_extra_q or asks_aux_q),
+                    bool(role_stems) and not self._matches_primary_role_stem(t, role_stems),
+                    bool(role_stems) and not self._matches_role_stem(t, role_stems),
+                )
+            )
 
         top_level_candidates: list[RetrievedDocument] = []
         seen_level_sections: set[str] = set()
@@ -1605,7 +1663,7 @@ class AiHorecaVectorStore:
                 top_level_candidates.append(item)
 
         balanced_tables: list[RetrievedDocument] = []
-        for seq in (euro_tables[:6], top_level_candidates, euro_tables[6:]):
+        for seq in (euro_tables[:8], top_level_candidates, euro_tables[8:]):
             for item in seq:
                 if item not in balanced_tables:
                     balanced_tables.append(item)
@@ -1615,7 +1673,7 @@ class AiHorecaVectorStore:
         if "prov_pay_art" in layer_results:
             combined.extend(layer_results["prov_pay_art"])
         combined.extend(topic_art_docs)
-        combined.extend((balanced_tables or raw_tables)[: max(top_k_per_layer + 4, 10)])
+        combined.extend((balanced_tables or raw_tables)[: max(top_k_per_layer + 6, 12)])
         combined.extend(layer_results["prov_anexo"])
 
         deduped = self._deduplicate_docs(combined)
@@ -1864,6 +1922,21 @@ class AiHorecaVectorStore:
                     for d in prov_euro_tables
                 )
             )
+            asks_hours_extra = bool(
+                re.search(r"(?i)horas?\s+extra(?:ordinaria)?s?", clean_intent_q)
+            )
+            hours_extra_tbl_re = re.compile(r"(?i)\bhoras?\s+extras?\b")
+            has_separate_hours_extra_table = bool(
+                is_remuneration_query
+                and asks_hours_extra
+                and len(prov_euro_tables) >= 2
+                and any(
+                    hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                    and self._is_auxiliary_concepts_table(d)
+                    and (not preferred_euro_ids or d.chunk_id in preferred_euro_ids)
+                    for d in prov_euro_tables
+                )
+            )
             asks_aux_concepts = bool(
                 re.search(
                     r"(?i)\b(?:plus\s+(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa)|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
@@ -1876,6 +1949,7 @@ class AiHorecaVectorStore:
                 and len(prov_euro_tables) >= 2
                 and any(
                     self._is_auxiliary_concepts_table(d)
+                    and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
                     and (not preferred_euro_ids or d.chunk_id in preferred_euro_ids)
                     for d in prov_euro_tables
                 )
@@ -1890,13 +1964,14 @@ class AiHorecaVectorStore:
             def _is_normative_text(doc: RetrievedDocument) -> bool:
                 return doc.tipo_contenido in ("articulo", "anexo_o_disposicion")
             if is_remuneration_query:
-                extra_pay_art_pat = r"(?i)gratificaciones\s+extraordinarias|pagas\s+extra(?:ordinaria)?s?"
+                extra_pay_art_pat = r"(?i)gratificaci[óo]n(?:es|s)?\s+extraordinarias?|pagas?\s+extra(?:ordinaria)?s?"
                 specific_patterns = (
                     r"(?i)horas?\s+extra(?:ordinaria)?s?",
-                    r"(?i)nocturnidad|jornada\s+nocturna|horas\s+nocturnas",
-                    r"(?i)vacaciones",
-                    r"(?i)jornada\s+(?:de\s+trabajo|laboral|anual|m[áa]xima)|tiempo\s+parcial",
+                    r"(?i)nocturnidad(?:e)?|(?:jornada|xornada)\s+nocturna|horas?\s+nocturnas|de\s+10\s+(?:da|de\s+la)\s+noite|12\s+(?:da|de\s+la)\s+noite",
+                    r"(?i)vacaci[óo]n(?:es|s)",
+                    r"(?i)(?:jornada|xornada)\s+(?:de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|tiemp[oa]\s+parcial|tempo\s+parcial",
                     r"(?i)descanso\s+semanal",
+                    r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
                 )
                 matched_specific_pats = [
                     pat
@@ -1986,29 +2061,78 @@ class AiHorecaVectorStore:
                 if rem > 0:
                     _pick(base_pred, rem, terr_cands)
 
-            if area_pattern:
-                if target_subsector:
-                    if role_stems:
-                        _pick_with_period_preference(
-                            lambda d: d.tipo_contenido == "tabla_salarial"
-                            and self._is_monetary_table(d)
-                            and self._doc_matches_area(d, area_pattern)
-                            and self._doc_matches_establishment_subsector(d, target_subsector)
-                            and self._matches_primary_role_stem(d, role_stems),
-                            1,
-                        )
+            if area_pattern and target_subsector:
+                if role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
+                        and self._doc_matches_area(d, area_pattern)
+                        and self._doc_matches_establishment_subsector(d, target_subsector)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                    )
                     if _t_euro_tbl_count() == 0:
                         _pick_with_period_preference(
                             lambda d: d.tipo_contenido == "tabla_salarial"
                             and self._is_monetary_table(d)
-                            and self._doc_matches_area(d, area_pattern)
-                            and self._doc_matches_establishment_subsector(d, target_subsector),
+                            and not self._is_auxiliary_concepts_table(d)
+                            and bool(area_pattern.search(d.text))
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._matches_primary_role_stem(d, role_stems),
                             1,
                         )
-                if _t_euro_tbl_count() == 0 and role_stems:
+                if _t_euro_tbl_count() == 0:
                     _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
+                        and self._doc_matches_area(d, area_pattern)
+                        and self._doc_matches_establishment_subsector(d, target_subsector),
+                        1,
+                    )
+
+            if _t_euro_tbl_count() == 0 and target_subsector:
+                if role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
+                        and self._doc_matches_establishment_subsector(d, target_subsector)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                    )
+                    if _t_euro_tbl_count() == 0:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and not self._is_auxiliary_concepts_table(d)
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._matches_role_stem(d, role_stems),
+                            1,
+                        )
+                if _t_euro_tbl_count() == 0:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
+                        and self._doc_matches_establishment_subsector(d, target_subsector),
+                        1,
+                    )
+                if _t_euro_tbl_count() == 0:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._doc_matches_establishment_subsector(d, target_subsector),
+                        1,
+                    )
+
+            if _t_euro_tbl_count() == 0 and area_pattern:
+                if role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
                         and self._doc_matches_area(d, area_pattern)
                         and self._matches_primary_role_stem(d, role_stems),
                         1,
@@ -2017,6 +2141,7 @@ class AiHorecaVectorStore:
                         _pick_with_period_preference(
                             lambda d: d.tipo_contenido == "tabla_salarial"
                             and self._is_monetary_table(d)
+                            and not self._is_auxiliary_concepts_table(d)
                             and self._doc_matches_area(d, area_pattern)
                             and self._matches_role_stem(d, role_stems),
                             1,
@@ -2025,17 +2150,10 @@ class AiHorecaVectorStore:
                     _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
+                        and not self._is_auxiliary_concepts_table(d)
                         and self._doc_matches_area(d, area_pattern),
                         1,
                     )
-
-            if _t_euro_tbl_count() == 0 and target_subsector:
-                _pick_with_period_preference(
-                    lambda d: d.tipo_contenido == "tabla_salarial"
-                    and self._is_monetary_table(d)
-                    and self._doc_matches_establishment_subsector(d, target_subsector),
-                    1,
-                )
 
             if _t_euro_tbl_count() == 0 and role_stems:
                 _pick_with_period_preference(
@@ -2124,7 +2242,14 @@ class AiHorecaVectorStore:
                 ):
                     _pick(
                         lambda d: d.tipo_contenido == "tabla_salarial"
-                        and not self._is_monetary_table(d),
+                        and not self._is_monetary_table(d)
+                        and not re.search(r"(?i)pre[áa]mbulo|encabezado|[íi]ndice", d.articulo)
+                        and bool(
+                            re.search(
+                                r"(?i)\b(?:anexo|nivel|categor|grupo|clasificaci|establec|puesto)\b",
+                                f"{d.titulo_o_capitulo} {d.articulo} {d.text[:350]}",
+                            )
+                        ),
                         max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
                         terr_cands,
                     )
@@ -2138,17 +2263,98 @@ class AiHorecaVectorStore:
                 )
 
             if has_separate_concepts_table:
+                before_aux = len(selected)
+                if target_subsector and role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._is_auxiliary_concepts_table(d)
+                        and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                        and self._doc_matches_establishment_subsector(d, target_subsector)
+                        and self._matches_role_stem(d, role_stems),
+                        1,
+                    )
+                if len(selected) == before_aux:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and self._is_auxiliary_concepts_table(d)
+                        and not hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}"),
+                        1,
+                    )
+
+            if has_separate_hours_extra_table and _t_tbl_count() < QUOTA_PROVINCIAL_TABLES:
+                before_he = len(selected)
+                if target_subsector and role_stems:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                        and self._doc_matches_establishment_subsector(d, target_subsector)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                    )
+                    if len(selected) == before_he:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}")
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._matches_role_stem(d, role_stems),
+                            1,
+                        )
+                if len(selected) == before_he:
+                    _pick_with_period_preference(
+                        lambda d: d.tipo_contenido == "tabla_salarial"
+                        and self._is_monetary_table(d)
+                        and hours_extra_tbl_re.search(f"{d.titulo_o_capitulo} {d.articulo}"),
+                        1,
+                    )
+
+            if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES and target_subsector and role_stems:
                 _pick_with_period_preference(
                     lambda d: d.tipo_contenido == "tabla_salarial"
                     and self._is_monetary_table(d)
-                    and self._is_auxiliary_concepts_table(d),
-                    1,
+                    and not self._is_auxiliary_concepts_table(d)
+                    and self._doc_matches_establishment_subsector(d, target_subsector)
+                    and self._matches_primary_role_stem(d, role_stems),
+                    max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
                 )
+
+            if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES and target_subsector:
+                _pick_with_period_preference(
+                    lambda d: d.tipo_contenido == "tabla_salarial"
+                    and not self._is_auxiliary_concepts_table(d)
+                    and self._doc_matches_establishment_subsector(d, target_subsector),
+                    max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+                )
+
+            _pick_with_period_preference(
+                lambda d: d.tipo_contenido == "tabla_salarial"
+                and not self._is_auxiliary_concepts_table(d),
+                max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
+            )
 
             _pick_with_period_preference(
                 lambda d: d.tipo_contenido == "tabla_salarial",
                 max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
             )
+
+            if target_subsector and any(
+                _belongs_to_territory(s, terr_key)
+                and s.tipo_contenido == "tabla_salarial"
+                and self._is_monetary_table(s)
+                and self._doc_matches_establishment_subsector(s, target_subsector)
+                for s in selected
+            ):
+                other_subs = [s for s in self._DOC_SUBSECTOR_INCLUDE if s != target_subsector]
+                stale_euro_ids.update(
+                    d.chunk_id
+                    for d in terr_cands
+                    if d.tipo_contenido == "tabla_salarial"
+                    and not self._doc_matches_establishment_subsector(d, target_subsector)
+                    and any(self._doc_matches_establishment_subsector(d, os) for os in other_subs)
+                )
 
         for terr_key in norm_territorios:
             _select_for_territory(terr_key)
