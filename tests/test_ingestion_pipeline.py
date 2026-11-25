@@ -3159,5 +3159,258 @@ class TestPontevedraIngestionAndRetrieval(unittest.TestCase):
         self.assertNotIn(pluses_tbl.chunk_id, ids_46)
 
 
+class TestAsturiasIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el convenio colectivo del Principado de Asturias (BOPA 55/2023 + 44/2026)."""
+
+    def test_asturias_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "Asturias",
+            "Principado de Asturias",
+            "Oviedo",
+            "Gijón",
+            "Xixón",
+            "Avilés",
+            "Siero",
+            "Pola de Siero",
+            "Langreo",
+            "La Felguera",
+            "Mieres",
+            "Llanes",
+            "Cangas de Onís",
+            "Cangas del Narcea",
+            "Ribadesella",
+            "Navia",
+            "Villaviciosa",
+            "Cudillero",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "asturias")
+            self.assertEqual(_canonicalize_llm_province(alias), "asturias")
+        self.assertEqual(_pretty_territory_label("asturias"), "Asturias")
+
+    def test_asturias_strict_validation_and_cpu_table_extraction(self) -> None:
+        ast_base = PROCESSED_DATA_DIR / "convenio_asturias.md"
+        ast_2026 = PROCESSED_DATA_DIR / "convenio_asturias_tablas_2026.md"
+        if not ast_base.exists() or not ast_2026.exists():
+            self.skipTest("Convenio de Asturias no disponible en data/processed/")
+
+        for md_path in (ast_base, ast_2026):
+            report = validate_document(md_path, strict=True)
+            self.assertTrue(report.passed, msg=f"{md_path.name} falló validación estricta: {report.issues}")
+            self.assertEqual(report.error_count, 0, msg=f"Errores en {md_path.name}: {report.issues}")
+            self.assertEqual(report.warning_count, 0, msg=f"Warnings en {md_path.name}: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(ast_base, boundaries_cache=cache)
+        chunks_2026 = chunk_markdown_document(ast_2026, boundaries_cache=cache)
+        self.assertEqual(len(base_chunks), 94)
+        self.assertEqual(len(chunks_2026), 4)
+        self.assertTrue(all(c.territorio == "asturias" and c.subsector == "general" for c in base_chunks + chunks_2026))
+
+        raw_base = ast_base.read_text(encoding="utf-8")
+        raw_2026 = ast_2026.read_text(encoding="utf-8")
+        for blob in (raw_base, raw_2026):
+            self.assertNotIn("BOLETÍN OFICIAL DEL PRINCIPADO DE ASTURIAS", blob)
+            self.assertNotIn("\u019f", blob)
+            self.assertNotIn("\u01a1", blob)
+            self.assertNotIn("\u0372", blob)
+            self.assertNotIn("\uf0de", blob)
+            self.assertNotIn("\x03", blob)
+        self.assertNotIn("1,257,36", raw_2026)
+
+        # Tablas empalmadas sin cabecera en Anexo I y en Tablas 2026
+        self.assertIn("| CONSERJE | 5 | 6 | 7 | 8 |", raw_base)
+        self.assertIn("| AUXILIAR DE RECEPCION | 9 | 10 |", raw_base)
+        self.assertIn("| AYUDANTE CAMARERO | 8 |", raw_base)
+        self.assertIn("| AUXILIAR DE COLECTIVIDADES | 8 |", raw_base)
+        self.assertIn("| I | 1.484,33.-€ |", raw_2026)
+        self.assertIn("| V | 1.335,80.-€ |", raw_2026)
+        self.assertIn("| VII | 1.257,36.-€ |", raw_2026)
+        self.assertIn("| XI | 1.136,32.-€ |", raw_2026)
+        self.assertIn("| Economato | 18,19.-€ |", raw_2026)
+        self.assertIn("| Santa Marta | 1.136,32.-€ |", raw_2026)
+        self.assertIn("| VII | 34,88€ | 51,39€ | 67,91€ |", raw_2026)
+
+        def _to_doc(ch: LegalChunk) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=0.8,
+                rerank_score=0.8,
+            )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        sal_2026 = _to_doc(next(c for c in chunks_2026 if "tablas salariales" in c.articulo.lower() and c.tipo_contenido == "tabla_salarial"))
+        noc_2026 = _to_doc(next(c for c in chunks_2026 if "TABLA NOCTURNIDAD 2026" in c.articulo))
+        hoteles_cls = _to_doc(next(c for c in base_chunks if "HOTELES" in c.articulo and c.tipo_contenido == "tabla_salarial"))
+        rest_cls = _to_doc(next(c for c in base_chunks if "RESTAURANTES Y CASAS DE COMIDAS" in c.articulo))
+
+        self.assertEqual(store._extract_chunk_year(sal_2026), 2026)
+        self.assertEqual(store._extract_chunk_year(noc_2026), 2026)
+        self.assertTrue(store._is_monetary_table(sal_2026))
+        self.assertFalse(store._is_auxiliary_concepts_table(sal_2026))
+        self.assertTrue(store._is_auxiliary_concepts_table(noc_2026))
+        self.assertTrue(store._doc_matches_establishment_subsector(hoteles_cls, "hospedaje"))
+        self.assertFalse(store._doc_matches_establishment_subsector(hoteles_cls, "restauracion"))
+        self.assertTrue(store._doc_matches_establishment_subsector(rest_cls, "restauracion"))
+
+    def test_asturias_retrieval_selection_gd47_and_gd48(self) -> None:
+        ast_base = PROCESSED_DATA_DIR / "convenio_asturias.md"
+        ast_2026 = PROCESSED_DATA_DIR / "convenio_asturias_tablas_2026.md"
+        if not ast_base.exists() or not ast_2026.exists():
+            self.skipTest("Convenio de Asturias no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(ast_base, boundaries_cache=cache)
+        chunks_2026 = chunk_markdown_document(ast_2026, boundaries_cache=cache)
+
+        def _to_doc(ch: LegalChunk, rscore: float) -> RetrievedDocument:
+            return RetrievedDocument(
+                chunk_id=ch.chunk_id,
+                source_file=ch.source_file,
+                norma_titulo=ch.norma_titulo,
+                capa_normativa=ch.capa_normativa,
+                territorio=ch.territorio,
+                subsector=ch.subsector,
+                titulo_o_capitulo=ch.titulo_o_capitulo,
+                articulo=ch.articulo,
+                tipo_contenido=ch.tipo_contenido,
+                text=ch.text,
+                score=rscore,
+                rerank_score=rscore,
+            )
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_ast_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_ast_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        sal_2026 = next(c for c in chunks_2026 if "tablas salariales" in c.articulo.lower() and c.tipo_contenido == "tabla_salarial")
+        noc_2026 = next(c for c in chunks_2026 if "TABLA NOCTURNIDAD 2026" in c.articulo)
+        noc_2026_intro = next(c for c in chunks_2026 if "Actualización tabla nocturnidad" in c.articulo and c.tipo_contenido == "articulo")
+        sal_2023 = next(c for c in base_chunks if "TABLA SALARIAL DE 2023" in c.articulo)
+        noc_2023 = next(c for c in base_chunks if c.articulo == "TABLA NOCTURNIDAD")
+        hoteles_cls = next(c for c in base_chunks if "HOTELES" in c.articulo and "Parte 1/2" in c.articulo)
+        rest_cls = next(c for c in base_chunks if c.articulo == "RESTAURANTES Y CASAS DE COMIDAS")
+        art13 = next(c for c in base_chunks if c.articulo.startswith("Artículo 13"))
+        art20 = next(c for c in base_chunks if c.articulo.startswith("Artículo 20"))
+        art22 = next(c for c in base_chunks if c.articulo.startswith("Artículo 22"))
+        art23 = next(c for c in base_chunks if c.articulo.startswith("Artículo 23"))
+        art30 = next(c for c in base_chunks if c.articulo.startswith("Artículo 30"))
+        art36 = next(c for c in base_chunks if c.articulo.startswith("Artículo 36"))
+        art37_p1 = next(c for c in base_chunks if c.articulo.startswith("Artículo 37") and "Parte 1/2" in c.articulo)
+        extra = [
+            _to_doc(c, 0.25)
+            for c in base_chunks
+            if c.tipo_contenido == "articulo"
+            and c.chunk_id not in {art13.chunk_id, art20.chunk_id, art22.chunk_id, art23.chunk_id, art30.chunk_id, art36.chunk_id, art37_p1.chunk_id}
+        ][:3]
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_47: prioriza Tablas 2026 + Hoteles sobre Tablas 2023 + Restaurantes y recupera Arts. 23, 30, 36
+        pool_47 = [
+            _to_doc(sal_2023, 0.99),
+            _to_doc(noc_2026, 0.96),
+            _to_doc(rest_cls, 0.95),
+            _to_doc(art30, 0.92),
+            _to_doc(art23, 0.90),
+            _to_doc(art36, 0.88),
+            _to_doc(hoteles_cls, 0.72),
+            _to_doc(sal_2026, 0.68),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_47 = store.rerank_and_select_by_territory(
+            candidates=pool_47,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Gijón (Asturias). ¿Cuál es mi salario base mensual en 2026, cuántas pagas extraordinarias tengo al año y cuánto corresponde por la de Santa Marta, qué cuantía tiene la ayuda de economato y cuál es mi descanso semanal mínimo?",
+            territorios=["asturias"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina, Grupo Profesional II)",
+        )
+        ids_47 = {d.chunk_id for d in sel_47}
+        self.assertIn(sal_2026.chunk_id, ids_47)
+        self.assertIn(hoteles_cls.chunk_id, ids_47)
+        self.assertIn(art30.chunk_id, ids_47)
+        self.assertIn(art23.chunk_id, ids_47)
+        self.assertIn(art36.chunk_id, ids_47)
+        self.assertNotIn(sal_2023.chunk_id, ids_47)
+        self.assertNotIn(noc_2026.chunk_id, ids_47)
+
+        # Escenario GD_48: prioriza Tablas 2026 + Restaurantes + Nocturnidad 2026 + Art. 20 (no Art. 13) + Art. 22 + Art. 37
+        pool_48 = [
+            _to_doc(sal_2023, 0.99),
+            _to_doc(noc_2023, 0.98),
+            _to_doc(hoteles_cls, 0.97),
+            _to_doc(art13, 0.96),
+            _to_doc(noc_2026_intro, 0.95),
+            _to_doc(art20, 0.91),
+            _to_doc(art22, 0.90),
+            _to_doc(art37_p1, 0.89),
+            _to_doc(rest_cls, 0.72),
+            _to_doc(noc_2026, 0.70),
+            _to_doc(sal_2026, 0.65),
+            *extra,
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_48 = store.rerank_and_select_by_territory(
+            candidates=pool_48,
+            query="Soy camarero en un restaurante de 2 tenedores en Oviedo (Asturias) en 2026. ¿Cuál es mi salario base mensual, cuál es la jornada anual máxima, cómo se retribuyen las horas extraordinarias y cuánto cobraría de plus de nocturnidad si realizo 25 horas nocturnas al mes?",
+            territorios=["asturias"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, Grupo Profesional II)",
+        )
+        ids_48 = {d.chunk_id for d in sel_48}
+        self.assertIn(sal_2026.chunk_id, ids_48)
+        self.assertIn(noc_2026.chunk_id, ids_48)
+        self.assertIn(rest_cls.chunk_id, ids_48)
+        self.assertIn(art20.chunk_id, ids_48)
+        self.assertIn(art22.chunk_id, ids_48)
+        self.assertIn(art37_p1.chunk_id, ids_48)
+        self.assertNotIn(sal_2023.chunk_id, ids_48)
+        self.assertNotIn(noc_2023.chunk_id, ids_48)
+        self.assertNotIn(hoteles_cls.chunk_id, ids_48)
+        self.assertNotIn(art13.chunk_id, ids_48)
+        self.assertNotIn(noc_2026_intro.chunk_id, ids_48)
+
+
 if __name__ == "__main__":
     unittest.main()

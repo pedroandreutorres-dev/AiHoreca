@@ -1182,7 +1182,7 @@ class AiHorecaVectorStore:
                 parts = [p.strip() for p in s.strip("|").split("|")]
                 header_cols = " | ".join(parts[1:]) if len(parts) > 1 else s
                 break
-        surface = f"{doc.titulo_o_capitulo} | {header_cols}".lower()
+        surface = f"{doc.titulo_o_capitulo} | {doc.articulo} | {header_cols}".lower()
         if not cls._DOC_SUBSECTOR_INCLUDE[subsector].search(surface):
             return False
         if subsector == "restauracion" and cls._DOC_RESTAURACION_EXCLUDE_RE.search(surface):
@@ -1219,7 +1219,7 @@ class AiHorecaVectorStore:
         surface = f"{doc.titulo_o_capitulo} {doc.articulo} {body_head}"
         return bool(
             re.search(
-                r"(?i)\b(?:otros\s+conceptos|outros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|complemento\s+personal|antiguo\s+nivel|ajuste\s+de\s+niveles|pluses\s+y\s+complementos|horas?\s+extras?\b|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servi[cz]os?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
+                r"(?i)\b(?:otros\s+conceptos|outros\s+conceptos|conceptos\s+econ[óo]micos\s+no\s+incluidos|complementos\s+salariales\s+y\s+extrasalariales|complemento\s+personal|antiguo\s+nivel|ajuste\s+de\s+niveles|pluses\s+y\s+complementos|horas?\s+extras?\b|tabla\s+(?:de\s+)?nocturnidad|valor\s+del?\s+trienio|valor\s+d[íi]a\s+festivo|servi[cz]os?\s+extraordinarios?|d[íi]as?\s+24\s+y\s+31\s+de\s+diciembre|manutenci[óo]n|seguro\s+colectivo)\b",
                 surface,
             )
         )
@@ -1372,6 +1372,11 @@ class AiHorecaVectorStore:
             r"(?i)\bipc\b|revisi[óo]n\s+salarial|paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
             "revisión salarial ipc comisión paritaria cláusula garantía paga única plus transporte",
         ),
+        (
+            "economato",
+            r"(?i)economato",
+            "economato cooperativas de consumo ayuda economato extrasalarial",
+        ),
     )
 
     def retrieve_territory_candidates(
@@ -1421,6 +1426,8 @@ class AiHorecaVectorStore:
             topic_boosts.append("revisión salarial ipc comisión paritaria cláusula garantía paga única plus transporte")
         if re.search(r"(?i)jornada|xornada|vacaci[óo]n|descanso", query):
             topic_boosts.append("jornada anual xornada laboral vacaciones vacacións descanso semanal")
+        if re.search(r"(?i)economato", query):
+            topic_boosts.append("cooperativas de consumo ayuda de economato extrasalarial")
         if is_remuneration_query and not topic_boosts:
             topic_boosts.append("gratificaciones extraordinarias gratificacións extraordinarias pagas extras salario base")
 
@@ -1622,7 +1629,7 @@ class AiHorecaVectorStore:
         asks_hours_extra_q = bool(re.search(r"(?i)horas?\s+extra(?:ordinaria)?s?", clean_q))
         asks_aux_q = bool(
             re.search(
-                r"(?i)\b(?:plus|manutenci[óo]n|herramientas|ropa|seguro|quebranto|alojamiento)\b",
+                r"(?i)\b(?:plus|nocturnidad|manutenci[óo]n|herramientas|ropa|seguro|quebranto|alojamiento)\b",
                 clean_q,
             )
         )
@@ -1638,7 +1645,7 @@ class AiHorecaVectorStore:
             )
 
         top_level_candidates: list[RetrievedDocument] = []
-        seen_level_sections: set[str] = set()
+        seen_level_sections: set[tuple[str, str]] = set()
         classification_annexes = [
             a
             for a in layer_results["prov_anexo"]
@@ -1648,12 +1655,14 @@ class AiHorecaVectorStore:
             [t for t in level_tables if self._is_classification_level_table(t, include_seniority_tables)]
             + classification_annexes,
             key=lambda t: (
+                bool(query_subsector) and not self._doc_matches_establishment_subsector(t, query_subsector),
                 not self._matches_primary_role_stem(t, role_stems),
                 not self._matches_role_stem(t, role_stems),
             ),
         )
         for item in cls_levels:
-            sec_key = item.titulo_o_capitulo.strip()
+            base_art = re.sub(r"\s*\(Parte\s+\d+/\d+\)$", "", item.articulo).strip()
+            sec_key = (item.titulo_o_capitulo.strip(), base_art)
             if sec_key not in seen_level_sections:
                 top_level_candidates.append(item)
                 seen_level_sections.add(sec_key)
@@ -1885,9 +1894,21 @@ class AiHorecaVectorStore:
                 explicit_years,
             )
             if preferred_euro_ids:
+                pref_min_year = min(
+                    (self._extract_chunk_year(d) for d in prov_euro_tables if d.chunk_id in preferred_euro_ids),
+                    default=0,
+                )
                 stale_euro_ids.update(
                     d.chunk_id for d in prov_euro_tables if d.chunk_id not in preferred_euro_ids
                 )
+                if pref_min_year > 0:
+                    stale_euro_ids.update(
+                        d.chunk_id
+                        for d in terr_cands
+                        if d.tipo_contenido == "anexo_o_disposicion"
+                        and self._is_monetary_table(d)
+                        and 0 < self._extract_chunk_year(d) < pref_min_year
+                    )
             distinct_cls_sections = {
                 (d.titulo_o_capitulo.strip(), d.tipo_contenido)
                 for d in terr_cands
@@ -1942,14 +1963,14 @@ class AiHorecaVectorStore:
             )
             asks_aux_concepts = bool(
                 re.search(
-                    r"(?i)\b(?:plus\s+(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa)|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
+                    r"(?i)\b(?:plus\s+(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa|de\s+nocturnidad)|nocturnidad|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
                     clean_intent_q,
                 )
             )
             asked_aux_stems = [
                 tok[:6].lower()
                 for tok in re.findall(
-                    r"(?i)(?:cultural|transporte|asistencia|convenio|vestuario|ropa|manutenci|herramienta|seguro|matrimonio|natalidad|nacimiento|jubilaci|quebranto|alojamiento)",
+                    r"(?i)(?:cultural|transporte|asistencia|convenio|vestuario|ropa|nocturn|manutenci|herramienta|seguro|matrimonio|natalidad|nacimiento|jubilaci|quebranto|alojamiento)",
                     clean_intent_q,
                 )
             ]
@@ -1983,20 +2004,46 @@ class AiHorecaVectorStore:
                 return doc.tipo_contenido in ("articulo", "anexo_o_disposicion")
             if is_remuneration_query:
                 extra_pay_art_pat = r"(?i)gratificaci[óo]n(?:es|s)?\s+extraordinarias?|pagas?\s+extra(?:ordinaria)?s?"
-                specific_patterns = (
-                    r"(?i)horas?\s+extra(?:ordinaria)?s?",
-                    r"(?i)nocturnidad(?:e)?|(?:jornada|xornada)\s+nocturna|horas?\s+nocturnas|de\s+10\s+(?:da|de\s+la)\s+noite|12\s+(?:da|de\s+la)\s+noite",
-                    r"(?i)vacaci[óo]n(?:es|s)",
-                    r"(?i)(?:jornada|xornada)\s+(?:de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|tiemp[oa]\s+parcial|tempo\s+parcial",
-                    r"(?i)descanso\s+semanal",
-                    r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
+                specific_patterns: tuple[tuple[str, str], ...] = (
+                    (
+                        r"(?i)horas?\s+extra(?:ordinaria)?s?",
+                        r"(?i)horas?\s+extra(?:ordinaria)?s?",
+                    ),
+                    (
+                        r"(?i)nocturnidad(?:e)?|(?:jornada|xornada)\s+nocturna|horas?\s+nocturnas|de\s+10\s+(?:da|de\s+la)\s+noite|12\s+(?:da|de\s+la)\s+noite",
+                        r"(?i)nocturnidad(?:e)?|(?:jornada|xornada)\s+nocturna|horas?\s+nocturnas|de\s+10\s+(?:da|de\s+la)\s+noite|12\s+(?:da|de\s+la)\s+noite",
+                    ),
+                    (
+                        r"(?i)vacaci[óo]n(?:es|s)",
+                        r"(?i)vacaci[óo]n(?:es|s)",
+                    ),
+                    (
+                        r"(?i)(?:jornada|xornada)\s+(?:ordinaria|de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|horas?\s+anua(?:les|is)",
+                        r"(?i)\b(?:jornada|xornada)\b",
+                    ),
+                    (
+                        r"(?i)tiemp[oa]\s+parcial|tempo\s+parcial",
+                        r"(?i)tiemp[oa]\s+parcial|tempo\s+parcial",
+                    ),
+                    (
+                        r"(?i)descanso\s+semanal",
+                        r"(?i)descanso\s+semanal",
+                    ),
+                    (
+                        r"(?i)economato",
+                        r"(?i)economato|cooperativas?\s+de\s+consumo",
+                    ),
+                    (
+                        r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
+                        r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
+                    ),
                 )
-                matched_specific_pats = [
-                    pat
-                    for pat in specific_patterns
-                    if re.search(pat, f"{query} {effective_rerank_query}")
+                matched_specific_specs = [
+                    (q_pat, a_pat)
+                    for q_pat, a_pat in specific_patterns
+                    if re.search(q_pat, f"{query} {effective_rerank_query}")
                 ]
-                if asks_extra_pay or not matched_specific_pats:
+                if asks_extra_pay or not matched_specific_specs:
                     before_extra = len(selected)
                     _pick(
                         lambda d: _is_normative_text(d)
@@ -2011,10 +2058,11 @@ class AiHorecaVectorStore:
                             1,
                             terr_cands,
                         )
-                for pat in matched_specific_pats:
+                for _q_pat, art_pat in matched_specific_specs:
                     before_spec = len(selected)
                     _pick(
-                        lambda d, p=pat: _is_normative_text(d)
+                        lambda d, p=art_pat: d.tipo_contenido == "articulo"
+                        and bool(re.match(r"(?i)^art", d.articulo.strip()))
                         and bool(re.search(p, d.articulo))
                         and not re.search(r"\(Parte\s+[2-9]\d*/", d.articulo),
                         1,
@@ -2022,14 +2070,22 @@ class AiHorecaVectorStore:
                     )
                     if len(selected) == before_spec:
                         _pick(
-                            lambda d, p=pat: _is_normative_text(d)
+                            lambda d, p=art_pat: _is_normative_text(d)
+                            and bool(re.search(p, d.articulo))
+                            and not re.search(r"\(Parte\s+[2-9]\d*/", d.articulo),
+                            1,
+                            terr_cands,
+                        )
+                    if len(selected) == before_spec:
+                        _pick(
+                            lambda d, p=art_pat: _is_normative_text(d)
                             and bool(re.search(p, d.articulo)),
                             1,
                             terr_cands,
                         )
                     if len(selected) == before_spec:
                         _pick(
-                            lambda d, p=pat: _is_normative_text(d)
+                            lambda d, p=art_pat: _is_normative_text(d)
                             and bool(re.search(p, f"{d.articulo} {d.text[:500]}")),
                             1,
                             terr_cands,
@@ -2046,7 +2102,7 @@ class AiHorecaVectorStore:
                                 if d.chunk_id not in selected_ids
                                 and d.tipo_contenido == "anexo_o_disposicion"
                                 and not self._is_classification_level_table(d, include_seniority_tables)
-                                and re.search(pat, f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}")
+                                and re.search(art_pat, f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}")
                             ]
                             if annex_cands:
                                 annex_cands.sort(
@@ -2198,12 +2254,48 @@ class AiHorecaVectorStore:
                 )
 
             if _t_tbl_count() < QUOTA_PROVINCIAL_TABLES:
-                _pick(
-                    lambda d: self._is_classification_level_table(d, include_seniority_tables)
-                    and self._matches_primary_role_stem(d, role_stems),
-                    1,
-                    terr_cands,
-                )
+                if target_subsector:
+                    _pick(
+                        lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                        and self._doc_matches_establishment_subsector(d, target_subsector)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                        terr_cands,
+                    )
+                    if not any(
+                        _belongs_to_territory(s, terr_key)
+                        and self._is_classification_level_table(s, include_seniority_tables)
+                        for s in selected
+                    ):
+                        _pick(
+                            lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._matches_role_stem(d, role_stems),
+                            1,
+                            terr_cands,
+                        )
+                    if not any(
+                        _belongs_to_territory(s, terr_key)
+                        and self._is_classification_level_table(s, include_seniority_tables)
+                        for s in selected
+                    ):
+                        _pick(
+                            lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                            and self._doc_matches_establishment_subsector(d, target_subsector),
+                            1,
+                            terr_cands,
+                        )
+                if not any(
+                    _belongs_to_territory(s, terr_key)
+                    and self._is_classification_level_table(s, include_seniority_tables)
+                    for s in selected
+                ):
+                    _pick(
+                        lambda d: self._is_classification_level_table(d, include_seniority_tables)
+                        and self._matches_primary_role_stem(d, role_stems),
+                        1,
+                        terr_cands,
+                    )
                 if not any(
                     _belongs_to_territory(s, terr_key)
                     and self._is_classification_level_table(s, include_seniority_tables)

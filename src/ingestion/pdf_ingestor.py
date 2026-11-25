@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 _BULLETIN_HEADER_NOISE = re.compile(
     r"(?i)^(?:"
-    r"bolet[íi]n\s+oficial\s+d[ae]\b|"
+    r"bolet[íi]n\s+oficial\s+d[ae]l?\b|"
     r"b\.?\s*o\.?\s*p\.?(?:\s+d[ae]\b|\s+n[úu]m\.?\b)|"
     r"bop$|"
     r"butllet[íi]\s+oficial\s+de|"
@@ -59,6 +59,8 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"n[º°o]\.?\s*\d+\s+de\s+\d{1,2}/\d{2}/\d{4}|"
     r"n[º°o]\.?\s*\d+\s*[-•]\s*(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b|"
     r"\[?n[úu]m(?:ero)?\.?\s*\d+\]?(?:\s*[-•]?\s*p[áa]gina\s*\d+)?$|"
+    r"n[úu]m\.?\s*\d+\s+de\s+\d{1,2}-[ivx]+-\d{4}|"
+    r"c[óo]d\.?\s*20[12]\d-\d{4,6}\b|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*[-•]?\s*p[áa]gina\s*\d+|"
     r"n[úu]mero\s+de\s+anuncio\b|"
     r"\d{1,5}\s*/\s*20[12]\d$|"
@@ -211,7 +213,7 @@ def _apply_text_markers(
 
 def _format_plain_page_to_markdown(page_text: str) -> str:
     """Formatea en CPU una página de texto articulado eliminando ruido genérico de boletín oficial."""
-    normalized_text = re.sub(r"[\u2000-\u200b\u00a0]+", " ", page_text or "").replace("\xad", "")
+    normalized_text = _normalize_unicode_spaces(page_text)
     raw_lines = normalized_text.splitlines()
     merged_lines: list[str] = []
     idx = 0
@@ -310,7 +312,7 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
         elif (
             len(stripped) <= 95
             and re.match(
-                r"^(?:\d+\.-?\s+(?:Descripci[óo]n\s+de\s+establecimientos|Niveles\s+y\s+salario\s+base|Categor[íi]as\s+y\s+niveles)|Pluses\s+para\s+los\s+a[ñn]os\s+20[23]\d)\b[^\n]*$",
+                r"^(?:\d+\.-?\s+(?:Descripci[óo]n\s+de\s+establecimientos|Niveles\s+y\s+salario\s+base|Categor[íi]as\s+y\s+niveles|Actualizaci[óo]n\s+(?:de\s+)?tablas?\s+(?:salarial(?:es)?|nocturnidad)|Actualizaci[óo]n\s+tabla\s+nocturnidad)|Pluses\s+para\s+los\s+a[ñn]os\s+20[23]\d)\b[^\n]*$",
                 stripped,
                 flags=re.IGNORECASE,
             )
@@ -374,8 +376,9 @@ _HEADING_PERIOD_SUBTITLE_RE = re.compile(
 
 
 def _normalize_spanish_thousands(text: str) -> str:
-    """Corrige el artefacto tipográfico `1. 623,07` o `1 .623,07` -> `1.623,07`."""
-    return _THOUSANDS_SPACE_RE.sub(r"\1.\2", text)
+    """Corrige artefactos tipográficos (`1. 623,07`, `1 .623,07`, `1,257,36`) -> `1.623,07`."""
+    fixed = _THOUSANDS_SPACE_RE.sub(r"\1.\2", text)
+    return re.sub(r"(?<!\d)(\d{1,2}),(\d{3},\d{2})\b", r"\1.\2", fixed)
 
 
 def _merge_heading_period_subtitles(text: str) -> str:
@@ -634,8 +637,18 @@ _SPANISH_LANGUAGE_TOKENS: frozenset[str] = frozenset(
 
 
 def _normalize_unicode_spaces(text: str) -> str:
-    """Normaliza espacios tipográficos Unicode (p. ej. U+2005/NBSP) y guiones blandos."""
+    """Normaliza espacios tipográficos Unicode, ligaduras de fuentes PDF, caracteres de control y guiones blandos."""
     cleaned = re.sub(r"[\u2000-\u200b\u00a0]+", " ", text or "")
+    cleaned = cleaned.replace("\x03", " ")
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", cleaned)
+    cleaned = (
+        cleaned.replace("\u019f", "ti")
+        .replace("\u01a1", "tí")
+        .replace("\u0372", "-")
+        .replace("\uf0de", "fi")
+        .replace("\ufb01", "fi")
+        .replace("\ufb02", "fl")
+    )
     # Conserva como raya (–) el carácter U+00AD cuando actúa como símbolo de "sin importe" al final de puntos o espacios.
     cleaned = re.sub(r"(?:(?<=^)|(?<=\s)|(?<=\.))\xad(?=\s|$)", "–", cleaned)
     return cleaned.replace("\xad", "")
@@ -823,11 +836,29 @@ def _extract_double_column_page_text(page: pymupdf.Page) -> str:
     return "\n".join(str(b[4]).strip() for b in ordered)
 
 
+def _is_viable_vector_table(table: object) -> bool:
+    """Determina si una tabla vectorial detectada por PyMuPDF contiene filas de datos reales."""
+    if table.col_count < 2:
+        return False
+    if table.row_count >= 3:
+        return True
+    if table.row_count == 2:
+        try:
+            extracted_cells = [str(c or "") for row in (table.extract() or []) for c in row]
+        except Exception:
+            return False
+        cell_blob = "\n".join(extracted_cells)
+        return sum(c.count("\n") for c in extracted_cells) >= 3 and (
+            "€" in cell_blob or len(_SPANISH_DECIMALS_RE.findall(cell_blob)) >= 3
+        )
+    return False
+
+
 def _page_has_complex_table(page: pymupdf.Page) -> bool:
     """Determina en CPU si una página contiene tablas reales o cuadrículas salariales mediante PyMuPDF."""
     try:
         finder = page.find_tables()
-        if finder and any(t.row_count >= 3 and t.col_count >= 2 for t in finder.tables):
+        if finder and any(_is_viable_vector_table(t) for t in finder.tables):
             return True
     except Exception:
         pass
@@ -871,6 +902,23 @@ def _has_clean_vector_table_grid(page: pymupdf.Page) -> bool:
             rows = table.extract()
             if not rows or any(c is None or not str(c).strip() for c in rows[0]):
                 return False
+            col0_hdr = str(rows[0][0] or "").strip().lower()
+            tail_cells = [str(c or "").strip() for c in rows[0][1:]]
+            if (
+                tail_cells
+                and not re.search(
+                    r"\b(?:nivel|categor[íi]a|grupo|puesto|concepto|establecimiento|tipo|escala|a[ñn]o|tramo|duraci[óo]n)\b",
+                    col0_hdr,
+                )
+                and all(
+                    re.fullmatch(
+                        r"(?:\d{1,2}|(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2}(?:\s*(?:\.-)?€)?)",
+                        cell,
+                    )
+                    for cell in tail_cells
+                )
+            ):
+                return False
             for row in rows:
                 for cell in row:
                     if cell and (
@@ -897,7 +945,7 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
             continue
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
-    return _normalize_spanish_thousands(out)
+    return _normalize_spanish_thousands(_normalize_unicode_spaces(out))
 
 
 def _collect_vector_table_raw_rows(
@@ -1161,6 +1209,47 @@ def _escape_md_cell(val: str) -> str:
     return val.replace("|", "/").strip()
 
 
+def _is_headless_table_start(rows: list[list[str]]) -> bool:
+    """Detecta si la primera fila de una matriz extraída ya es sección o fila de datos sin cabecera."""
+    if not rows or len(rows[0]) < 2:
+        return False
+    first = rows[0]
+    if first[0].strip() and all(not c.strip() for c in first[1:]):
+        return any(
+            any(c.strip() for c in r[1:])
+            and (
+                any(_SPANISH_DECIMALS_RE.search(c) for c in r[1:])
+                or all(re.fullmatch(r"\d{1,2}|[IVX]{1,4}", c.strip()) for c in r[1:] if c.strip())
+            )
+            for r in rows[1:]
+        )
+    tail = [c.strip() for c in first[1:] if c.strip()]
+    if not tail:
+        return False
+    if any(_SPANISH_DECIMALS_RE.search(c) for c in tail):
+        return True
+    col0_low = first[0].strip().lower()
+    if re.search(
+        r"\b(?:nivel|categor[íi]a|grupo|puesto|concepto|establec|tipo|escala|a[ñn]o|tramo|duraci[óo]n|edad|jornada)\b",
+        col0_low,
+    ):
+        return False
+    return all(re.fullmatch(r"\d{1,2}", c) for c in tail)
+
+
+def _synthesize_headless_headers(rows: list[list[str]]) -> list[str]:
+    """Genera nombres de columna limpios para tablas partidas o sin cabecera explícita."""
+    ncols = len(rows[0])
+    if ncols == 2:
+        col1_vals = [r[1].strip() for r in rows[:12] if len(r) > 1 and r[1].strip()]
+        if any(_SPANISH_DECIMALS_RE.search(v) for v in col1_vals):
+            return ["Concepto / Nivel", "Importe (€)"]
+        if col1_vals and all(re.fullmatch(r"\d{1,2}|[IVX]{1,4}", v) for v in col1_vals):
+            return ["Categoría / Puesto", "Nivel"]
+        return ["Concepto / Categoría", "Valor"]
+    return ["Categoría / Puesto", *[f"Categoría {idx}" for idx in range(1, ncols)]]
+
+
 def _collapse_table_headers_and_body(
     trimmed: list[list[str]],
     row_colspans: list[bool],
@@ -1176,6 +1265,7 @@ def _collapse_table_headers_and_body(
         and len(trimmed[0]) >= 2
         and trimmed[0][0]
         and all(not c for c in trimmed[0][1:])
+        and not re.match(r"(?i)^(?:[áa]rea\s+funcional|grupo\s+profesional)\b", trimmed[0][0].strip())
         and not (
             not row_colspans[0]
             and any(_SPANISH_DECIMALS_RE.search(c) for c in trimmed[1][1:])
@@ -1273,16 +1363,18 @@ def _collapse_table_headers_and_body(
     elif (
         len(trimmed) >= 2
         and any(not c for c in trimmed[0])
+        and any(c for c in trimmed[0][1:])
         and all(trimmed[0][i] or trimmed[1][i] for i in range(len(trimmed[0])))
         and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
         and not re.fullmatch(r"[IVX]+|\d+", trimmed[1][0].strip())
+        and not (len(trimmed[0]) == 2 and re.fullmatch(r"\d{1,2}", trimmed[1][1].strip()))
         and sum(1 for c in trimmed[1] if c) >= max(2, len(trimmed[0]) // 2)
     ):
         hdr = [f"{trimmed[0][i]} {trimmed[1][i]}".strip() for i in range(len(trimmed[0]))]
         body = trimmed[2:]
         consumed_header_rows += 2
-    elif banner_headings:
-        hdr = [f"Columna {idx + 1}" for idx in range(len(trimmed[0]))]
+    elif banner_headings or _is_headless_table_start(trimmed):
+        hdr = _synthesize_headless_headers(trimmed)
         body = trimmed
     else:
         hdr = list(trimmed[0])
@@ -1826,7 +1918,7 @@ def _extract_vector_tables_page_cpu(
     except Exception:
         return None
     tables = (
-        [t for t in finder.tables if t.row_count >= 3 and t.col_count >= 2]
+        [t for t in finder.tables if _is_viable_vector_table(t)]
         if finder and finder.tables
         else []
     )
@@ -1913,13 +2005,55 @@ def _extract_vector_tables_page_cpu(
             key=lambda item: (round(float(item[0].y0), 1), round(float(item[0].x0), 1)),
         )
 
-    out = "\n\n".join(content for _, _, content in ordered_items if content).strip()
+    # Promueve títulos cortos en mayúsculas (p. ej. subsectores de Anexo I) inmediatamente anteriores a una tabla
+    promoted_contents: list[str] = []
+    for idx_it, (rect_it, _, content) in enumerate(ordered_items):
+        if (
+            idx_it + 1 < len(ordered_items)
+            and "| ---" in ordered_items[idx_it + 1][2]
+            and "| ---" not in content
+            and not content.lstrip().startswith("#")
+        ):
+            collapsed = re.sub(r"\s+", " ", content).strip()
+            alpha_chars = [ch for ch in collapsed if ch.isalpha()]
+            if (
+                5 <= len(collapsed) <= 240
+                and alpha_chars
+                and sum(1 for ch in alpha_chars if ch.isupper()) >= 0.85 * len(alpha_chars)
+                and not collapsed.endswith(".")
+                and not re.match(
+                    r"(?i)^(?:art[íi]culo|cap[íi]tulo|t[íi]tulo|anexo|disposici[óo]n|nota|observaci)",
+                    collapsed,
+                )
+            ):
+                if promoted_contents and idx_it > 0:
+                    prev_rect, _, prev_raw = ordered_items[idx_it - 1]
+                    prev_col = re.sub(r"\s+", " ", prev_raw).strip()
+                    prev_alpha = [ch for ch in prev_col if ch.isalpha()]
+                    if (
+                        (float(rect_it.y0) - float(prev_rect.y1)) <= 5.0
+                        and "| ---" not in prev_raw
+                        and not prev_raw.lstrip().startswith("#")
+                        and not prev_col.endswith(".")
+                        and 5 <= len(prev_col) <= 260
+                        and prev_alpha
+                        and sum(1 for ch in prev_alpha if ch.isupper()) >= 0.85 * len(prev_alpha)
+                    ):
+                        promoted_contents[-1] = f"### {prev_col} {collapsed}"
+                        continue
+                promoted_contents.append(f"### {collapsed}")
+                continue
+        if content:
+            promoted_contents.append(content)
+
+    out = "\n\n".join(promoted_contents).strip()
     if "| ---" not in out:
         return None
+    out = _normalize_spanish_thousands(_normalize_unicode_spaces(out))
     missing_total, _, _ = _count_missing_spanish_decimals(page.get_text("text"), out)
     if missing_total > 0:
         return None
-    return _normalize_spanish_thousands(out)
+    return out
 
 
 def _markdown_table_is_healthy(md_text: str) -> bool:
@@ -2166,6 +2300,69 @@ def _extract_coordinate_table_stream_cpu(
     return _normalize_spanish_thousands(result)
 
 
+def _stitch_headless_continuation_tables(markdown_parts: list[str]) -> list[str]:
+    """Empalma tablas partidas sin cabecera al principio de una página con la tabla final de la página previa."""
+    stitched: list[str] = []
+    synthetic_col_re = re.compile(r"^(?:Nivel|Importe \(€\)|Valor|(?:Categor[íi]a|Columna)\s+\d+)$")
+    for raw_part in markdown_parts:
+        part = raw_part.strip()
+        if not part:
+            continue
+        if not stitched:
+            stitched.append(part)
+            continue
+
+        prev_lines = stitched[-1].rstrip().splitlines()
+        p_idx = len(prev_lines) - 1
+        while p_idx >= 0 and prev_lines[p_idx].strip().startswith("|"):
+            p_idx -= 1
+        prev_tbl_start = p_idx + 1
+
+        curr_lines = part.splitlines()
+        has_prev_table = (
+            prev_tbl_start <= len(prev_lines) - 2
+            and prev_lines[prev_tbl_start].strip().startswith("|")
+            and "---" in prev_lines[prev_tbl_start + 1]
+        )
+        has_curr_table = (
+            len(curr_lines) >= 2
+            and curr_lines[0].strip().startswith("|")
+            and "---" in curr_lines[1]
+        )
+        if not (has_prev_table and has_curr_table):
+            stitched.append(part)
+            continue
+
+        prev_hdr = [c.strip() for c in prev_lines[prev_tbl_start].strip("|").split("|")]
+        curr_hdr = [c.strip() for c in curr_lines[0].strip("|").split("|")]
+        is_synthetic = (
+            curr_hdr[0] in {"Categoría / Puesto", "Concepto / Nivel", "Concepto / Categoría"}
+            and all(synthetic_col_re.fullmatch(h) for h in curr_hdr[1:])
+        )
+        is_data_hdr = any(_SPANISH_DECIMALS_RE.search(c) for c in curr_hdr[1:]) or (
+            len(curr_hdr) >= 2
+            and any(c for c in curr_hdr[1:])
+            and all(re.fullmatch(r"\d{1,2}", c) for c in curr_hdr[1:] if c)
+            and not re.search(
+                r"(?i)\b(?:nivel|categor[íi]a|grupo|puesto|concepto|establec|tipo|escala)\b",
+                curr_hdr[0],
+            )
+        )
+        if len(prev_hdr) != len(curr_hdr) or not (is_synthetic or is_data_hdr):
+            stitched.append(part)
+            continue
+
+        tbl_end = 2
+        while tbl_end < len(curr_lines) and curr_lines[tbl_end].strip().startswith("|"):
+            tbl_end += 1
+        append_rows = curr_lines[2:tbl_end] if is_synthetic else [curr_lines[0], *curr_lines[2:tbl_end]]
+        stitched[-1] = "\n".join([*prev_lines, *append_rows]).rstrip()
+        remaining = "\n".join(curr_lines[tbl_end:]).strip()
+        if remaining:
+            stitched.append(remaining)
+    return stitched
+
+
 def extract_hybrid_markdown(
     pdf_path: Path,
     boundary: DocumentBoundary | DocumentManifestEntry,
@@ -2327,13 +2524,14 @@ def extract_hybrid_markdown(
     flush_scanned_batch()
     doc.close()
 
-    full_md = "\n\n".join(part for part in markdown_parts if part.strip())
+    stitched_parts = _stitch_headless_continuation_tables(markdown_parts)
+    full_md = "\n\n".join(part for part in stitched_parts if part.strip())
     full_md = _apply_text_markers(
         full_md,
         start_marker=getattr(boundary, "start_marker", None),
         end_marker=getattr(boundary, "end_marker", None),
     )
-    full_md = _normalize_spanish_thousands(full_md)
+    full_md = _normalize_spanish_thousands(_normalize_unicode_spaces(full_md))
     full_md = re.sub(r"\n{3,}", "\n\n", full_md).strip() + "\n"
     return full_md
 

@@ -379,5 +379,27 @@
     ],
     "start_marker": "Convenio Colectivo Provincial de Hostelería",
     "justificacion": "BOPPO n.º 209 (31/10/2025), anuncio 2025071494, código REGCON 36000765011982: Convenio Colectivo Provincial de Hostelería de Pontevedra 2024-2025 (prorrogado/ultraactividad desde 01/01/2026 con tablas 2025 conforme al Art. 3º; págs. 2-27 en gallego y págs. 28-53 versión íntegra oficial en castellano con Arts. 1-43 y Anexos I-V; extracción 100 % CPU con reconstrucción vectorial y matriz de 13 columnas)."
+  },
+  "convenio_asturias.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "layout": "single_column",
+    "territorio": "asturias",
+    "start_page": 2,
+    "end_page": 25,
+    "expected_years": [],
+    "justificacion": "BOPA n.º 55 (21/03/2023), Cód. 2023-02029, código REGCON 33000605011979: Convenio Colectivo para el Sector de Hostelería del Principado de Asturias 2023-2027. Se omite la pág. 1 de resolución administrativa y se incluyen las págs. 2-25 con texto articulado (Arts. 1-58), Anexo I de clasificación profesional por subsectores y niveles I-XI, Anexo II de descripciones funcionales y Anexos III-VIII (conservando Anexos IV-VII vigentes junto con tablas 2026)."
+  },
+  "convenio_asturias_tablas_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "asturias",
+    "start_page": 2,
+    "end_page": 3,
+    "expected_years": [
+      2026
+    ],
+    "justificacion": "BOPA n.º 44 (05/03/2026), Cód. 2026-01536, código REGCON 33000605011979: Acta 01/2026 de la Comisión Paritaria (12/02/2026) y Tablas Salariales y de Nocturnidad vigentes para 2026 (+3,0% Art. 28, Niveles I-XI, Economato, Paga Extra de Santa Marta y Anexo VIII de Nocturnidad por tramos de horas), omitiendo pág. 1 de resolución administrativa."
   }
 }

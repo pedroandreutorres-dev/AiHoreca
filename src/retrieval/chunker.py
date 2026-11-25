@@ -31,6 +31,9 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"legislaci[óo]n\s+consolidada|"
     r"p[áa]gina\s+\d+(?:\s+de\s+(?:\d+|un\s+total\s+de\s+\d+))?|"
     r"bolet[íi]n\s+oficial\s+de\s+la\s+provincia.*|"
+    r"bolet[íi]n\s+oficial\s+del\s+principado\s+de\s+asturias.*|"
+    r"n[úu]m\.?\s*\d+\s+de\s+\d{1,2}-[ivx]+-\d{4}.*|"
+    r"c[óo]d\.?\s*20[12]\d-\d{4,6}.*|"
     r"verificable\s+en\s+https?://\S+|"
     r"sec\.\s+[ivx]+\.\s+p[áa]g\.\s*\d+|"
     r"n[úu]m(?:ero)?\.?\s*\d+\s*(?:•|-)?\s*p[áa]gina\s*\d+.*|"
@@ -165,6 +168,39 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "lerida": "lleida",
     "comunidad de madrid": "madrid",
     "principado de asturias": "asturias",
+    "oviedo": "asturias",
+    "gijon": "asturias",
+    "xixon": "asturias",
+    "aviles": "asturias",
+    "siero": "asturias",
+    "pola de siero": "asturias",
+    "langreo": "asturias",
+    "la felguera": "asturias",
+    "sama": "asturias",
+    "mieres": "asturias",
+    "castrillon": "asturias",
+    "piedras blancas": "asturias",
+    "san martin del rey aurelio": "asturias",
+    "corvera": "asturias",
+    "villaviciosa": "asturias",
+    "llanes": "asturias",
+    "cangas del narcea": "asturias",
+    "cangas de onis": "asturias",
+    "ribadesella": "asturias",
+    "navia": "asturias",
+    "luarca": "asturias",
+    "valdes": "asturias",
+    "grado": "asturias",
+    "tineo": "asturias",
+    "pravia": "asturias",
+    "carreno": "asturias",
+    "candas": "asturias",
+    "gozon": "asturias",
+    "luanco": "asturias",
+    "laviana": "asturias",
+    "lena": "asturias",
+    "aller": "asturias",
+    "cudillero": "asturias",
     "region de murcia": "murcia",
     "nafarroa": "navarra",
     "comunidad foral de navarra": "navarra",

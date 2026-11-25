@@ -299,8 +299,9 @@ def _check_markdown_formatting_and_tables(
 
 
 def _normalize_pdf_text_for_decimals(text: str) -> str:
-    """Normaliza espacios tras punto de millar introducidos por la capa tipográfica de ciertos PDFs."""
-    return re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", text)
+    """Normaliza espacios tras punto de millar o coma errónea de millar en importes de PDFs."""
+    fixed = re.sub(r"(?<!\d)(\d{1,2})(?:\.\s+|\s+\.)(\d{3},\d{2})\b", r"\1.\2", text)
+    return re.sub(r"(?<!\d)(\d{1,2}),(\d{3},\d{2})\b", r"\1.\2", fixed)
 
 
 def _extract_manifest_pdf_text(
