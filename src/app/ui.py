@@ -304,74 +304,72 @@ def _render_sidebar(service: AiHorecaEngineService) -> str:
         st.title("AiHoreca — Panel de Control")
         st.caption("RAG Agéntico Híbrido (CPU) • Jerarquía Normativa 3 Capas • Memoria SQLite WAL")
 
-        st.subheader("1. Gestión de Tu Sesión")
-        visitor_sids: list[str] = st.session_state.visitor_session_ids
-        if st.session_state.active_session_id not in visitor_sids:
-            visitor_sids.insert(0, st.session_state.active_session_id)
+        with st.expander("1. Gestión de Tu Sesión", expanded=True):
+            visitor_sids: list[str] = st.session_state.visitor_session_ids
+            if st.session_state.active_session_id not in visitor_sids:
+                visitor_sids.insert(0, st.session_state.active_session_id)
 
-        sessions = service.list_visitor_sessions(visitor_sids)
-        session_ids = [s.session_id for s in sessions]
-        if st.session_state.active_session_id not in session_ids:
-            session_ids.insert(0, st.session_state.active_session_id)
+            sessions = service.list_visitor_sessions(visitor_sids)
+            session_ids = [s.session_id for s in sessions]
+            if st.session_state.active_session_id not in session_ids:
+                session_ids.insert(0, st.session_state.active_session_id)
 
-        session_labels = {
-            s.session_id: f"{s.session_id} ({s.num_turns}t | {s.active_territorio or 'sin prov.'})"
-            for s in sessions
-        }
-        if st.session_state.active_session_id not in session_labels:
-            session_labels[st.session_state.active_session_id] = f"{st.session_state.active_session_id} (nueva)"
+            session_labels = {
+                s.session_id: f"{s.session_id} ({s.num_turns}t | {s.active_territorio or 'sin prov.'})"
+                for s in sessions
+            }
+            if st.session_state.active_session_id not in session_labels:
+                session_labels[st.session_state.active_session_id] = f"{st.session_state.active_session_id} (nueva)"
 
-        selected_sid = st.selectbox(
-            "Sesión Activa",
-            options=session_ids,
-            index=session_ids.index(st.session_state.active_session_id),
-            format_func=lambda x: session_labels.get(x, x),
-        )
-        if selected_sid != st.session_state.active_session_id:
-            st.session_state.active_session_id = selected_sid
-            st.rerun()
-
-        col_new, col_del = st.columns(2)
-        with col_new:
-            if st.button("+ Nueva Sesión", use_container_width=True):
-                new_sid = f"ses-{uuid.uuid4().hex[:6]}"
-                st.session_state.visitor_session_ids.insert(0, new_sid)
-                st.session_state.active_session_id = new_sid
-                st.rerun()
-        with col_del:
-            if st.button("Limpiar Sesión", use_container_width=True):
-                service.reset_or_delete_session(st.session_state.active_session_id)
-                st.session_state.turn_telemetry_cache.pop(st.session_state.active_session_id, None)
+            selected_sid = st.selectbox(
+                "Sesión Activa",
+                options=session_ids,
+                index=session_ids.index(st.session_state.active_session_id),
+                format_func=lambda x: session_labels.get(x, x),
+            )
+            if selected_sid != st.session_state.active_session_id:
+                st.session_state.active_session_id = selected_sid
                 st.rerun()
 
-        st.divider()
-        st.subheader("2. Working Memory (`SessionContextSlots`)")
-        slots = service.get_session_slots(st.session_state.active_session_id)
-        st.markdown(f"- **Territorio Activo:** `{slots.active_territorio or 'Pendiente'}`")
-        st.markdown(f"- **Oficio Detectado:** `{slots.active_oficio_coloquial or 'N/A'}`")
-        st.markdown(f"- **Categoría VI ALEH:** `{slots.active_categoria_aleh or 'N/A'}`")
-        st.markdown(f"- **Área Funcional:** `{slots.active_area_funcional_aleh or 'N/A'}`")
-        if slots.pending_clarification_query:
-            st.warning(f"**Gatekeeper HITL Pendiente:**\n{slots.pending_clarification_query}")
-        else:
-            st.caption("Sin preguntas pendientes de aclaración contextual.")
+            col_new, col_del = st.columns(2)
+            with col_new:
+                if st.button("+ Nueva Sesión", use_container_width=True):
+                    new_sid = f"ses-{uuid.uuid4().hex[:6]}"
+                    st.session_state.visitor_session_ids.insert(0, new_sid)
+                    st.session_state.active_session_id = new_sid
+                    st.rerun()
+            with col_del:
+                if st.button("Limpiar Sesión", use_container_width=True):
+                    service.reset_or_delete_session(st.session_state.active_session_id)
+                    st.session_state.turn_telemetry_cache.pop(st.session_state.active_session_id, None)
+                    st.rerun()
 
-        st.divider()
-        st.subheader("3. Contacto y Privacidad")
-        st.markdown(
-            "¿Tienes dudas, comentarios, consejos o has detectado algún error en esta demo?"
-        )
-        st.link_button(
-            f"✉️ {CONTACT_EMAIL}",
-            f"mailto:{CONTACT_EMAIL}?subject=Comentarios%20sobre%20AiHoreca",
-            use_container_width=True,
-        )
-        st.markdown(
-            "- **No introduzcas datos personales** (nombre, DNI/NIE, empresa o teléfono).\n"
-            "- **Auditorías de calidad:** las consultas se recogen para mejorar el sistema.\n"
-            f"- **Borrado automático:** eliminación tras **{SESSION_RETENTION_DAYS} días** de inactividad (RGPD)."
-        )
-        st.caption("Demo orientativa • Contrasta siempre la información con un profesional.")
+        with st.expander("2. Working Memory (`SessionContextSlots`)", expanded=True):
+            slots = service.get_session_slots(st.session_state.active_session_id)
+            st.markdown(f"- **Territorio Activo:** `{slots.active_territorio or 'Pendiente'}`")
+            st.markdown(f"- **Oficio Detectado:** `{slots.active_oficio_coloquial or 'N/A'}`")
+            st.markdown(f"- **Categoría VI ALEH:** `{slots.active_categoria_aleh or 'N/A'}`")
+            st.markdown(f"- **Área Funcional:** `{slots.active_area_funcional_aleh or 'N/A'}`")
+            if slots.pending_clarification_query:
+                st.warning(f"**Gatekeeper HITL Pendiente:**\n{slots.pending_clarification_query}")
+            else:
+                st.caption("Sin preguntas pendientes de aclaración contextual.")
+
+        with st.expander("3. Contacto y Privacidad", expanded=True):
+            st.markdown(
+                "¿Tienes dudas, comentarios, consejos o has detectado algún error en esta demo?"
+            )
+            st.link_button(
+                f"✉️ {CONTACT_EMAIL}",
+                f"mailto:{CONTACT_EMAIL}?subject=Comentarios%20sobre%20AiHoreca",
+                use_container_width=True,
+            )
+            st.markdown(
+                "- **No introduzcas datos personales** (nombre, DNI/NIE, empresa o teléfono).\n"
+                "- **Auditorías de calidad:** las consultas se recogen para mejorar el sistema.\n"
+                f"- **Borrado automático:** eliminación tras **{SESSION_RETENTION_DAYS} días** de inactividad (RGPD)."
+            )
+            st.caption("Demo orientativa • Contrasta siempre la información con un profesional.")
 
     return st.session_state.active_session_id
 

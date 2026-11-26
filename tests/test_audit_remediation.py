@@ -243,6 +243,52 @@ class TestAuditRemediation(unittest.TestCase):
         self.assertEqual(fake_state.active_session_id, sid)
         mock_service.create_session.assert_not_called()
 
+    def test_ui_sidebar_renders_three_collapsible_expanders(self) -> None:
+        """Verifica que _render_sidebar envuelve sus 3 bloques en st.expander desplegables."""
+        from contextlib import nullcontext
+        from src.app import ui
+
+        class _FakeSessionState(dict):
+            def __getattr__(self, name: str):
+                try:
+                    return self[name]
+                except KeyError as exc:
+                    raise AttributeError(name) from exc
+
+            def __setattr__(self, name: str, value) -> None:
+                self[name] = value
+
+        fake_state = _FakeSessionState(
+            visitor_session_ids=["ses-demo01"],
+            active_session_id="ses-demo01",
+            turn_telemetry_cache={},
+        )
+        expander_titles: list[tuple[str, bool]] = []
+
+        fake_st = MagicMock()
+        fake_st.session_state = fake_state
+        fake_st.sidebar = nullcontext()
+        fake_st.expander.side_effect = lambda title, expanded=True: (
+            expander_titles.append((title, expanded)) or nullcontext()
+        )
+        fake_st.selectbox.return_value = "ses-demo01"
+        fake_st.columns.return_value = (nullcontext(), nullcontext())
+        fake_st.button.return_value = False
+
+        mock_service = MagicMock()
+        mock_service.list_visitor_sessions.return_value = []
+        mock_service.get_session_slots.return_value = SessionContextSlots()
+
+        with patch.object(ui, "st", fake_st):
+            active_sid = ui._render_sidebar(mock_service)
+
+        self.assertEqual(active_sid, "ses-demo01")
+        self.assertEqual(len(expander_titles), 3)
+        self.assertTrue(expander_titles[0][0].startswith("1. Gestión de Tu Sesión"))
+        self.assertTrue(expander_titles[1][0].startswith("2. Working Memory"))
+        self.assertTrue(expander_titles[2][0].startswith("3. Contacto y Privacidad"))
+        self.assertTrue(all(exp is True for _, exp in expander_titles))
+
 
 if __name__ == "__main__":
     unittest.main()
