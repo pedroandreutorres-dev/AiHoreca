@@ -216,6 +216,33 @@ class TestAuditRemediation(unittest.TestCase):
         remaining_sids = [s["session_id"] for s in self.mem.list_sessions()]
         self.assertNotIn(ghost_sid, remaining_sids)
 
+    def test_ui_init_state_generates_lazy_session_id_without_name_error(self) -> None:
+        """Verifica que ui._init_ui_state genera ses-<hex> sin NameError ni escritura previa en SQLite."""
+        from src.app import ui
+
+        class _FakeSessionState(dict):
+            def __getattr__(self, name: str):
+                try:
+                    return self[name]
+                except KeyError as exc:
+                    raise AttributeError(name) from exc
+
+            def __setattr__(self, name: str, value) -> None:
+                self[name] = value
+
+        fake_state = _FakeSessionState()
+        mock_service = MagicMock()
+        with patch.object(ui.st, "session_state", fake_state):
+            ui._init_ui_state(mock_service)
+
+        self.assertEqual(fake_state.turn_telemetry_cache, {})
+        self.assertEqual(len(fake_state.visitor_session_ids), 1)
+        sid = fake_state.visitor_session_ids[0]
+        self.assertTrue(sid.startswith("ses-"))
+        self.assertEqual(len(sid), 10)
+        self.assertEqual(fake_state.active_session_id, sid)
+        mock_service.create_session.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
