@@ -416,5 +416,28 @@
       2029
     ],
     "justificacion": "BOC de Cantabria n.º 173 (08/09/2026), CVE-2026-6643, código REGCON 39000605011982: Convenio Colectivo del sector de Hostelería de la Comunidad Autónoma de Cantabria 2026-2029. Omite la pág. 1 de resolución administrativa de registro y las págs. 34-36 (organigrama gráfico de flujo y modelo de formulario en blanco), e incluye íntegramente el articulado (Arts. 1-56 y Disposiciones Adicionales 1ª-6ª en págs. 2-19), el Anexo I de Tablas Salariales 2026, 2027, 2028 y 2029 (15 pagas y escala de antigüedad en págs. 20-23) y el Anexo II de Medidas y Protocolo frente al acoso LGTBI+ (págs. 24-33)."
+  },
+  "convenio_zaragoza.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "layout": "single_column",
+    "territorio": "zaragoza",
+    "start_page": 2,
+    "end_page": 21,
+    "start_marker": "TEXTO ARTICULADO DEL CONVENIO COLECTIVO PROVINCIAL",
+    "expected_years": [],
+    "justificacion": "BOPZ n.º 84 (13/04/2024), Anuncio n.º 2466, código REGCON 50000655011982: Convenio Colectivo del sector Hostelería de Zaragoza 2023-2025 (en ultraactividad en 2026 conforme al Art. 4 y Art. 86.3 ET). Se incluyen las págs. 2-21 con el texto articulado completo (Arts. 1-55 y Disposiciones Adicionales 1ª-5ª) y el Anexo I de clasificación profesional por grupos I-III y niveles retributivos IA-IV; se omiten la portada de sumario (pág. 1), los Anexos II-IV de tablas caducadas 2023-2025 (págs. 22-24) sustituidos por el BOPZ n.º 255/2026 y el resto de edictos del boletín (págs. 25-44)."
+  },
+  "convenio_zaragoza_tablas_2026.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "zaragoza",
+    "start_page": 7,
+    "end_page": 10,
+    "expected_years": [
+      2026
+    ],
+    "justificacion": "BOPZ n.º 255 (05/11/2026), Anuncio n.º 7437, código REGCON 50000655011982: Acta de la Comisión Paritaria de 11/05/2026 que aplica la revisión salarial del Art. 43 (+1,50% con efectos económicos desde 01/01/2026) y Anexo I de Tablas Salariales vigentes para el año 2026 (Grupos I-V de actividad, niveles IA-IV y tabla de Pluses: transporte, mantenimiento de ropa, manutención, paga de octubre, servicio extra, plus de domingos y plus de festivos) en págs. 7-10 del PDF."
   }
 }

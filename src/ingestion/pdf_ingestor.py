@@ -82,7 +82,10 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"pode\s+verificar\s+a\s+integridade\s+deste\s+documento\b|"
     r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:|"
     r"boc\.cantabria\.es\b|"
-    r"cve-20[12]\d-\d{3,6}\b"
+    r"cve-20[12]\d-\d{3,6}\b|"
+    r"bopz$|"
+    r"n[úu]m\.?\s*\d+$|"
+    r"\d{1,2}\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+\d{4}$"
     r").*$"
 )
 
@@ -651,6 +654,8 @@ def _normalize_unicode_spaces(text: str) -> str:
         .replace("\ufb01", "fi")
         .replace("\ufb02", "fl")
     )
+    # Une cortes silábicos de fin de línea con guion blando antes de convertir guiones aislados en raya (–).
+    cleaned = re.sub(r"\xad[ \t]*\r?\n[ \t]*", "", cleaned)
     # Conserva como raya (–) el carácter U+00AD cuando actúa como símbolo de "sin importe" al final de puntos o espacios.
     cleaned = re.sub(r"(?:(?<=^)|(?<=\s)|(?<=\.))\xad(?=\s|$)", "–", cleaned)
     return cleaned.replace("\xad", "")
@@ -1364,7 +1369,8 @@ def _collapse_table_headers_and_body(
             and any(_SPANISH_DECIMALS_RE.search(c) for c in trimmed[1][1:])
         )
     ):
-        banner_headings.append(f"### {_escape_md_cell(trimmed[0][0])}")
+        banner_title = re.sub(r"(?:\s*-{4,})+\s*$", "", _escape_md_cell(trimmed[0][0])).rstrip(": ").strip()
+        banner_headings.append(f"### {banner_title or _escape_md_cell(trimmed[0][0])}")
         trimmed = trimmed[1:]
         row_colspans = row_colspans[1:]
         orig_row_idx += 1
@@ -1503,7 +1509,15 @@ def _collapse_table_headers_and_body(
         ]
         body = trimmed[2:]
         consumed_header_rows += 2
-    elif banner_headings or _is_headless_table_start(trimmed):
+    elif _is_headless_table_start(trimmed) or (
+        banner_headings
+        and not (
+            len(trimmed) >= 2
+            and all(c.strip() for c in trimmed[0][1:])
+            and not any(_SPANISH_DECIMALS_RE.search(c) or re.search(r"\d", c) for c in trimmed[0])
+            and any(re.search(r"[A-Za-zÁÉÍÓÚáéíóúÑñ]{3,}", c) for c in trimmed[0][1:])
+        )
+    ):
         hdr = _synthesize_headless_headers(trimmed)
         body = trimmed
     else:
@@ -1535,7 +1549,7 @@ def _collapse_table_headers_and_body(
         body = body[1:]
         consumed_header_rows += 1
 
-    if hdr and not _escape_md_cell(hdr[0]) and any(_escape_md_cell(r[0]) for r in body if r):
+    if hdr and _escape_md_cell(hdr[0]) in ("", "—", "–", "-") and any(_escape_md_cell(r[0]) for r in body if r):
         hdr[0] = "Concepto / Nivel"
 
     # Rellenar cabeceras vacías en columnas [1:] para evitar SPLIT_COLSPAN_HEADER manteniendo nombres distintos
@@ -2227,7 +2241,22 @@ def _extract_vector_tables_page_cpu(
         if content:
             promoted_contents.append(content)
 
-    out = "\n\n".join(promoted_contents).strip()
+    merged_promoted: list[str] = []
+    for entry in promoted_contents:
+        if (
+            merged_promoted
+            and re.match(r"^##\s+(?:ANEXO|TABLA|T[ÁA]BOA)\b", merged_promoted[-1].strip(), re.IGNORECASE)
+            and not re.search(r"\b20[23]\d\b", merged_promoted[-1])
+            and re.match(r"^###\s+.*?\b20[23]\d\b", entry.strip())
+            and "| ---" not in entry
+        ):
+            h2_title = re.sub(r"^##\s+", "", merged_promoted[-1].strip()).strip()
+            h3_title = re.sub(r"^###\s+", "", entry.strip()).strip()
+            merged_promoted[-1] = f"## {h2_title} — {h3_title}"
+        else:
+            merged_promoted.append(entry)
+
+    out = "\n\n".join(merged_promoted).strip()
     if "| ---" not in out:
         return None
     out = _normalize_spanish_thousands(_normalize_unicode_spaces(out))

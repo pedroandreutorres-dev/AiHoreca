@@ -71,7 +71,10 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"https?://sede\.depo\.gal\S*|"
     r"c[óo]digo\s+seguro\s+de\s+verificaci[óo]n\s*:.*|"
     r"boc\.cantabria\.es.*|"
-    r"cve-20[12]\d-\d{3,6}.*"
+    r"cve-20[12]\d-\d{3,6}.*|"
+    r"bopz|"
+    r"n[úu]m\.?\s*\d+|"
+    r"\d{1,2}\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+\d{4}"
     r")$"
 )
 
@@ -275,6 +278,37 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "la gomera": "santa_cruz_tenerife",
     "el hierro": "santa_cruz_tenerife",
     "bizkaia": "vizcaya",
+    "calatayud": "zaragoza",
+    "utebo": "zaragoza",
+    "ejea de los caballeros": "zaragoza",
+    "ejea": "zaragoza",
+    "tarazona": "zaragoza",
+    "caspe": "zaragoza",
+    "la almunia de dona godina": "zaragoza",
+    "la almunia": "zaragoza",
+    "tauste": "zaragoza",
+    "cuarte de huerva": "zaragoza",
+    "zuera": "zaragoza",
+    "alagon": "zaragoza",
+    "la puebla de alfinden": "zaragoza",
+    "borja": "zaragoza",
+    "epila": "zaragoza",
+    "fuentes de ebro": "zaragoza",
+    "maria de huerva": "zaragoza",
+    "villanueva de gallego": "zaragoza",
+    "mallen": "zaragoza",
+    "carinena": "zaragoza",
+    "daroca": "zaragoza",
+    "pedrola": "zaragoza",
+    "pinseque": "zaragoza",
+    "cadrete": "zaragoza",
+    "figueruelas": "zaragoza",
+    "pina de ebro": "zaragoza",
+    "belchite": "zaragoza",
+    "sos del rey catolico": "zaragoza",
+    "alhama de aragon": "zaragoza",
+    "jaraba": "zaragoza",
+    "nuevalos": "zaragoza",
     "cataluna": "catalunya",
 }
 

@@ -649,6 +649,10 @@ class AiHorecaVectorStore:
     @staticmethod
     def _extract_chunk_year(doc: RetrievedDocument) -> int:
         """Extrae el año específico de una tabla salarial descartando rangos generales de anexo (ej. '2023-2025') e importes en euros."""
+        parent_vigencia_m = re.search(
+            r"(?i)\bvigencia(?:\s+(?:para\s+(?:el\s+)?)?a[ñn]o)?\s+(202[3-9])\b",
+            doc.titulo_o_capitulo or "",
+        )
         header_surface = f"{doc.titulo_o_capitulo} | {doc.articulo}"
         # Eliminamos rangos generales tipo '2023-2025' o '2023 - 2025' para quedarnos con el año concreto de la sub-tabla
         cleaned = re.sub(r"\b2\.?02[2-9]\s*[-–—/]\s*2\.?02[2-9]\b(?!,\d)", "", header_surface)
@@ -656,6 +660,10 @@ class AiHorecaVectorStore:
         for m in re.finditer(r"\b2\.?0(2[3-9])\b(?!,\d)", cleaned):
             years.append(2000 + int(m.group(1)))
         if years:
+            if parent_vigencia_m:
+                parent_yr = int(parent_vigencia_m.group(1))
+                if years[-1] < parent_yr:
+                    return parent_yr
             return years[-1]
         # Si no estaba en el título/artículo, inspeccionamos todo el cuerpo del fragmento tras la cabecera [NORMA:...]
         body = doc.text.split("\n\n", 1)[-1]
@@ -1084,8 +1092,9 @@ class AiHorecaVectorStore:
     }
 
     _DOC_RESTAURACION_EXCLUDE_RE = re.compile(
-        r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|salas?\s+de\s+festa|barras?\s+americanas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|tabernas?\s+que\s+non\s+serven\s+comidas|apartamentos|colectividades|catering)\b"
+        r"\b(?:campos?\s+(?:de\s+)?golf|casinos?|salas?\s+(?:de\s+)?fiestas?|salas?\s+de\s+festa|barras?\s+americanas?|bares?\s+lujo|hoteles?\s+y\s+pensiones|tabernas?\s+que\s+non\s+serven\s+comidas|apartamentos)\b"
     )
+    _DOC_RESTAURACION_SECONDARY_EXCLUDE_RE = re.compile(r"\b(?:colectividades|catering)\b")
 
     _SPLIT_TERRITORIES_CACHE: Optional[tuple[tuple[int, int], set[str]]] = None
 
@@ -1185,9 +1194,83 @@ class AiHorecaVectorStore:
         surface = f"{doc.titulo_o_capitulo} | {doc.articulo} | {header_cols}".lower()
         if not cls._DOC_SUBSECTOR_INCLUDE[subsector].search(surface):
             return False
-        if subsector == "restauracion" and cls._DOC_RESTAURACION_EXCLUDE_RE.search(surface):
-            return False
+        if subsector == "restauracion":
+            if cls._DOC_RESTAURACION_EXCLUDE_RE.search(surface):
+                return False
+            if cls._DOC_RESTAURACION_SECONDARY_EXCLUDE_RE.search(surface) and not re.search(
+                r"(?i)\b(?:restaurantes?|tenedores?)\b",
+                surface,
+            ):
+                return False
         return True
+
+    @staticmethod
+    def _extract_query_establishment_tier(clean_query: str) -> Optional[tuple[str, int]]:
+        """Detecta la categoría numérica del establecimiento en la consulta (ej. '4 estrellas', '2 tenedores')."""
+        m_fork = re.search(r"(?i)\b([1-5])\s+tenedores?\b", clean_query or "")
+        if m_fork:
+            return ("tenedores", int(m_fork.group(1)))
+        m_star = re.search(r"(?i)\b([1-5])\s*(?:\*(?!\w)|\s+estrellas?\b)", clean_query or "")
+        if m_star:
+            return ("estrellas", int(m_star.group(1)))
+        return None
+
+    @staticmethod
+    def _doc_establishment_tier_clauses(
+        doc: RetrievedDocument,
+        tier_kind: Optional[str],
+    ) -> list[set[int]]:
+        """Extrae los conjuntos de estrellas/tenedores declarados en cabeceras de tabla."""
+        if not tier_kind:
+            return []
+        heading_lines = [
+            ln.strip()
+            for ln in doc.text.splitlines()
+            if ln.strip().startswith("###") or ln.strip().startswith("##")
+        ]
+        surface = " | ".join([doc.titulo_o_capitulo or "", doc.articulo or "", *heading_lines]).lower()
+        clause_re = re.compile(
+            r"(?i)\b([1-5](?:\s*(?:,|y|o|a|[-–—/])\s*[1-5])*)\s*(?:\*\s*)?(estrellas?|tenedores?)\b"
+        )
+        matched_kind_clauses: list[set[int]] = []
+        for nums_raw, unit_raw in clause_re.findall(surface):
+            unit = "estrellas" if unit_raw.lower().startswith("estrell") else "tenedores"
+            if unit != tier_kind:
+                continue
+            nums = {int(d) for d in re.findall(r"[1-5]", nums_raw)}
+            if nums and len(nums) == 2 and re.search(r"\b[1-5]\s*(?:[-–—]|a)\s*[1-5]\b", nums_raw):
+                nums = set(range(min(nums), max(nums) + 1))
+            if nums:
+                matched_kind_clauses.append(nums)
+        return matched_kind_clauses
+
+    @classmethod
+    def _doc_matches_establishment_tier(
+        cls,
+        doc: RetrievedDocument,
+        tier_kind: Optional[str],
+        tier_num: Optional[int],
+    ) -> bool:
+        """Comprueba si los encabezados de una tabla salarial contemplan la categoría (estrellas/tenedores) consultada."""
+        if not tier_kind or tier_num is None:
+            return False
+        matched_kind_clauses = cls._doc_establishment_tier_clauses(doc, tier_kind)
+        if not matched_kind_clauses:
+            return False
+        return any(tier_num in nums for nums in matched_kind_clauses)
+
+    @classmethod
+    def _doc_declares_conflicting_establishment_tier(
+        cls,
+        doc: RetrievedDocument,
+        tier_kind: Optional[str],
+        tier_num: Optional[int],
+    ) -> bool:
+        """True si la tabla declara explícitamente estrellas/tenedores del mismo tipo pero no incluye tier_num."""
+        if not tier_kind or tier_num is None:
+            return False
+        matched_kind_clauses = cls._doc_establishment_tier_clauses(doc, tier_kind)
+        return bool(matched_kind_clauses) and not any(tier_num in nums for nums in matched_kind_clauses)
 
     @staticmethod
     def _is_monetary_table(doc: RetrievedDocument) -> bool:
@@ -1387,6 +1470,11 @@ class AiHorecaVectorStore:
             r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n",
             "plus compensatorio de formación complemento por formación planes de formación",
         ),
+        (
+            "domingos_festivos",
+            r"(?i)domingos?\s+y\s+festivos?|plus(?:es)?\s+(?:de\s+|salarial\s+de\s+)?(?:domingos?|festivos?)",
+            "plus salarial de domingos plus salarial de festivos domingos y festivos",
+        ),
     )
 
     def retrieve_territory_candidates(
@@ -1442,6 +1530,8 @@ class AiHorecaVectorStore:
             topic_boosts.append("complemento por manutención comidas cenas especie alojamiento")
         if re.search(r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n", query):
             topic_boosts.append("plus compensatorio de formación complemento por formación 14 pagas")
+        if re.search(r"(?i)domingos?|festivos?|transporte|ropa", query):
+            topic_boosts.append("plus de transporte mantenimiento de ropa plus salarial de domingos plus salarial de festivos")
         if is_remuneration_query and not topic_boosts:
             topic_boosts.append("gratificaciones extraordinarias gratificacións extraordinarias pagas extras salario base")
 
@@ -1544,7 +1634,7 @@ class AiHorecaVectorStore:
             bm25_terms
             for _, pat, bm25_terms in self._TOPIC_BM25_SPECS
             if re.search(pat, topic_surface)
-        ][:4]
+        ][:8]
         cls_bm25_terms = (
             "categorías clasificación establecimientos hoteles restaurantes estrellas tenedores"
             if is_remuneration_query
@@ -1825,6 +1915,7 @@ class AiHorecaVectorStore:
         role_stems = self._build_role_stems(role_context)
         area_pattern = self._extract_aleh_area_pattern(role_context)
         target_subsector = self._extract_query_establishment_subsector(clean_intent_q)
+        target_tier = self._extract_query_establishment_tier(clean_intent_q)
 
         selected: list[RetrievedDocument] = []
         selected_ids: set[str] = set()
@@ -1977,14 +2068,14 @@ class AiHorecaVectorStore:
             )
             asks_aux_concepts = bool(
                 re.search(
-                    r"(?i)\b(?:plus\s+(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa|de\s+nocturnidad)|nocturnidad|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
+                    r"(?i)\b(?:plus(?:es)?\s+(?:de\s+|por\s+)?(?:cultural|transporte|altura|asistencia|convenio|vestuario|ropa|nocturnidad|domingos?|festivos?)|mantenimiento\s+de\s+ropa|paga\s+de\s+octubre|domingos?\s+y\s+festivos?|nocturnidad|manutenci[óo]n|herramientas|ropa\s+de\s+trabajo|seguro\s+de\s+vida|premio\s+(?:de|por)\s+(?:matrimonio|natalidad|nacimiento|jubilaci[óo]n)|quebranto\s+de\s+moneda|alojamiento)\b",
                     clean_intent_q,
                 )
             )
             asked_aux_stems = [
                 tok[:6].lower()
                 for tok in re.findall(
-                    r"(?i)(?:cultural|transporte|asistencia|convenio|vestuario|ropa|nocturn|manutenci|herramienta|seguro|matrimonio|natalidad|nacimiento|jubilaci|quebranto|alojamiento)",
+                    r"(?i)(?:cultural|transporte|asistencia|convenio|vestuario|ropa|nocturn|manutenci|herramienta|seguro|matrimonio|natalidad|nacimiento|jubilaci|quebranto|alojamiento|doming|festiv|octubr)",
                     clean_intent_q,
                 )
             ]
@@ -2033,7 +2124,7 @@ class AiHorecaVectorStore:
                     ),
                     (
                         r"(?i)(?:jornada|xornada)\s+(?:ordinaria|de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|horas?\s+anua(?:les|is)",
-                        r"(?i)\b(?:jornada|xornada)\b",
+                        r"(?i)^(?!.*(?:fraccionamiento|reducci[óo]n|adaptaci[óo]n|registro|parcial)).*\b(?:jornada|xornada)\b",
                     ),
                     (
                         r"(?i)tiemp[oa]\s+parcial|tempo\s+parcial",
@@ -2189,7 +2280,27 @@ class AiHorecaVectorStore:
                     )
 
             if _t_euro_tbl_count() == 0 and target_subsector:
-                if role_stems:
+                if target_tier is not None:
+                    if role_stems:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and not self._is_auxiliary_concepts_table(d)
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._doc_matches_establishment_tier(d, target_tier[0], target_tier[1])
+                            and self._matches_primary_role_stem(d, role_stems),
+                            1,
+                        )
+                    if _t_euro_tbl_count() == 0:
+                        _pick_with_period_preference(
+                            lambda d: d.tipo_contenido == "tabla_salarial"
+                            and self._is_monetary_table(d)
+                            and not self._is_auxiliary_concepts_table(d)
+                            and self._doc_matches_establishment_subsector(d, target_subsector)
+                            and self._doc_matches_establishment_tier(d, target_tier[0], target_tier[1]),
+                            1,
+                        )
+                if _t_euro_tbl_count() == 0 and role_stems:
                     _pick_with_period_preference(
                         lambda d: d.tipo_contenido == "tabla_salarial"
                         and self._is_monetary_table(d)
@@ -2498,12 +2609,35 @@ class AiHorecaVectorStore:
                     and any(self._doc_matches_establishment_subsector(d, os) for os in other_subs)
                 )
 
+            if target_tier is not None and any(
+                _belongs_to_territory(s, terr_key)
+                and s.tipo_contenido == "tabla_salarial"
+                and self._is_monetary_table(s)
+                and not self._is_auxiliary_concepts_table(s)
+                and self._doc_matches_establishment_tier(s, target_tier[0], target_tier[1])
+                for s in selected
+            ):
+                stale_euro_ids.update(
+                    d.chunk_id
+                    for d in terr_cands
+                    if d.tipo_contenido == "tabla_salarial"
+                    and self._is_monetary_table(d)
+                    and not self._is_auxiliary_concepts_table(d)
+                    and self._doc_declares_conflicting_establishment_tier(
+                        d, target_tier[0], target_tier[1]
+                    )
+                )
+
         for terr_key in norm_territorios:
             _select_for_territory(terr_key)
 
         aleh_quota = 1 if (not needs_tables and len(norm_territorios) == 1) else QUOTA_ALEH_CHUNKS
-        _pick(lambda d: d.capa_normativa == "aleh_estatal", aleh_quota)
-        _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", QUOTA_ESTATUTO_CHUNKS)
+        _pick(lambda d: d.capa_normativa == "aleh_estatal", 1)
+        _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", 1)
+        if aleh_quota > 1:
+            _pick(lambda d: d.capa_normativa == "aleh_estatal", aleh_quota - 1)
+        if QUOTA_ESTATUTO_CHUNKS > 1:
+            _pick(lambda d: d.capa_normativa == "estatuto_trabajadores", QUOTA_ESTATUTO_CHUNKS - 1)
         _pick(
             lambda d: (needs_tables or d.tipo_contenido != "tabla_salarial")
             and d.chunk_id not in stale_euro_ids

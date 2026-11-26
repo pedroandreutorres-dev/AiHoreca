@@ -3642,5 +3642,234 @@ class TestCantabriaIngestionAndRetrieval(unittest.TestCase):
         self.assertIn(art44.chunk_id, ids_50)
 
 
+class TestZaragozaIngestionAndRetrieval(unittest.TestCase):
+    """Tests deterministas en CPU para el convenio de Hostelería de Zaragoza (BOPZ 84/2024 + 255/2026)."""
+
+    def test_zaragoza_territory_aliases_and_pretty_label(self) -> None:
+        aliases = (
+            "Zaragoza",
+            "Calatayud",
+            "Utebo",
+            "Ejea de los Caballeros",
+            "Tarazona",
+            "Caspe",
+            "Cuarte de Huerva",
+            "Zuera",
+            "Alagón",
+            "La Almunia",
+            "Daroca",
+            "Cariñena",
+            "Borja",
+            "Alhama de Aragón",
+            "Nuévalos",
+        )
+        for alias in aliases:
+            self.assertEqual(_canonicalize_territory(alias), "zaragoza", msg=alias)
+            self.assertEqual(_canonicalize_llm_province(alias), "zaragoza", msg=alias)
+        self.assertEqual(_pretty_territory_label("zaragoza"), "Zaragoza")
+
+    @staticmethod
+    def _to_doc(ch: LegalChunk, rscore: float = 0.8) -> RetrievedDocument:
+        return RetrievedDocument(
+            chunk_id=ch.chunk_id,
+            source_file=ch.source_file,
+            norma_titulo=ch.norma_titulo,
+            capa_normativa=ch.capa_normativa,
+            territorio=ch.territorio,
+            subsector=ch.subsector,
+            titulo_o_capitulo=ch.titulo_o_capitulo,
+            articulo=ch.articulo,
+            tipo_contenido=ch.tipo_contenido,
+            text=ch.text,
+            score=rscore,
+            rerank_score=rscore,
+        )
+
+    def test_zaragoza_strict_validation_and_cpu_table_extraction(self) -> None:
+        zgz_base = PROCESSED_DATA_DIR / "convenio_zaragoza.md"
+        zgz_2026 = PROCESSED_DATA_DIR / "convenio_zaragoza_tablas_2026.md"
+        if not zgz_base.exists() or not zgz_2026.exists():
+            self.skipTest("Convenio de Zaragoza no disponible en data/processed/")
+
+        for md_path in (zgz_base, zgz_2026):
+            report = validate_document(md_path, strict=True)
+            self.assertTrue(report.passed, msg=f"{md_path.name} falló validación estricta: {report.issues}")
+            self.assertEqual(report.error_count, 0, msg=f"Errores en {md_path.name}: {report.issues}")
+            self.assertEqual(report.warning_count, 0, msg=f"Warnings en {md_path.name}: {report.issues}")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(zgz_base, boundaries_cache=cache)
+        chunks_2026 = chunk_markdown_document(zgz_2026, boundaries_cache=cache)
+        self.assertEqual(len(base_chunks), 81)
+        self.assertEqual(len(chunks_2026), 6)
+        self.assertTrue(all(c.territorio == "zaragoza" for c in base_chunks + chunks_2026))
+
+        raw_base = zgz_base.read_text(encoding="utf-8")
+        raw_2026 = zgz_2026.read_text(encoding="utf-8")
+        for blob in (raw_base, raw_2026):
+            self.assertNotIn("\xad", blob)
+            self.assertNotIn("Núm. 84", blob)
+            self.assertNotIn("Núm. 255", blob)
+            self.assertNotIn("-----------", blob)
+            self.assertNotIn("| Categoría / Puesto | Categoría 1 |", blob)
+        self.assertIn("| —Cocinero/a | Segunda | II |", raw_base)
+        self.assertIn("| —Camarero/a | Tercera | II |", raw_base)
+        self.assertIn("Hostelería", raw_base)
+        self.assertEqual(raw_2026.count("| Concepto / Nivel | MENSUAL | ANUAL |"), 5)
+        self.assertIn("| Nivel II | 1.396,09 € | 22.361,47 € |", raw_2026)
+        self.assertIn("| Nivel II | 1.352,14 € | 21.718,88 € |", raw_2026)
+        self.assertIn("| Transporte | 104,53 euros/mes |", raw_2026)
+        self.assertIn("| Mantenimiento ropa | 26,07 euros/mes |", raw_2026)
+        self.assertIn("1.359,07 euros", raw_2026)
+        self.assertIn("12,80 euros", raw_2026)
+        self.assertIn("| Plus de festivos | 25,00 euros |", raw_2026)
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        tables_2026 = [self._to_doc(c) for c in chunks_2026 if c.tipo_contenido == "tabla_salarial"]
+        self.assertEqual(len(tables_2026), 4)
+        self.assertTrue(all(store._extract_chunk_year(d) == 2026 for d in tables_2026))
+
+        grupo_ii = next(d for d in tables_2026 if d.articulo.startswith("Grupo II de actividad"))
+        grupo_iv = next(d for d in tables_2026 if d.articulo.startswith("Grupo de actividad IV"))
+        pluses = next(d for d in tables_2026 if d.articulo.startswith("Pluses"))
+        self.assertTrue(store._is_auxiliary_concepts_table(pluses))
+        self.assertFalse(store._is_auxiliary_concepts_table(grupo_ii))
+
+        self.assertEqual(
+            store._extract_query_establishment_tier("camarero en un restaurante de 2 tenedores"),
+            ("tenedores", 2),
+        )
+        self.assertEqual(
+            store._extract_query_establishment_tier("cocinero en un hotel de 4 estrellas"),
+            ("estrellas", 4),
+        )
+        self.assertTrue(store._doc_matches_establishment_tier(grupo_iv, "tenedores", 2))
+        self.assertFalse(store._doc_matches_establishment_tier(grupo_ii, "tenedores", 2))
+        self.assertTrue(store._doc_matches_establishment_tier(grupo_ii, "estrellas", 4))
+        self.assertFalse(store._doc_matches_establishment_tier(grupo_iv, "estrellas", 4))
+        self.assertTrue(store._doc_matches_establishment_subsector(grupo_iv, "restauracion"))
+
+    def test_zaragoza_retrieval_selection_gd51_and_gd52(self) -> None:
+        zgz_base = PROCESSED_DATA_DIR / "convenio_zaragoza.md"
+        zgz_2026 = PROCESSED_DATA_DIR / "convenio_zaragoza_tablas_2026.md"
+        if not zgz_base.exists() or not zgz_2026.exists():
+            self.skipTest("Convenio de Zaragoza no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(zgz_base, boundaries_cache=cache)
+        chunks_2026 = chunk_markdown_document(zgz_2026, boundaries_cache=cache)
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_zgz_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_zgz_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        def _art(prefix: str) -> LegalChunk:
+            return next(c for c in base_chunks if c.articulo.startswith(prefix))
+
+        tbl_grupo_i = next(c for c in chunks_2026 if c.articulo.startswith("Tablas salariales en euros"))
+        tbl_grupo_ii = next(c for c in chunks_2026 if c.articulo.startswith("Grupo II de actividad"))
+        tbl_grupo_iv = next(c for c in chunks_2026 if c.articulo.startswith("Grupo de actividad IV"))
+        tbl_pluses = next(c for c in chunks_2026 if c.articulo.startswith("Pluses"))
+        anexo_p1 = next(c for c in base_chunks if c.articulo == "ANEXO I (Parte 1/2)")
+        art26, art27, art28, art30 = (
+            _art("Art. 26."),
+            _art("Art. 27."),
+            _art("Art. 28."),
+            _art("Art. 30. Vacaciones y festivos. (Parte 1/2)"),
+        )
+        art45, art46, art49, art50 = _art("Art. 45."), _art("Art. 46."), _art("Art. 49."), _art("Art. 50.")
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+
+        # Escenario GD_51: hotel 4* -> Grupo II (no Grupo IV de 3 estrellas) + Pluses + Anexo I + Arts. 45 y 49
+        pool_51 = [
+            self._to_doc(tbl_grupo_iv, 0.99),
+            self._to_doc(tbl_grupo_ii, 0.95),
+            self._to_doc(tbl_grupo_i, 0.90),
+            self._to_doc(art45, 0.88),
+            self._to_doc(art49, 0.86),
+            self._to_doc(anexo_p1, 0.70),
+            self._to_doc(tbl_pluses, 0.60),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_51 = store.rerank_and_select_by_territory(
+            candidates=pool_51,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Zaragoza en 2026. ¿Cuál es mi nivel retributivo, salario base mensual y salario anual en 2026, cuántas pagas extraordinarias me corresponden (incluyendo la paga de octubre) y cuánto cobro al mes por plus de transporte y mantenimiento de ropa?",
+            territorios=["zaragoza"],
+            use_cohere_rerank=False,
+            role_context="Cocinero (Grupo profesional II, Área funcional Segunda)",
+        )
+        ids_51 = {d.chunk_id for d in sel_51}
+        self.assertIn(tbl_grupo_ii.chunk_id, ids_51)
+        self.assertNotIn(tbl_grupo_iv.chunk_id, ids_51)
+        self.assertIn(tbl_pluses.chunk_id, ids_51)
+        self.assertIn(anexo_p1.chunk_id, ids_51)
+        self.assertIn(art45.chunk_id, ids_51)
+        self.assertIn(art49.chunk_id, ids_51)
+
+        # Escenario GD_52: restaurante 2 tenedores -> Grupo IV (no Grupo II) + Pluses + Anexo I + Arts. 26/28/30/46/50 + ALEH + ET
+        pool_52 = [
+            self._to_doc(tbl_grupo_ii, 0.99),
+            self._to_doc(tbl_grupo_i, 0.97),
+            self._to_doc(art27, 0.94),
+            self._to_doc(art26, 0.93),
+            self._to_doc(art28, 0.91),
+            self._to_doc(art30, 0.89),
+            self._to_doc(art46, 0.87),
+            self._to_doc(art50, 0.85),
+            self._to_doc(tbl_grupo_iv, 0.70),
+            self._to_doc(tbl_pluses, 0.65),
+            self._to_doc(anexo_p1, 0.60),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_52 = store.rerank_and_select_by_territory(
+            candidates=pool_52,
+            query="Soy camarero en un restaurante de 2 tenedores en Calatayud (Zaragoza) en 2026. ¿Cuál es mi salario base mensual y anual, cuál es la jornada anual máxima y descanso semanal mínimo, cuántos días de vacaciones tengo, cómo se retribuyen la nocturnidad y las horas extraordinarias, y qué plus corresponde por trabajar en domingos y festivos?",
+            territorios=["zaragoza"],
+            use_cohere_rerank=False,
+            role_context="Camarero (Grupo profesional II, Área funcional Tercera)",
+        )
+        ids_52 = {d.chunk_id for d in sel_52}
+        self.assertIn(tbl_grupo_iv.chunk_id, ids_52)
+        self.assertNotIn(tbl_grupo_ii.chunk_id, ids_52)
+        self.assertIn(tbl_pluses.chunk_id, ids_52)
+        self.assertIn(anexo_p1.chunk_id, ids_52)
+        for art in (art26, art28, art30, art46, art50):
+            self.assertIn(art.chunk_id, ids_52, msg=art.articulo)
+        self.assertTrue(any(d.capa_normativa == "aleh_estatal" for d in sel_52))
+        self.assertTrue(any(d.capa_normativa == "estatuto_trabajadores" for d in sel_52))
+
+
 if __name__ == "__main__":
     unittest.main()
