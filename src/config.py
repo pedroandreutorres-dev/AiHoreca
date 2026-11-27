@@ -39,6 +39,21 @@ SESSION_ARCHIVE_DIR = LOGS_DIR / "sesiones"
 AUDIT_REPORTS_DIR = LOGS_DIR / "auditorias"
 AUDIT_CURSOR_PATH = LOGS_DIR / ".sync_cursor.json"
 HF_SQUASH_INTERVAL_DAYS = int(os.getenv("HF_SQUASH_INTERVAL_DAYS", "30"))
+PRICING_SNAPSHOT_PATH = LOGS_DIR / "pricing_snapshot.json"
+SESSION_COSTS_HISTORY_PATH = LOGS_DIR / "historico_sesiones_costes.csv"
+TURN_COSTS_HISTORY_PATH = LOGS_DIR / "historico_turnos_costes.csv"
+GEMINI_PRICING_URL = (
+    os.getenv("GEMINI_PRICING_URL") or "https://ai.google.dev/gemini-api/docs/pricing.md.txt"
+).strip()
+PAID_TIER_LITE_ROUTER_MODEL = (os.getenv("PAID_TIER_LITE_ROUTER_MODEL") or "gemini-3.1-flash-lite").strip()
+PAID_TIER_LITE_SYNTHESIS_MODEL = (
+    os.getenv("PAID_TIER_LITE_SYNTHESIS_MODEL") or "gemini-3.5-flash-lite"
+).strip()
+PAID_TIER_FLASH_SYNTHESIS_MODEL = (
+    os.getenv("PAID_TIER_FLASH_SYNTHESIS_MODEL") or "gemini-3.8-flash"
+).strip()
+COHERE_RERANK_USD_PER_1K_UNITS = float(os.getenv("COHERE_RERANK_USD_PER_1K_UNITS", "2.0"))
+USD_TO_EUR_RATE = float(os.getenv("USD_TO_EUR_RATE", "0.92"))
 
 def _parse_models_tuple(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
     items = tuple(m.strip() for m in (raw or "").split(",") if m.strip())

@@ -132,6 +132,26 @@ class QueryAnalysisSchema(BaseModel):
             "o si indica explícitamente que 'da igual la provincia' o que busca una visión comparativa interprovincial sin ceñirse a un centro de trabajo único."
         ),
     )
+    respuesta_conversacional_directa: Optional[str] = Field(
+        default=None,
+        description=(
+            "Rellenar ÚNICAMENTE cuando intent='HOSPITALITY_CORE', requiere_consulta_normativa_bbdd=False "
+            "y el usuario NO esté enviando un saludo/agradecimiento/despedida puro, sino una pregunta meta-conversacional, "
+            "objeción o aclaración sobre un turno previo (ej. preguntar por qué se asumió un dato o corregir un malentendido). "
+            "Debe responder honestamente al diálogo previo y pedir el dato necesario de forma breve y educada, "
+            "SIN inventar ni citar cifras salariales o artículos nuevos no contrastados. Dejar null en saludos puros o consultas normativas."
+        ),
+    )
+    aviso_ambiguedad_geografica: Optional[str] = Field(
+        default=None,
+        description=(
+            "Rellenar ÚNICAMENTE cuando el mensaje actual mencione un topónimo incompleto u homónimo compartido por "
+            "varias provincias de España sin especificar el nombre completo ni la provincia. "
+            "Indicar de forma concisa qué localidad/provincia se asume por el contexto previo (si encaja con la sesión) "
+            "o qué concreción hace falta (si no encaja), citando 2 o 3 posibles provincias alternativas SIN incluir cifras ni porcentajes. "
+            "Dejar null si la ubicación es inequívoca o no se menciona localidad."
+        ),
+    )
     oficio_coloquial_detectado: Optional[str] = Field(
         default=None,
         description=(
@@ -384,6 +404,8 @@ class LegalGraphState(TypedDict, total=False):
     requiere_convenio_provincial: bool
     requiere_puesto_o_categoria: bool
     es_comparativa_global: bool
+    respuesta_conversacional_directa: Optional[str]
+    aviso_ambiguedad_geografica: Optional[str]
     datos_completos: bool
     route_decision: RouteDecision
     oficio_coloquial_detectado: Optional[str]

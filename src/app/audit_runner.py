@@ -25,6 +25,13 @@ import sqlite3
 import sys
 from typing import Any
 
+from src.app.pricing import (
+    PricingCatalog,
+    TurnCostBreakdown,
+    compute_turn_cost,
+    load_pricing_catalog,
+    resolve_model_rate,
+)
 from src.app.telemetry_sync import HuggingFaceTelemetrySync, get_hf_telemetry_config
 from src.graph.memory import SessionMemoryStore
 from src.graph.state import TurnUsageSummary
@@ -33,9 +40,14 @@ from src.config import (
     AUDIT_REPORTS_DIR,
     HF_SQUASH_INTERVAL_DAYS,
     LOGS_DIR,
+    PAID_TIER_FLASH_SYNTHESIS_MODEL,
+    PAID_TIER_LITE_ROUTER_MODEL,
+    PAID_TIER_LITE_SYNTHESIS_MODEL,
     SESSION_ARCHIVE_DIR,
+    SESSION_COSTS_HISTORY_PATH,
     SESSION_RETENTION_DAYS,
     SESSIONS_DB_PATH,
+    TURN_COSTS_HISTORY_PATH,
 )
 
 try:
@@ -149,11 +161,16 @@ def _feedback_icon(fb: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
+def archive_session_transcripts(
+    db_path: Path,
+    archive_dir: Path,
+    pricing_catalog: Optional[PricingCatalog] = None,
+) -> int:
     """Exporta y actualiza la transcripción completa y legible de cada sesión en disco."""
     if not db_path.exists():
         return 0
 
+    catalog = pricing_catalog or load_pricing_catalog(fetch_live=False)
     archive_dir.mkdir(parents=True, exist_ok=True)
     archived_count = 0
 
@@ -177,6 +194,18 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
             n_ok = sum(1 for t in turns if t["user_feedback"] == FEEDBACK_POSITIVE)
             n_ko = sum(1 for t in turns if t["user_feedback"] == FEEDBACK_NEGATIVE)
 
+            turn_costs: list[tuple[sqlite3.Row, dict[str, Any], TurnCostBreakdown]] = []
+            sess_real_usd = 0.0
+            sess_lite_usd = 0.0
+            sess_flash_usd = 0.0
+            for t in turns:
+                m = _turn_metrics(t)
+                tc = compute_turn_cost(m["usage"], catalog) if m["has_usage_telemetry"] else TurnCostBreakdown()
+                sess_real_usd += tc.coste_total_real_usd
+                sess_lite_usd += tc.coste_total_tier_lite_usd
+                sess_flash_usd += tc.coste_total_tier_flash_usd
+                turn_costs.append((t, m, tc))
+
             lines: list[str] = [
                 "=" * 80,
                 f"SESIÓN: {sid}",
@@ -186,13 +215,14 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
                 f"OFICIO: {s['active_oficio_coloquial'] or 'No fijado'} | "
                 f"CATEGORÍA ALEH: {s['active_categoria_aleh'] or 'No fijado'}",
                 f"TOTAL TURNOS: {len(turns)} | FEEDBACK ACUMULADO: 👍 {n_ok} / 👎 {n_ko}",
+                f"COSTE ESTIMADO API PAGO (fuente={catalog.source}): "
+                f"Real ${sess_real_usd:.5f} | Tier Lite ${sess_lite_usd:.5f} | Tier Flash ${sess_flash_usd:.5f}",
                 f"CADUCIDAD: se elimina {SESSION_RETENTION_DAYS} días después de la última actividad.",
                 "=" * 80,
                 "",
             ]
 
-            for t in turns:
-                m = _turn_metrics(t)
+            for t, m, tc in turn_costs:
                 models = m["models"]
                 u: TurnUsageSummary = m["usage"]
                 v_count = len(m["audit"].get("verified_numbers") or []) + len(
@@ -225,6 +255,11 @@ def archive_session_transcripts(db_path: Path, archive_dir: Path) -> int:
                         f"Embeddings {u.embedding_calls} calls ({u.embedding_cache_hits} cache_hit, {u.embedding_chars:,} chars) | "
                         f"Cohere {u.cohere_calls} calls ({u.cohere_search_units} search_units, {u.cohere_docs_reranked} docs) | "
                         f"B2 hops {m['retrieval_hop']} | A1 retries {m['audit_retry_count']}"
+                    )
+                    turn_lines.append(
+                        f"Coste estimado turno (API pago): Real ${tc.coste_total_real_usd:.5f} | "
+                        f"Tier Lite ${tc.coste_total_tier_lite_usd:.5f} | Tier Flash ${tc.coste_total_tier_flash_usd:.5f} "
+                        f"(Gemini ${tc.coste_gemini_real_usd:.5f}, Emb ${tc.coste_embeddings_usd:.5f}, Cohere ${tc.coste_cohere_usd:.5f})"
                     )
                     if u.steps:
                         turn_lines.append("Detalle paso a paso:")
@@ -319,12 +354,286 @@ def _export_golden_candidates(candidates: list[dict[str, Any]]) -> int:
     return added
 
 
+def _upsert_csv_rows(
+    csv_path: Path,
+    key_col: str,
+    new_rows: list[dict[str, Any]],
+    sort_key_fn: Any = None,
+) -> int:
+    """Realiza upsert atómico por `key_col`, preservando registros históricos ya purgados de SQLite."""
+    if not new_rows:
+        return 0
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(new_rows[0].keys())
+    existing_by_key: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+
+    if csv_path.exists():
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for col in (reader.fieldnames or []):
+                if col not in fieldnames:
+                    fieldnames.append(col)
+            for old_row in reader:
+                k = str(old_row.get(key_col, ""))
+                if k:
+                    existing_by_key[k] = dict(old_row)
+                    ordered_keys.append(k)
+
+    for row in new_rows:
+        k = str(row.get(key_col, ""))
+        if not k:
+            continue
+        if k not in existing_by_key:
+            ordered_keys.append(k)
+        existing_by_key[k] = row
+
+    merged = [existing_by_key[k] for k in ordered_keys if k in existing_by_key]
+    if sort_key_fn is not None:
+        merged.sort(key=sort_key_fn)
+
+    tmp_path = csv_path.with_suffix(".csv.tmp")
+    with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in merged:
+            writer.writerow({col: row.get(col, "") for col in fieldnames})
+    tmp_path.replace(csv_path)
+    return len(merged)
+
+
+def export_cost_analytics_csvs(
+    db_path: Path,
+    pricing_catalog: Optional[PricingCatalog] = None,
+    sessions_csv_path: Path = SESSION_COSTS_HISTORY_PATH,
+    turns_csv_path: Path = TURN_COSTS_HISTORY_PATH,
+) -> dict[str, Any]:
+    """Exporta datasets permanentes sin PII (sesión a sesión y turno a turno) para analítica y monetización."""
+    if not db_path.exists():
+        return {"sessions_exported": 0, "turns_exported": 0, "pricing_source": "n/a"}
+
+    catalog = pricing_catalog or load_pricing_catalog(fetch_live=False)
+    r_lite_router = resolve_model_rate(catalog, PAID_TIER_LITE_ROUTER_MODEL)
+    r_lite_synth = resolve_model_rate(catalog, PAID_TIER_LITE_SYNTHESIS_MODEL)
+    r_flash_synth = resolve_model_rate(catalog, PAID_TIER_FLASH_SYNTHESIS_MODEL)
+    r_emb = resolve_model_rate(catalog, "gemini-embedding-001")
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    session_rows: list[dict[str, Any]] = []
+    turn_rows: list[dict[str, Any]] = []
+    try:
+        sessions = conn.execute("SELECT * FROM sessions ORDER BY created_at ASC").fetchall()
+        turns_by_sid: dict[str, list[sqlite3.Row]] = {}
+        for t in conn.execute("SELECT * FROM session_turns ORDER BY id ASC").fetchall():
+            turns_by_sid.setdefault(t["session_id"], []).append(t)
+
+        for s in sessions:
+            sid = s["session_id"]
+            s_turns = turns_by_sid.get(sid, [])
+            if not s_turns:
+                continue
+
+            created = s["created_at"] or ""
+            dt_created = _parse_iso(created)
+            weekday_names = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+            dia_semana = weekday_names[dt_created.weekday()] if dt_created else ""
+
+            tot_rag = 0
+            tot_sc = 0
+            tot_telem = 0
+            ok_cnt = ko_cnt = none_cnt = unv_cnt = 0
+            lat_sum = 0.0
+            in_tok = out_tok = th_tok = cache_tok = all_tok = 0
+            llm_calls = llm_fails = emb_calls = emb_hits = emb_chars = emb_tok_est = cohere_calls = cohere_units = 0
+            b2_sum = a1_sum = 0
+            c_gem_real = c_emb = c_coh = c_real_usd = c_lite_usd = c_flash_usd = 0.0
+
+            for t in s_turns:
+                m = _turn_metrics(t)
+                u: TurnUsageSummary = m["usage"]
+                tc = compute_turn_cost(u, catalog) if m["has_usage_telemetry"] else TurnCostBreakdown()
+
+                route = t["route_decision"] or ""
+                if route == "parallel_retrieve":
+                    tot_rag += 1
+                elif route in ("block_out_of_scope", "ask_clarification"):
+                    tot_sc += 1
+                if m["has_usage_telemetry"]:
+                    tot_telem += 1
+
+                fb = m["feedback"]
+                if fb == FEEDBACK_POSITIVE:
+                    ok_cnt += 1
+                elif fb == FEEDBACK_NEGATIVE:
+                    ko_cnt += 1
+                else:
+                    none_cnt += 1
+                unv_cnt += len(m["unverified"])
+                lat_sum += m["latency_ms"]
+
+                in_tok += u.input_tokens
+                out_tok += u.output_tokens
+                th_tok += u.thoughts_tokens
+                cache_tok += u.cached_tokens
+                all_tok += u.total_tokens
+                llm_calls += u.llm_calls
+                llm_fails += u.llm_failovers
+                emb_calls += u.embedding_calls
+                emb_hits += u.embedding_cache_hits
+                emb_chars += u.embedding_chars
+                emb_tok_est += tc.embedding_tokens_est
+                cohere_calls += u.cohere_calls
+                cohere_units += u.cohere_search_units
+                b2_sum += m["retrieval_hop"]
+                a1_sum += m["audit_retry_count"]
+
+                c_gem_real += tc.coste_gemini_real_usd
+                c_emb += tc.coste_embeddings_usd
+                c_coh += tc.coste_cohere_usd
+                c_real_usd += tc.coste_total_real_usd
+                c_lite_usd += tc.coste_total_tier_lite_usd
+                c_flash_usd += tc.coste_total_tier_flash_usd
+
+                ts_turn = str(t["timestamp"] or "")
+                turn_rows.append({
+                    "turn_id": int(t["id"]),
+                    "session_id": sid,
+                    "turn_index": int(t["turn_index"]),
+                    "fecha": ts_turn[:10],
+                    "hora": ts_turn[11:19] if len(ts_turn) >= 19 else "",
+                    "intent": t["intent"] or "",
+                    "route_decision": route,
+                    "territorio": t["territorio"] or "",
+                    "oficio_detectado": t["oficio_detectado"] or "",
+                    "modelo_router": m["models"].get("analyze_and_route", ""),
+                    "modelo_sintesis": m["models"].get("synthesize_response") or m["models"].get("legal_synthesis_and_audit", ""),
+                    "audit_passed": int(m["passed"]),
+                    "num_unverified": len(m["unverified"]),
+                    "user_feedback": fb,
+                    "latencia_ms": m["latency_ms"],
+                    "has_telemetry": int(m["has_usage_telemetry"]),
+                    "b2_hops": m["retrieval_hop"],
+                    "a1_retries": m["audit_retry_count"],
+                    "tokens_entrada": u.input_tokens,
+                    "tokens_salida": u.output_tokens,
+                    "tokens_thoughts": u.thoughts_tokens,
+                    "tokens_cached": u.cached_tokens,
+                    "tokens_total": u.total_tokens,
+                    "llm_llamadas": u.llm_calls,
+                    "llm_failovers": u.llm_failovers,
+                    "embeddings_llamadas": u.embedding_calls,
+                    "embeddings_cache_hits": u.embedding_cache_hits,
+                    "embeddings_chars": u.embedding_chars,
+                    "embeddings_tokens_est": tc.embedding_tokens_est,
+                    "cohere_llamadas": u.cohere_calls,
+                    "cohere_search_units": u.cohere_search_units,
+                    "coste_gemini_real_usd": tc.coste_gemini_real_usd,
+                    "coste_embeddings_usd": tc.coste_embeddings_usd,
+                    "coste_cohere_usd": tc.coste_cohere_usd,
+                    "coste_total_real_usd": tc.coste_total_real_usd,
+                    "coste_total_real_eur": tc.coste_total_real_eur,
+                    "coste_total_tier_lite_usd": tc.coste_total_tier_lite_usd,
+                    "coste_total_tier_lite_eur": tc.coste_total_tier_lite_eur,
+                    "coste_total_tier_flash_usd": tc.coste_total_tier_flash_usd,
+                    "coste_total_tier_flash_eur": tc.coste_total_tier_flash_eur,
+                    "pricing_source": catalog.source,
+                })
+
+            voted = ok_cnt + ko_cnt
+            sat_pct = round(100.0 * ok_cnt / voted, 1) if voted else ""
+            n_t = len(s_turns)
+            session_rows.append({
+                "session_id": sid,
+                "fecha_inicio": created[:10],
+                "hora_inicio": created[11:19] if len(created) >= 19 else "",
+                "dia_semana": dia_semana,
+                "ultima_actividad": s["updated_at"] or "",
+                "territorio": s["active_territorio"] or "",
+                "oficio": s["active_oficio_coloquial"] or "",
+                "categoria_aleh": s["active_categoria_aleh"] or "",
+                "total_turnos": n_t,
+                "turnos_rag": tot_rag,
+                "turnos_cortocircuito": tot_sc,
+                "turnos_con_telemetria": tot_telem,
+                "votos_ok": ok_cnt,
+                "votos_ko": ko_cnt,
+                "sin_voto": none_cnt,
+                "satisfaccion_pct": sat_pct,
+                "cifras_no_verificadas_total": unv_cnt,
+                "latencia_total_ms": round(lat_sum, 1),
+                "latencia_media_ms": round(lat_sum / n_t, 1) if n_t else 0.0,
+                "tokens_entrada_total": in_tok,
+                "tokens_salida_total": out_tok,
+                "tokens_thoughts_total": th_tok,
+                "tokens_cached_total": cache_tok,
+                "tokens_total": all_tok,
+                "llm_llamadas": llm_calls,
+                "llm_failovers": llm_fails,
+                "embeddings_llamadas": emb_calls,
+                "embeddings_cache_hits": emb_hits,
+                "embeddings_chars": emb_chars,
+                "embeddings_tokens_est": emb_tok_est,
+                "cohere_llamadas": cohere_calls,
+                "cohere_search_units": cohere_units,
+                "b2_saltos": b2_sum,
+                "a1_reintentos": a1_sum,
+                "coste_gemini_real_usd": round(c_gem_real, 6),
+                "coste_embeddings_usd": round(c_emb, 6),
+                "coste_cohere_usd": round(c_coh, 6),
+                "coste_total_real_usd": round(c_real_usd, 6),
+                "coste_total_real_eur": round(c_real_usd * catalog.usd_to_eur, 6),
+                "coste_total_tier_lite_usd": round(c_lite_usd, 6),
+                "coste_total_tier_lite_eur": round(c_lite_usd * catalog.usd_to_eur, 6),
+                "coste_total_tier_flash_usd": round(c_flash_usd, 6),
+                "coste_total_tier_flash_eur": round(c_flash_usd * catalog.usd_to_eur, 6),
+                "coste_medio_turno_lite_usd": round(c_lite_usd / tot_telem, 6) if tot_telem else 0.0,
+                "coste_medio_turno_flash_usd": round(c_flash_usd / tot_telem, 6) if tot_telem else 0.0,
+                "tarifa_lite_router_in_1m": r_lite_router.input_per_1m if r_lite_router else "",
+                "tarifa_lite_router_out_1m": r_lite_router.output_per_1m if r_lite_router else "",
+                "tarifa_lite_synth_in_1m": r_lite_synth.input_per_1m if r_lite_synth else "",
+                "tarifa_lite_synth_out_1m": r_lite_synth.output_per_1m if r_lite_synth else "",
+                "tarifa_flash_synth_in_1m": r_flash_synth.input_per_1m if r_flash_synth else "",
+                "tarifa_flash_synth_out_1m": r_flash_synth.output_per_1m if r_flash_synth else "",
+                "tarifa_embedding_1m": r_emb.input_per_1m if r_emb else "",
+                "tarifa_cohere_1k_units": catalog.cohere_usd_per_1k_units,
+                "tipo_cambio_usd_eur": catalog.usd_to_eur,
+                "pricing_source": catalog.source,
+                "pricing_checked_at": catalog.checked_at,
+            })
+    finally:
+        conn.close()
+
+    total_sess = _upsert_csv_rows(
+        sessions_csv_path,
+        "session_id",
+        session_rows,
+        sort_key_fn=lambda r: (str(r.get("fecha_inicio", "")), str(r.get("hora_inicio", "")), str(r.get("session_id", ""))),
+    )
+    total_turns = _upsert_csv_rows(
+        turns_csv_path,
+        "turn_id",
+        turn_rows,
+        sort_key_fn=lambda r: int(r.get("turn_id") or 0),
+    )
+    return {
+        "sessions_exported": len(session_rows),
+        "sessions_total_csv": total_sess,
+        "turns_exported": len(turn_rows),
+        "turns_total_csv": total_turns,
+        "sessions_csv_path": str(sessions_csv_path),
+        "turns_csv_path": str(turns_csv_path),
+        "pricing_source": catalog.source,
+    }
+
+
 def extract_and_audit_deltas(
     db_path: Path,
     cursor_path: Path,
     reports_dir: Path,
     force_all: bool = False,
     export_candidates: bool = False,
+    pricing_catalog: Optional[PricingCatalog] = None,
 ) -> dict[str, Any]:
     """Detecta turnos nuevos y votos tardíos desde la última auditoría y genera el informe."""
     if not db_path.exists():
@@ -377,6 +686,7 @@ def extract_and_audit_deltas(
         }
 
     now_local = _now_local()
+    catalog = pricing_catalog or load_pricing_catalog(fetch_live=True)
     feedback_count = {FEEDBACK_POSITIVE: 0, FEEDBACK_NEGATIVE: 0, FEEDBACK_NONE: 0}
     intents_count: dict[str, int] = {}
     routes_count: dict[str, int] = {}
@@ -386,7 +696,7 @@ def extract_and_audit_deltas(
     unverified_total = 0
     flagged: list[dict[str, Any]] = []
 
-    # Acumuladores de tokens, llamadas API, failovers y eficiencia del grafo (Bloque D; sin cálculos de coste)
+    # Acumuladores de tokens, llamadas API, failovers, eficiencia del grafo y costes estimados
     total_input_tokens = 0
     total_output_tokens = 0
     total_thoughts_tokens = 0
@@ -404,6 +714,14 @@ def extract_and_audit_deltas(
     total_cohere_calls = 0
     total_cohere_search_units = 0
     total_cohere_docs_reranked = 0
+
+    total_cost_gemini_real_usd = 0.0
+    total_cost_embeddings_usd = 0.0
+    total_cost_cohere_usd = 0.0
+    total_cost_real_usd = 0.0
+    total_cost_tier_lite_usd = 0.0
+    total_cost_tier_flash_usd = 0.0
+    session_batch_costs: dict[str, dict[str, Any]] = {}
 
     turn_tokens_with_usage: list[int] = []
     rag_tokens_with_usage: list[int] = []
@@ -508,6 +826,32 @@ def extract_and_audit_deltas(
             turn_tokens_with_usage.append(u.total_tokens)
             if t["route_decision"] == "parallel_retrieve":
                 rag_tokens_with_usage.append(u.total_tokens)
+
+        tc = compute_turn_cost(u, catalog) if m["has_usage_telemetry"] else TurnCostBreakdown()
+        total_cost_gemini_real_usd += tc.coste_gemini_real_usd
+        total_cost_embeddings_usd += tc.coste_embeddings_usd
+        total_cost_cohere_usd += tc.coste_cohere_usd
+        total_cost_real_usd += tc.coste_total_real_usd
+        total_cost_tier_lite_usd += tc.coste_total_tier_lite_usd
+        total_cost_tier_flash_usd += tc.coste_total_tier_flash_usd
+
+        sb = session_batch_costs.setdefault(
+            t["session_id"],
+            {
+                "turnos": 0,
+                "tokens": 0,
+                "cohere_units": 0,
+                "real_usd": 0.0,
+                "lite_usd": 0.0,
+                "flash_usd": 0.0,
+            },
+        )
+        sb["turnos"] += 1
+        sb["tokens"] += u.total_tokens
+        sb["cohere_units"] += u.cohere_search_units
+        sb["real_usd"] += tc.coste_total_real_usd
+        sb["lite_usd"] += tc.coste_total_tier_lite_usd
+        sb["flash_usd"] += tc.coste_total_tier_flash_usd
 
         for step in u.steps:
             mkey = (step.provider or "-", step.model or "-")
@@ -719,6 +1063,42 @@ def extract_and_audit_deltas(
                 )
             md.append("")
 
+        r_lr = resolve_model_rate(catalog, PAID_TIER_LITE_ROUTER_MODEL)
+        r_ls = resolve_model_rate(catalog, PAID_TIER_LITE_SYNTHESIS_MODEL)
+        r_fs = resolve_model_rate(catalog, PAID_TIER_FLASH_SYNTHESIS_MODEL)
+        r_em = resolve_model_rate(catalog, "gemini-embedding-001")
+        n_telem = len(turn_tokens_with_usage)
+        avg_lite_turn = (total_cost_tier_lite_usd / n_telem) if n_telem else 0.0
+        avg_flash_turn = (total_cost_tier_flash_usd / n_telem) if n_telem else 0.0
+        n_sess_batch = max(1, len(session_batch_costs))
+        avg_lite_sess = total_cost_tier_lite_usd / n_sess_batch
+        avg_flash_sess = total_cost_tier_flash_usd / n_sess_batch
+        md.extend([
+            "### Estimación de costes en API de pago (Unit Economics)",
+            "",
+            f"- **Fuente tarifas**: `{catalog.source}` (vigencia `{catalog.as_of_date}`, cambio `1 USD = {catalog.usd_to_eur} EUR`)",
+            f"- **Tarifas comprobadas (1M tok)**: Router `{PAID_TIER_LITE_ROUTER_MODEL}` (`${r_lr.input_per_1m if r_lr else 0:.2f}` in / `${r_lr.output_per_1m if r_lr else 0:.2f}` out) · "
+            f"Síntesis Lite `{PAID_TIER_LITE_SYNTHESIS_MODEL}` (`${r_ls.input_per_1m if r_ls else 0:.2f}` in / `${r_ls.output_per_1m if r_ls else 0:.2f}` out) · "
+            f"Síntesis Flash `{PAID_TIER_FLASH_SYNTHESIS_MODEL}` (`${r_fs.input_per_1m if r_fs else 0:.2f}` in / `${r_fs.output_per_1m if r_fs else 0:.2f}` out) · "
+            f"Embeddings (`${r_em.input_per_1m if r_em else 0.15:.2f}`) · Cohere Rerank (`${catalog.cohere_usd_per_1k_units:.2f}` / 1k units)",
+            f"- **Coste total del lote (real modelos ejecutados)**: **`${total_cost_real_usd:.5f} USD`** (`{total_cost_real_usd * catalog.usd_to_eur:.5f} €`) "
+            f"— Gemini LLM `${total_cost_gemini_real_usd:.5f}` | Embeddings `${total_cost_embeddings_usd:.5f}` | Cohere `${total_cost_cohere_usd:.5f}`",
+            f"- **Simulación Stack Tier Lite (`3.1-flash-lite` + `3.5-flash-lite`)**: **`${total_cost_tier_lite_usd:.5f} USD`** (`{total_cost_tier_lite_usd * catalog.usd_to_eur:.5f} €`) "
+            f"· media `{avg_lite_turn:.5f} USD/turno` (`${avg_lite_sess * 1000:.2f} / 1.000 conv.` similares)",
+            f"- **Simulación Stack Tier Flash (`3.1-flash-lite` + `3.8-flash`)**: **`${total_cost_tier_flash_usd:.5f} USD`** (`{total_cost_tier_flash_usd * catalog.usd_to_eur:.5f} €`) "
+            f"· media `{avg_flash_turn:.5f} USD/turno` (`${avg_flash_sess * 1000:.2f} / 1.000 conv.` similares)",
+            "",
+            "| Sesión | Turnos | Tokens | Cohere Units | Real (USD) | Tier Lite (USD / EUR) | Tier Flash (USD / EUR) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ])
+        for s_id, sb in sorted(session_batch_costs.items(), key=lambda x: -x[1]["lite_usd"]):
+            md.append(
+                f"| `{s_id}` | {sb['turnos']} | {sb['tokens']:,} | {sb['cohere_units']} | "
+                f"${sb['real_usd']:.5f} | ${sb['lite_usd']:.5f} / €{sb['lite_usd'] * catalog.usd_to_eur:.5f} | "
+                f"${sb['flash_usd']:.5f} / €{sb['flash_usd'] * catalog.usd_to_eur:.5f} |"
+            )
+        md.append("")
+
         if turn_tokens_with_usage:
             top_turns = sorted(
                 ((t, m) for t, m in per_turn_usage_rows if m["has_usage_telemetry"]),
@@ -879,6 +1259,14 @@ def extract_and_audit_deltas(
         "a1_reintentos": a1_retry_turns,
         "b2_saltos": b2_hop_turns,
         "multiterritorio_turnos": multi_territory_turns,
+        "coste_real_usd": round(total_cost_real_usd, 6),
+        "coste_tier_lite_usd": round(total_cost_tier_lite_usd, 6),
+        "coste_tier_lite_eur": round(total_cost_tier_lite_usd * catalog.usd_to_eur, 6),
+        "coste_tier_flash_usd": round(total_cost_tier_flash_usd, 6),
+        "coste_tier_flash_eur": round(total_cost_tier_flash_usd * catalog.usd_to_eur, 6),
+        "coste_cohere_usd": round(total_cost_cohere_usd, 6),
+        "coste_embeddings_usd": round(total_cost_embeddings_usd, 6),
+        "pricing_source": catalog.source,
     })
 
     candidates_added = 0
@@ -919,6 +1307,17 @@ def extract_and_audit_deltas(
             "embedding_cache_hits": total_embedding_cache_hits,
             "cohere": total_cohere_calls,
             "cohere_search_units": total_cohere_search_units,
+        },
+        "costs": {
+            "pricing_source": catalog.source,
+            "as_of_date": catalog.as_of_date,
+            "real_usd": round(total_cost_real_usd, 6),
+            "tier_lite_usd": round(total_cost_tier_lite_usd, 6),
+            "tier_lite_eur": round(total_cost_tier_lite_usd * catalog.usd_to_eur, 6),
+            "tier_flash_usd": round(total_cost_tier_flash_usd, 6),
+            "tier_flash_eur": round(total_cost_tier_flash_usd * catalog.usd_to_eur, 6),
+            "cohere_usd": round(total_cost_cohere_usd, 6),
+            "embeddings_usd": round(total_cost_embeddings_usd, 6),
         },
     }
 
@@ -1046,8 +1445,9 @@ def run_daily_audit_pipeline(
     force_pull: bool = False,
     force_all_audit: bool = False,
     export_candidates: bool = True,
+    fetch_live_pricing: bool = True,
 ) -> dict[str, Any]:
-    """Ejecuta el pipeline completo de sincronización, archivo, auditoría y retención."""
+    """Ejecuta el pipeline completo de sincronización, archivo, auditoría, analítica de costes y retención."""
     pull_res = HuggingFaceTelemetrySync().pull_latest_from_hf(force=force_pull)
 
     retention_res = apply_local_retention(db_path=SESSIONS_DB_PATH)
@@ -1055,9 +1455,17 @@ def run_daily_audit_pipeline(
     if SESSIONS_DB_PATH.exists():
         SessionMemoryStore(db_path=SESSIONS_DB_PATH).export_flat_logs()
 
+    pricing_catalog = load_pricing_catalog(fetch_live=fetch_live_pricing)
+
     archived_sessions = archive_session_transcripts(
         db_path=SESSIONS_DB_PATH,
         archive_dir=SESSION_ARCHIVE_DIR,
+        pricing_catalog=pricing_catalog,
+    )
+
+    cost_analytics = export_cost_analytics_csvs(
+        db_path=SESSIONS_DB_PATH,
+        pricing_catalog=pricing_catalog,
     )
 
     audit_res = extract_and_audit_deltas(
@@ -1066,6 +1474,7 @@ def run_daily_audit_pipeline(
         reports_dir=AUDIT_REPORTS_DIR,
         force_all=force_all_audit,
         export_candidates=export_candidates,
+        pricing_catalog=pricing_catalog,
     )
 
     squash_res = check_and_squash_hf_history(cursor_path=AUDIT_CURSOR_PATH)
@@ -1075,6 +1484,7 @@ def run_daily_audit_pipeline(
         "hf_sync": pull_res,
         "local_retention": retention_res,
         "sessions_archived": archived_sessions,
+        "cost_analytics": cost_analytics,
         "audit": audit_res,
         "hf_squash": squash_res,
     }
@@ -1137,6 +1547,18 @@ def _cli() -> None:
             f"- APIs: LLM={apis.get('llm', 0)} (failovers={apis.get('llm_failovers', 0)}) | "
             f"Embeddings={apis.get('embedding', 0)} (cache_hit={apis.get('embedding_cache_hits', 0)}) | "
             f"Cohere={apis.get('cohere', 0)} ({apis.get('cohere_search_units', 0)} search_units)"
+        )
+    costs = audit.get("costs") or {}
+    if costs:
+        print(
+            f"- Coste API pago est. ({costs.get('pricing_source')}): Real ${costs.get('real_usd', 0):.5f} | "
+            f"Tier Lite ${costs.get('tier_lite_usd', 0):.5f} | Tier Flash ${costs.get('tier_flash_usd', 0):.5f}"
+        )
+    ca = result.get("cost_analytics") or {}
+    if ca.get("sessions_total_csv"):
+        print(
+            f"- Analítica costes CSV ({ca.get('pricing_source')}): {ca.get('sessions_total_csv')} sesiones, "
+            f"{ca.get('turns_total_csv')} turnos"
         )
     if audit.get("report_path"):
         print(f"- Informe: {audit['report_path']}")

@@ -289,6 +289,447 @@ class TestAuditRemediation(unittest.TestCase):
         self.assertTrue(expander_titles[2][0].startswith("3. Contacto y Privacidad"))
         self.assertTrue(all(exp is True for _, exp in expander_titles))
 
+    # -------------------------------------------------------------------------
+    # Mejoras de auditoría 27/11: objeciones conversacionales, topónimos y costes
+    # -------------------------------------------------------------------------
+    def test_conversational_objection_uses_direct_response_instead_of_greeting(self) -> None:
+        """Objeción meta con requiere_consulta_normativa_bbdd=False responde contextualmente sin saludo enlatado."""
+        mock_analysis = QueryAnalysisSchema(
+            intent="HOSPITALITY_CORE",
+            motivo_clasificacion="Objeción conversacional sobre suposición previa sin consulta normativa nueva.",
+            provincias_detectadas_en_turno_actual=[],
+            cambio_de_puesto_en_turno_actual=False,
+            requiere_consulta_normativa_bbdd=False,
+            requiere_convenio_provincial=True,
+            requiere_puesto_o_categoria=False,
+            respuesta_conversacional_directa=(
+                "Lo asumí por continuidad con la comarca mencionada previamente; "
+                "si te refieres a otra provincia, indícamela y reviso su convenio."
+            ),
+            consulta_autocontenida_resuelta="Aclaración sobre territorio inferido en el turno anterior.",
+            query_busqueda_hibrida="aclaracion territorio",
+        )
+        state: LegalGraphState = {
+            "session_id": "ses-test-objection",
+            "query": "¿Por qué asumes esa localidad y no otra con el mismo nombre?",
+            "session_slots": SessionContextSlots(active_territorio="leon").model_dump(),
+            "conversation_history": [
+                {"user_query": "Ponferrada", "assistant_summary": "Convenio de León aplicado."}
+            ],
+        }
+        with patch("src.graph.nodes._call_structured_llm", return_value=(mock_analysis, "mock_model")):
+            res = self.nodes.analyze_and_route_node(state)
+
+        self.assertEqual(res["route_decision"], "ask_clarification")
+        self.assertFalse(res["requiere_consulta_normativa_bbdd"])
+        self.assertTrue(res["respuesta_conversacional_directa"])
+
+        clarif_res = self.nodes.ask_clarification_node({**state, **res})
+        body = clarif_res["final_response"]
+        self.assertIn("continuidad con la comarca", body)
+        self.assertNotIn("¡Hola! Soy AiHoreca", body)
+
+        # Garantizar que NO ensucia pending_clarification_query ni pierde active_territorio
+        self.mem.save_turn_and_update_slots(
+            session_id="ses-test-objection",
+            state={
+                **state,
+                **res,
+                **clarif_res,
+            },
+        )
+        saved_slots = self.mem.get_slots("ses-test-objection")
+        self.assertIsNone(saved_slots.pending_clarification_query)
+        self.mem.delete_session("ses-test-objection")
+
+    def test_ambiguous_toponym_option_b_with_and_without_context(self) -> None:
+        """Opción B: inyecta aviso si encaja con territorio activo; si no encaja, evita heredar y pregunta."""
+        from src.graph.state import LegalCitation, LegalSynthesisSchema
+        from src.retrieval.schemas import RetrievedDocument
+
+        # Subcaso B.1: hay territorio activo compatible -> mantiene provincia y añade aviso determinista
+        aviso_compat = (
+            "Asumo la localidad homónima dentro de la provincia activa por el contexto previo; "
+            "si te refieres a otra provincia, indícamela para revisar su convenio."
+        )
+        analysis_compat = QueryAnalysisSchema(
+            intent="HOSPITALITY_CORE",
+            motivo_clasificacion="Topónimo homónimo compatible con el territorio activo en sesión.",
+            provincias_detectadas_en_turno_actual=["leon"],
+            cambio_de_puesto_en_turno_actual=False,
+            requiere_consulta_normativa_bbdd=True,
+            requiere_convenio_provincial=True,
+            requiere_puesto_o_categoria=False,
+            aviso_ambiguedad_geografica=aviso_compat,
+            consulta_autocontenida_resuelta="Descanso mínimo en jornada partida en localidad compatible.",
+            query_busqueda_hibrida="jornada partida descanso leon",
+        )
+        state_b1: LegalGraphState = {
+            "session_id": "ses-test-ambig-b1",
+            "query": "¿Y en esa localidad homónima?",
+            "session_slots": SessionContextSlots(active_territorio="leon").model_dump(),
+            "conversation_history": [],
+        }
+        with patch("src.graph.nodes._call_structured_llm", return_value=(analysis_compat, "mock_model")):
+            route_b1 = self.nodes.analyze_and_route_node(state_b1)
+        self.assertEqual(route_b1["route_decision"], "parallel_retrieve")
+        self.assertEqual(route_b1["territorio_normalizado"], "leon")
+        self.assertEqual(route_b1["aviso_ambiguedad_geografica"], aviso_compat)
+
+        mock_synth = LegalSynthesisSchema(
+            jerarquia_normativa_aplicada="ET + ALEH + Convenio Provincial",
+            citas_normativas=[
+                LegalCitation(
+                    norma="Convenio Colectivo de León",
+                    capa_normativa="convenio_provincial",
+                    articulo_o_tabla="Art. 19",
+                    extracto_clave="Al menos 2 horas de descanso.",
+                )
+            ],
+            cifras_y_datos_criticos=["2 horas"],
+            calculos_derivados=[],
+            respuesta_final_markdown="El descanso mínimo en jornada partida es de **2 horas** (Art. 19).",
+        )
+        fake_doc = RetrievedDocument(
+            chunk_id="c1",
+            source_file="convenio_leon_texto.md",
+            norma_titulo="Convenio León",
+            capa_normativa="convenio_provincial",
+            territorio="leon",
+            titulo_o_capitulo="Jornada",
+            articulo="Art. 19",
+            tipo_contenido="articulo",
+            text="Se entenderá por jornada partida aquella con descanso de al menos 2 horas.",
+            score=0.9,
+        )
+        with patch("src.graph.nodes._call_structured_llm", return_value=(mock_synth, "mock_model")):
+            synth_b1 = self.nodes.synthesize_response_node({
+                **state_b1,
+                **route_b1,
+                "retrieved_docs": [fake_doc],
+            })
+        self.assertTrue(synth_b1["final_response"].startswith("> **Nota de desambiguación territorial:**"))
+        self.assertIn("2 horas", synth_b1["final_response"])
+
+        # Subcaso B.2: topónimo ambiguo sin coincidencia en la provincia activa -> no hereda slot previo
+        aviso_incompat = (
+            "Existen varias localidades homónimas en distintas provincias de España. "
+            "¿A qué provincia concreta te refieres?"
+        )
+        analysis_incompat = QueryAnalysisSchema(
+            intent="HOSPITALITY_CORE",
+            motivo_clasificacion="Topónimo homónimo sin encaje en la provincia activa.",
+            provincias_detectadas_en_turno_actual=[],
+            cambio_de_puesto_en_turno_actual=False,
+            requiere_consulta_normativa_bbdd=True,
+            requiere_convenio_provincial=True,
+            requiere_puesto_o_categoria=False,
+            aviso_ambiguedad_geografica=aviso_incompat,
+            consulta_autocontenida_resuelta="Descanso mínimo en localidad homónima sin provincia.",
+            query_busqueda_hibrida="jornada partida descanso",
+        )
+        state_b2: LegalGraphState = {
+            "session_id": "ses-test-ambig-b2",
+            "query": "¿Y en esa otra localidad?",
+            "session_slots": SessionContextSlots(active_territorio="madrid").model_dump(),
+            "conversation_history": [],
+        }
+        with patch("src.graph.nodes._call_structured_llm", return_value=(analysis_incompat, "mock_model")):
+            route_b2 = self.nodes.analyze_and_route_node(state_b2)
+        self.assertEqual(route_b2["route_decision"], "ask_clarification")
+        self.assertIsNone(route_b2["territorio_normalizado"])
+        clarif_b2 = self.nodes.ask_clarification_node({**state_b2, **route_b2})
+        self.assertIn("Desambiguación Territorial Requerida", clarif_b2["final_response"])
+        self.assertIn("distintas provincias", clarif_b2["final_response"])
+
+    def test_pricing_markdoc_parser_date_tiers_and_turn_cost_calculation(self) -> None:
+        """Verifica el parseo Markdoc oficial con cambios por fecha y cálculo real + Tier Lite + Tier Flash."""
+        from datetime import date
+        from src.app.pricing import PricingCatalog, compute_turn_cost, parse_official_gemini_pricing_markdown
+        from src.graph.state import StepUsageRecord, TurnUsageSummary
+
+        sample_md = """
+## Gemini 3.1 Flash-Lite  {% id="gemini-3.1-flash-lite" %}
+*[`gemini-3.1-flash-lite`](/docs/models/gemini-3.1-flash-lite)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.25 (text / image / video)
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $1.50
+
+  ---
+
+  * Context caching price
+  * Not available
+  * $0.025 (text / image / video)
+  $1.00 / 1,000,000 tokens per hour (storage price)
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 3.8 Flash  {% id="gemini-3.8-flash" %}
+*[`gemini-3.8-flash`](/docs/models/gemini-3.8-flash)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.75 through December 31, 2026.
+  $1.50 starting January 1, 2027.
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $3.75 through December 31, 2026.
+  $7.50 starting January 1, 2027.
+
+  ---
+
+  * Context caching price
+  * Free of charge
+  * $0.075 through December 31, 2026.
+  $0.15 starting January 1, 2027.
+  $0.50 / 1,000,000 tokens per hour (storage price) through December 31, 2026.
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 3.5 Flash-Lite  {% id="gemini-3.5-flash-lite" %}
+*[`gemini-3.5-flash-lite`](/docs/models/gemini-3.5-flash-lite)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.30
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $2.50
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini Embedding  {% id="gemini-embedding" %}
+*[`gemini-embedding-001`](/docs/models/gemini-embedding-001)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.15
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+"""
+        rates_2026 = parse_official_gemini_pricing_markdown(sample_md, as_of=date(2026, 11, 27))
+        rates_2027 = parse_official_gemini_pricing_markdown(sample_md, as_of=date(2027, 2, 1))
+        self.assertAlmostEqual(rates_2026["gemini-3.8-flash"].input_per_1m, 0.75)
+        self.assertAlmostEqual(rates_2026["gemini-3.8-flash"].output_per_1m, 3.75)
+        self.assertAlmostEqual(rates_2027["gemini-3.8-flash"].input_per_1m, 1.50)
+        self.assertAlmostEqual(rates_2027["gemini-3.8-flash"].output_per_1m, 7.50)
+        self.assertAlmostEqual(rates_2026["gemini-3.5-flash-lite"].cached_input_per_1m, 0.03)
+        self.assertAlmostEqual(rates_2026["gemini-embedding-001"].input_per_1m, 0.15)
+
+        catalog = PricingCatalog(
+            checked_at="2026-11-27T18:00:00+00:00",
+            as_of_date="2026-11-27",
+            source="live_official",
+            usd_to_eur=0.92,
+            cohere_usd_per_1k_units=2.0,
+            models=rates_2026,
+        )
+        usage = TurnUsageSummary(
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            thoughts_tokens=50_000,
+            cached_tokens=200_000,
+            total_tokens=1_150_000,
+            embedding_calls=1,
+            embedding_chars=400,
+            cohere_calls=1,
+            cohere_search_units=1,
+            steps=[
+                StepUsageRecord(
+                    step="analyze_and_route",
+                    provider="gemini_llm",
+                    model="gemini-3.1-flash-lite",
+                    input_tokens=200_000,
+                    cached_tokens=200_000,
+                    output_tokens=50_000,
+                    api_calls=1,
+                ),
+                StepUsageRecord(
+                    step="embed_state_layers",
+                    provider="gemini_embedding",
+                    model="gemini-embedding-001",
+                    api_calls=1,
+                    cache_hit=False,
+                    chars=400,
+                ),
+                StepUsageRecord(
+                    step="embed_territory",
+                    provider="gemini_embedding",
+                    model="gemini-embedding-001",
+                    api_calls=0,
+                    cache_hit=True,
+                    chars=400,
+                ),
+                StepUsageRecord(
+                    step="synthesize_response",
+                    provider="gemini_llm",
+                    model="gemini-3.5-flash-lite",
+                    input_tokens=800_000,
+                    output_tokens=50_000,
+                    thoughts_tokens=50_000,
+                    api_calls=1,
+                ),
+            ],
+        )
+        cost = compute_turn_cost(usage, catalog)
+        # Router: 200k cached * 0.025/1M + 50k out * 1.50/1M = 0.005 + 0.075 = 0.080
+        # Synth Lite: 800k in * 0.30/1M + (50k+50k) out * 2.50/1M = 0.240 + 0.250 = 0.490
+        # Emb: ceil(400/4)=100 tok * 0.15/1M = 0.000015 -> Cohere: 1 * 0.002 = 0.002
+        self.assertAlmostEqual(cost.coste_gemini_real_usd, 0.57, places=5)
+        self.assertAlmostEqual(cost.coste_gemini_tier_lite_usd, 0.57, places=5)
+        # Synth Flash: 800k * 0.75/1M + 100k * 3.75/1M = 0.600 + 0.375 = 0.975 -> + 0.080 = 1.055
+        self.assertAlmostEqual(cost.coste_gemini_tier_flash_usd, 1.055, places=5)
+        self.assertEqual(cost.embedding_tokens_est, 100)
+        self.assertAlmostEqual(cost.coste_cohere_usd, 0.002, places=6)
+        self.assertAlmostEqual(cost.coste_total_tier_lite_usd, 0.572015, places=6)
+        self.assertAlmostEqual(cost.coste_total_tier_flash_usd, 1.057015, places=6)
+
+    def test_cost_analytics_csv_upsert_preserves_historical_purged_sessions(self) -> None:
+        """Verifica exportación idempotente sin PII a historico_sesiones_costes y historico_turnos_costes."""
+        import csv
+        import tempfile
+        from pathlib import Path
+        from src.app.audit_runner import export_cost_analytics_csvs
+        from src.app.pricing import load_pricing_catalog
+        from src.graph.memory import SessionMemoryStore
+        from src.graph.state import AuditReport, StepUsageRecord, TurnUsageSummary
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = tmp / "sessions.db"
+            sess_csv = tmp / "historico_sesiones_costes.csv"
+            turn_csv = tmp / "historico_turnos_costes.csv"
+
+            # Sembrar una fila histórica de sesión ya purgada hace meses
+            sess_csv.write_text(
+                "session_id,fecha_inicio,total_turnos,coste_total_tier_lite_usd\n"
+                "ses-purgada,2026-01-10,2,0.015000\n",
+                encoding="utf-8-sig",
+            )
+
+            mem = SessionMemoryStore(db_path=db_path)
+            mem.save_turn_and_update_slots(
+                session_id="ses-activa01",
+                state={
+                    "session_id": "ses-activa01",
+                    "query": "Consulta secreta con DNI 12345678A",
+                    "effective_query": "Consulta efectiva",
+                    "intent": "HOSPITALITY_CORE",
+                    "route_decision": "parallel_retrieve",
+                    "territorio_normalizado": "madrid",
+                    "oficio_coloquial_detectado": "camarero",
+                    "final_response": "Respuesta completa confidencial.",
+                    "audit_report": AuditReport(passed=True, has_explicit_citations=True).model_dump(),
+                    "node_timings_ms": {"analyze_and_route": 1200.0, "synthesize_response": 2800.0},
+                    "models_used": {
+                        "analyze_and_route": "gemini-3.1-flash-lite",
+                        "synthesize_response": "gemini-3.5-flash-lite",
+                    },
+                    "usage_events": [
+                        StepUsageRecord(
+                            step="analyze_and_route",
+                            provider="gemini_llm",
+                            model="gemini-3.1-flash-lite",
+                            input_tokens=3000,
+                            output_tokens=300,
+                            api_calls=1,
+                        ).model_dump(),
+                        StepUsageRecord(
+                            step="synthesize_response",
+                            provider="gemini_llm",
+                            model="gemini-3.5-flash-lite",
+                            input_tokens=7000,
+                            output_tokens=600,
+                            api_calls=1,
+                        ).model_dump(),
+                    ],
+                },
+            )
+
+            catalog = load_pricing_catalog(fetch_live=False, snapshot_path=tmp / "no_snap.json")
+            res1 = export_cost_analytics_csvs(
+                db_path=db_path,
+                pricing_catalog=catalog,
+                sessions_csv_path=sess_csv,
+                turns_csv_path=turn_csv,
+            )
+            res2 = export_cost_analytics_csvs(
+                db_path=db_path,
+                pricing_catalog=catalog,
+                sessions_csv_path=sess_csv,
+                turns_csv_path=turn_csv,
+            )
+
+            self.assertEqual(res1["sessions_total_csv"], 2)
+            self.assertEqual(res2["sessions_total_csv"], 2)
+            self.assertEqual(res2["turns_total_csv"], 1)
+
+            raw_sess_text = sess_csv.read_text(encoding="utf-8-sig")
+            raw_turn_text = turn_csv.read_text(encoding="utf-8-sig")
+            self.assertNotIn("12345678A", raw_sess_text)
+            self.assertNotIn("12345678A", raw_turn_text)
+            self.assertNotIn("Respuesta completa", raw_turn_text)
+
+            with sess_csv.open("r", encoding="utf-8-sig", newline="") as f:
+                rows = {r["session_id"]: r for r in csv.DictReader(f)}
+            self.assertIn("ses-purgada", rows)
+            self.assertIn("ses-activa01", rows)
+            self.assertEqual(rows["ses-activa01"]["territorio"], "madrid")
+            self.assertGreater(float(rows["ses-activa01"]["coste_total_tier_lite_usd"]), 0.0)
+            self.assertGreater(
+                float(rows["ses-activa01"]["coste_total_tier_flash_usd"]),
+                float(rows["ses-activa01"]["coste_total_tier_lite_usd"]),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

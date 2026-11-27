@@ -666,6 +666,8 @@ class AiHorecaGraphNodes:
                 "requiere_convenio_provincial": False,
                 "requiere_puesto_o_categoria": False,
                 "es_comparativa_global": False,
+                "respuesta_conversacional_directa": None,
+                "aviso_ambiguedad_geografica": None,
                 "datos_completos": False,
                 "route_decision": "ask_clarification",
                 "oficio_coloquial_detectado": slots.active_oficio_coloquial,
@@ -703,10 +705,15 @@ class AiHorecaGraphNodes:
             f"NO incluida en los territorios indexados actuales ({indexed_list_str}) y marca `requiere_consulta_normativa_bbdd = False`.\n"
             "   - Clasifica como 'HOSPITALITY_CORE' si el mensaje se enmarca en una conversación laboral de hostelería/turismo/catering/reparto de comida:\n"
             "     * Marca `requiere_consulta_normativa_bbdd = True` ÚNICAMENTE cuando exista una consulta o duda jurídico-laboral concreta que deba verificarse en los convenios/ALEH/Estatuto (o cuando el mensaje actual aporte un dato para desbloquear `pending_clarification_query`).\n"
-            "     * Marca `requiere_consulta_normativa_bbdd = False` cuando el mensaje sea puramente conversacional o introductorio y NO contenga todavía ninguna pregunta jurídica concreta ni desbloquee una pregunta pendiente (ej. saludos iniciales, presentaciones personales sin pregunta, agradecimientos, despedidas o anuncios genéricos sin cuestión laboral formulada).\n\n"
+            "     * Marca `requiere_consulta_normativa_bbdd = False` cuando el mensaje sea puramente conversacional o introductorio y NO contenga todavía ninguna pregunta jurídica concreta ni desbloquee una pregunta pendiente:\n"
+            "       - En saludos iniciales, presentaciones personales sin pregunta, agradecimientos o despedidas puros: deja `respuesta_conversacional_directa = null`.\n"
+            "       - En preguntas meta-conversacionales, objeciones o aclaraciones sobre por qué el asistente asumió un dato o cómo interpretó un turno previo: rellena `respuesta_conversacional_directa` respondiendo de forma directa, honesta y breve al diálogo (explicando la inferencia contextual e invitando a concretar el dato correcto, PROHIBIDO citar cifras salariales o artículos nuevos).\n\n"
             "3. GATEKEEPER CONTEXTUAL GENERALISTA (PROVINCIA Y PUESTO/CATEGORÍA):\n"
             "   - `provincias_detectadas_en_turno_actual`: Identifica por contexto semántico TODAS las **provincias españolas donde se ubican físicamente el/los centro(s) de trabajo** mencionados en el `MENSAJE ACTUAL`, como lista en minúsculas y sin tildes (ej. `['madrid']`, o `['madrid', 'leon']` en comparativas).\n"
             "     * Si el usuario menciona uno o varios municipios, localidades o comarcas (incluso con errores tipográficos), resuelve y devuelve TODAS sus provincias administrativas oficiales dentro de la lista.\n"
+            "     * **REGLA DE TOPÓNIMOS HOMÓNIMOS O INCOMPLETOS (DESAMBIGUACIÓN CONTEXTUAL):** Si el usuario menciona un nombre de localidad incompleto o compartido por varias provincias españolas sin especificar la provincia ni el nombre compuesto:\n"
+            "       - Si en `SLOTS ACTIVOS DE LA SESIÓN` existe ya un territorio compatible con una localidad homónima de esa provincia, mantén esa provincia en `provincias_detectadas_en_turno_actual` y rellena obligatoriamente `aviso_ambiguedad_geografica` explicando brevemente qué localidad/provincia se asume por contexto y mencionando 2–3 alternativas de otras provincias para que el usuario pueda corregir si se refería a otra.\n"
+            "       - Si NO existe territorio activo en la sesión (o la provincia activa no tiene ninguna localidad compatible), devuelve `provincias_detectadas_en_turno_actual = []` y rellena `aviso_ambiguedad_geografica` pidiendo aclarar a qué localidad/provincia concreta se refiere (sin cifras ni porcentajes).\n"
             "     * **REGLA DE DESAMBIGUACIÓN ENTIDAD vs. JURISDICCIÓN**: Distingue siempre entre la ubicación geográfica real del centro de trabajo y los nombres comerciales de negocios, marcas, cadenas o calles que contengan topónimos. Si existe ambigüedad sobre la ubicación geográfica real o si no se menciona ubicación en este turno, devuelve `[]`.\n"
             "   - `requiere_convenio_provincial`: Marca `True` SIEMPRE que la consulta trate sobre salarios, tablas salariales, sueldos, pluses, "
             "nocturnidad, horas extra, vacaciones, jornada anual, descansos, licencias/permisos retribuidos, bajas médicas (complemento IT), "
@@ -766,12 +773,15 @@ class AiHorecaGraphNodes:
                         out_provs.append(canon)
             return out_provs
 
+        aviso_geo = (getattr(analysis, "aviso_ambiguedad_geografica", None) or "").strip() or None
         current_turn_provs = _parse_prov_items(list(analysis.provincias_detectadas_en_turno_actual or []))
-        candidate_provs = (
-            current_turn_provs
-            if current_turn_provs
-            else _parse_prov_items([slots.active_territorio] if slots.active_territorio else [])
-        )
+        if current_turn_provs:
+            candidate_provs = current_turn_provs
+        elif aviso_geo:
+            # Topónimo homónimo sin coincidencia en el territorio activo: nunca heredar silenciosamente
+            candidate_provs = []
+        else:
+            candidate_provs = _parse_prov_items([slots.active_territorio] if slots.active_territorio else [])
         raw_prov: Optional[str] = (
             None
             if not candidate_provs
@@ -850,6 +860,12 @@ class AiHorecaGraphNodes:
         models_used = dict(state.get("models_used") or {})
         models_used["analyze_and_route"] = model_used
 
+        direct_conv_reply = (
+            (getattr(analysis, "respuesta_conversacional_directa", None) or "").strip() or None
+            if (intent == "HOSPITALITY_CORE" and not requiere_bbdd)
+            else None
+        )
+
         return {
             "effective_query": effective_query,
             "intent": intent,
@@ -861,6 +877,8 @@ class AiHorecaGraphNodes:
             "requiere_convenio_provincial": analysis.requiere_convenio_provincial,
             "requiere_puesto_o_categoria": analysis.requiere_puesto_o_categoria,
             "es_comparativa_global": is_global_comp,
+            "respuesta_conversacional_directa": direct_conv_reply,
+            "aviso_ambiguedad_geografica": aviso_geo,
             "datos_completos": datos_completos,
             "route_decision": route_decision,
             "oficio_coloquial_detectado": oficio_resuelto,
@@ -949,30 +967,36 @@ class AiHorecaGraphNodes:
             or _GLOBAL_COMPARISON_RE.search(state.get("query", ""))
             or _GLOBAL_COMPARISON_RE.search(state.get("effective_query", ""))
         )
+        direct_conv_reply = (state.get("respuesta_conversacional_directa") or "").strip()
+        aviso_geo = (state.get("aviso_ambiguedad_geografica") or "").strip()
 
         if not requiere_bbdd:
-            profile_parts: list[str] = []
-            if terr:
-                profile_parts.append(f"territorio **{_pretty_territory_label(terr)}**")
-            if oficio or cat_aleh:
-                profile_parts.append(f"puesto **{oficio or cat_aleh}**")
-            profile_note = (
-                f"\n\nHe tomado nota de tu contexto activo ({', '.join(profile_parts)})."
-                if profile_parts
-                else ""
-            )
-            msg = (
-                "### ¡Hola! Soy AiHoreca — Asistente Jurídico-Laboral de Hostelería\n\n"
-                "Estoy especializado en resolver dudas laborales del **Sector de Hostelería y Turismo en España** "
-                "cruzando el **Estatuto de los Trabajadores**, el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** "
-                "y los **Convenios Colectivos Provinciales y Autonómicos**."
-                f"{profile_note}"
-                f"{aleh_note}\n\n"
-                "**¿Qué consulta laboral necesitas resolver?** *(Para cálculos de salario, jornada, vacaciones o permisos, "
-                "indícame tu **provincia/localidad** y tu **puesto de trabajo**):*\n"
-                f"{territories_block}"
-            )
-            warn_msg = "Cortocircuito conversacional activado (sin pregunta normativa concreta: 0 llamadas a BBDD)."
+            if direct_conv_reply:
+                msg = direct_conv_reply
+                warn_msg = "Respuesta conversacional directa ante aclaración u objeción del usuario (0 llamadas a BBDD)."
+            else:
+                profile_parts: list[str] = []
+                if terr:
+                    profile_parts.append(f"territorio **{_pretty_territory_label(terr)}**")
+                if oficio or cat_aleh:
+                    profile_parts.append(f"puesto **{oficio or cat_aleh}**")
+                profile_note = (
+                    f"\n\nHe tomado nota de tu contexto activo ({', '.join(profile_parts)})."
+                    if profile_parts
+                    else ""
+                )
+                msg = (
+                    "### ¡Hola! Soy AiHoreca — Asistente Jurídico-Laboral de Hostelería\n\n"
+                    "Estoy especializado en resolver dudas laborales del **Sector de Hostelería y Turismo en España** "
+                    "cruzando el **Estatuto de los Trabajadores**, el **VI Acuerdo Laboral Estatal de Hostelería (ALEH VI)** "
+                    "y los **Convenios Colectivos Provinciales y Autonómicos**."
+                    f"{profile_note}"
+                    f"{aleh_note}\n\n"
+                    "**¿Qué consulta laboral necesitas resolver?** *(Para cálculos de salario, jornada, vacaciones o permisos, "
+                    "indícame tu **provincia/localidad** y tu **puesto de trabajo**):*\n"
+                    f"{territories_block}"
+                )
+                warn_msg = "Cortocircuito conversacional activado (sin pregunta normativa concreta: 0 llamadas a BBDD)."
         elif is_global_comp:
             msg = (
                 "### Comparativa Interprovincial y Suelo Normativo Estatal (Hostelería)\n\n"
@@ -993,11 +1017,13 @@ class AiHorecaGraphNodes:
             )
             warn_msg = "Gatekeeper contextual ofreció el suelo estatutario estatal (ET) y solicitó seleccionar las provincias deseadas para la comparativa interprovincial."
         elif missing_prov and missing_role:
+            geo_note = f"\n\n> **Desambiguación geográfica:** {aviso_geo}" if aviso_geo else ""
             msg = (
                 "### Información Requerida para el Cálculo (Provincia y Puesto de Trabajo)\n\n"
                 "Para darte una respuesta jurídicamente exacta y sin asumir datos que alterarían las cifras, **necesito conocer dos datos básicos**:\n\n"
                 "1. **¿En qué provincia o localidad está ubicado el centro de trabajo?** (Cada provincia tiene su propio Convenio Colectivo de Hostelería con tablas salariales, número de pagas extras y jornada anual propios).\n"
-                "2. **¿Qué puesto u oficio desempeña dentro del establecimiento?** (Por ejemplo: *camarero/a, ayudante de camarero/a, cocinero/a, ayudante de cocina/pinche, friegaplatos/limpieza, recepcionista...*, ya que el salario base varía según el Grupo Profesional y Nivel salarial).\n\n"
+                "2. **¿Qué puesto u oficio desempeña dentro del establecimiento?** (Por ejemplo: *camarero/a, ayudante de camarero/a, cocinero/a, ayudante de cocina/pinche, friegaplatos/limpieza, recepcionista...*, ya que el salario base varía según el Grupo Profesional y Nivel salarial)."
+                f"{geo_note}\n\n"
                 "**Territorios disponibles actualmente en el índice:**\n"
                 f"{territories_block}"
             )
@@ -1017,6 +1043,15 @@ class AiHorecaGraphNodes:
                 f"{terr_pretty}).*"
             )
             warn_msg = f"Gatekeeper contextual detuvo la consulta en {terr_pretty} por falta de puesto/categoría profesional."
+        elif aviso_geo:
+            msg = (
+                "### Desambiguación Territorial Requerida\n\n"
+                f"{aviso_geo}"
+                f"{aleh_note}\n\n"
+                "**¿De cuál de los territorios disponibles se trata?**\n"
+                f"{territories_block}"
+            )
+            warn_msg = "Gatekeeper contextual solicitó desambiguar topónimo homónimo sin heredar territorio previo."
         else:
             msg = (
                 "### Información Territorial Requerida (Gatekeeper Contextual)\n\n"
@@ -1551,13 +1586,21 @@ class AiHorecaGraphNodes:
                 "INSTRUCCIÓN DE REPARACIÓN: Elimina o corrige inmediatamente toda cifra no respaldada literalmente por los fragmentos recuperados o por un cálculo explícito en `calculos_derivados` cuyos operandos figuren en dichos fragmentos, y asegura citas explícitas a artículo/anexo."
             )
 
+        aviso_geo = (state.get("aviso_ambiguedad_geografica") or "").strip()
+        aviso_geo_block = (
+            f"\nAVISO DE DESAMBIGUACIÓN TERRITORIAL (OBLIGATORIO INCLUIR AL INICIO DE LA RESPUESTA): {aviso_geo}\n"
+            if aviso_geo
+            else ""
+        )
+
         prompt = (
             f"FECHA ACTUAL DEL SISTEMA: {today.strftime('%d/%m/%Y')} (AÑO EN CURSO: {current_year})\n"
             f"HISTORIAL RECIENTE DE LA CONVERSACIÓN (TURNOS PREVIOS DE ESTA SESIÓN): {json.dumps(history, ensure_ascii=False)}\n"
             f"MENSAJE ACTUAL DEL USUARIO: {raw_query}\n"
             f"CONSULTA AUTOCONTENIDA RESUELTA (OBJETIVO DE ESTE TURNO): {effective_query}\n"
             f"ÁMBITO TERRITORIAL RECUPERADO: {provincia or 'Estatal'}\n"
-            f"TRADUCCIÓN TÉCNICA VI ALEH: Categoría={cat_aleh or 'N/A'} | Área Funcional={area_aleh or 'N/A'}\n\n"
+            f"TRADUCCIÓN TÉCNICA VI ALEH: Categoría={cat_aleh or 'N/A'} | Área Funcional={area_aleh or 'N/A'}\n"
+            f"{aviso_geo_block}\n"
             f"FRAGMENTOS NORMATIVOS RECUPERADOS DE QDRANT + COHERE RERANK:\n"
             f"{full_context_str}"
             f"{retry_correction_block}"
@@ -1575,6 +1618,10 @@ class AiHorecaGraphNodes:
             step_name=step_name,
         )
 
+        final_md = synthesis.respuesta_final_markdown or ""
+        if aviso_geo and "desambiguación territorial" not in final_md[:220].lower():
+            final_md = f"> **Nota de desambiguación territorial:** {aviso_geo}\n\n{final_md}"
+
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         timings = dict(state.get("node_timings_ms") or {})
         timings["synthesize_response"] = round(float(timings.get("synthesize_response", 0.0)) + elapsed_ms, 1)
@@ -1586,7 +1633,7 @@ class AiHorecaGraphNodes:
             "citas_normativas": [c.model_dump() for c in synthesis.citas_normativas],
             "cifras_y_datos_criticos": synthesis.cifras_y_datos_criticos,
             "calculos_derivados": [c.model_dump() for c in synthesis.calculos_derivados],
-            "final_response": synthesis.respuesta_final_markdown,
+            "final_response": final_md,
             "audit_needs_retry": False,
             "node_timings_ms": timings,
             "models_used": models_used,
