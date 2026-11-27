@@ -4072,5 +4072,202 @@ class TestNavarraIngestionAndRetrieval(unittest.TestCase):
         self.assertIn(anexo1_p2.chunk_id, ids_54)
 
 
+class TestCordobaIngestionAndRetrieval(unittest.TestCase):
+    """Pruebas deterministas en CPU para el convenio de Hostelería de Córdoba (BOP 192/2024)."""
+
+    @staticmethod
+    def _to_doc(chunk: LegalChunk, score: float = 0.85) -> RetrievedDocument:
+        return RetrievedDocument(
+            chunk_id=chunk.chunk_id,
+            source_file=chunk.source_file,
+            norma_titulo=chunk.norma_titulo,
+            capa_normativa=chunk.capa_normativa,
+            territorio=chunk.territorio,
+            titulo_o_capitulo=chunk.titulo_o_capitulo,
+            articulo=chunk.articulo,
+            tipo_contenido=chunk.tipo_contenido,
+            text=chunk.text,
+            score=score,
+            rerank_score=score,
+        )
+
+    def test_cordoba_aliases_and_strict_validation_are_clean(self) -> None:
+        for raw_loc in (
+            "Córdoba",
+            "Lucena",
+            "Puente Genil",
+            "Montilla",
+            "Priego de Córdoba",
+            "Cabra",
+            "Baena",
+            "Palma del Río",
+            "Pozoblanco",
+            "Peñarroya-Pueblonuevo",
+            "Fernán Núñez",
+            "Villafranca de Córdoba",
+        ):
+            self.assertEqual(_canonicalize_territory(raw_loc), "cordoba", msg=raw_loc)
+            self.assertEqual(_canonicalize_llm_province(raw_loc), "cordoba", msg=raw_loc)
+
+        # Topónimos compartidos nunca deben forzarse a Córdoba
+        self.assertNotEqual(_canonicalize_territory("Palma"), "cordoba")
+        self.assertNotEqual(_canonicalize_territory("Villafranca"), "cordoba")
+        self.assertNotEqual(_canonicalize_territory("Villanueva"), "cordoba")
+
+        cor_md = PROCESSED_DATA_DIR / "convenio_cordoba.md"
+        if not cor_md.exists():
+            self.skipTest("Convenio de Córdoba no disponible en data/processed/")
+
+        report = validate_document(cor_md, strict=True)
+        self.assertTrue(report.passed, msg=f"convenio_cordoba.md falló validación estricta: {report.issues}")
+        self.assertEqual(report.error_count, 0)
+        self.assertEqual(report.warning_count, 0)
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cor_md, boundaries_cache=cache)
+        self.assertEqual(len(chunks), 121)
+        self.assertTrue(all(c.territorio == "cordoba" for c in chunks))
+        self.assertFalse(
+            any("Disposición Adicional Segunda, en el que" in c.articulo for c in chunks)
+        )
+
+        raw_cor = cor_md.read_text(encoding="utf-8")
+        for noise in ("E92AED5E67DC6C37AAA8", "04-10-2024 07:58:38", "Powered by TCPDF", "Nº 192 p."):
+            self.assertNotIn(noise, raw_cor)
+        for val in ("1.270,34 €", "1.259,65 €", "39,64 €", "96,65 €", "18,39 €"):
+            self.assertIn(val, raw_cor)
+
+    def test_cordoba_retrieval_selection_gd55_and_gd56(self) -> None:
+        cor_md = PROCESSED_DATA_DIR / "convenio_cordoba.md"
+        if not cor_md.exists():
+            self.skipTest("Convenio de Córdoba no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(cor_md, boundaries_cache=cache)
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_cor_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_cor_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        tbl_2024_coc = next(
+            c for c in chunks if c.tipo_contenido == "tabla_salarial" and "2024" in c.articulo and "Cocinero/a" in c.text
+        )
+        tbl_2025_coc = next(
+            c for c in chunks if c.tipo_contenido == "tabla_salarial" and "2025" in c.articulo and "Cocinero/a" in c.text
+        )
+        tbl_2026_coc = next(
+            c for c in chunks if c.tipo_contenido == "tabla_salarial" and "2026" in c.articulo and "Cocinero/a" in c.text
+        )
+        tbl_2026_cam = next(
+            c for c in chunks if c.tipo_contenido == "tabla_salarial" and "2026" in c.articulo and "Camarero/a Bar" in c.text
+        )
+        tbl_2025_aux = next(
+            c for c in chunks if c.articulo.startswith("Art. 44 MANUTENCIÓN") and "2025" in c.titulo_o_capitulo
+        )
+        tbl_2026_aux = next(
+            c for c in chunks if c.articulo.startswith("Art. 44 MANUTENCIÓN") and "2026" in c.titulo_o_capitulo
+        )
+        art22 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 22."))
+        art24 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 24."))
+        art27 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 27."))
+        art43 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 43."))
+        art44 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 44."))
+        art45 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 45."))
+        art49 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 49."))
+        art52 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 52."))
+        art56 = next(c for c in chunks if c.articulo.startswith("ARTÍCULO 56."))
+
+        ref = date(2026, 11, 27)
+        euro_pair = [self._to_doc(tbl_2024_coc, 0.99), self._to_doc(tbl_2025_coc, 0.95), self._to_doc(tbl_2026_coc, 0.80)]
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(euro_pair, [], reference_date=ref),
+            {tbl_2026_coc.chunk_id},
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(euro_pair, [2026], reference_date=ref),
+            {tbl_2026_coc.chunk_id},
+        )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        pool_55 = [
+            self._to_doc(tbl_2024_coc, 0.99),
+            self._to_doc(tbl_2025_aux, 0.96),
+            self._to_doc(tbl_2026_coc, 0.90),
+            self._to_doc(art43, 0.85),
+            self._to_doc(art45, 0.82),
+            self._to_doc(art56, 0.80),
+            self._to_doc(art44, 0.78),
+            self._to_doc(tbl_2026_aux, 0.55),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_55 = store.rerank_and_select_by_territory(
+            candidates=pool_55,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Córdoba en 2026. ¿Cuál es mi salario base mensual en 2026, cuántas pagas extraordinarias tengo al año y cuánto corresponde por plus de transporte, manutención y ropa de trabajo?",
+            territorios=["cordoba"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
+        )
+        ids_55 = {d.chunk_id for d in sel_55}
+        self.assertIn(tbl_2026_coc.chunk_id, ids_55)
+        self.assertNotIn(tbl_2024_coc.chunk_id, ids_55)
+        self.assertNotIn(tbl_2025_aux.chunk_id, ids_55)
+        self.assertIn(tbl_2026_aux.chunk_id, ids_55)
+        self.assertIn(art43.chunk_id, ids_55)
+
+        pool_56 = [
+            self._to_doc(tbl_2025_coc, 0.99),
+            self._to_doc(tbl_2026_cam, 0.92),
+            self._to_doc(art22, 0.88),
+            self._to_doc(art24, 0.86),
+            self._to_doc(art27, 0.84),
+            self._to_doc(art49, 0.82),
+            self._to_doc(art52, 0.80),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_56 = store.rerank_and_select_by_territory(
+            candidates=pool_56,
+            query="Soy camarero de bar en un restaurante de 2 tenedores en Lucena (Córdoba) en 2026. ¿Cuál es mi salario base mensual, cuál es la jornada semanal máxima y descanso semanal mínimo, cuántos días de vacaciones tengo y cómo se retribuyen la nocturnidad y las horas extraordinarias?",
+            territorios=["cordoba"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, sala, bar y similares, Grupo Profesional II)",
+        )
+        ids_56 = {d.chunk_id for d in sel_56}
+        self.assertIn(tbl_2026_cam.chunk_id, ids_56)
+        self.assertNotIn(tbl_2025_coc.chunk_id, ids_56)
+        for art in (art22, art24, art27, art49, art52):
+            self.assertIn(art.chunk_id, ids_56, msg=art.articulo)
+
+
 if __name__ == "__main__":
     unittest.main()

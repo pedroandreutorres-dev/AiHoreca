@@ -101,7 +101,7 @@ _ARTICLE_START_RE = re.compile(
 )
 
 _DISPOSITION_START_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**(Disposici[óo]n\s+(?:adicional|transitoria|derogatoria|final)\s+[^\n]+?)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**(Disposici[óo]n\s+(?:adicional|transitoria|derogatoria|final)\s+(?![^\n]{0,40},\s+en\s+(?:el\s+que|la\s+que|los\s+que)\b)[^\n]+?)\**$"
 )
 
 _TOC_HEADER_RE = re.compile(
@@ -193,6 +193,44 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "ramales de la victoria": "cantabria",
     "castello": "castellon",
     "ciudad real": "ciudad_real",
+    "lucena": "cordoba",
+    "puente genil": "cordoba",
+    "montilla": "cordoba",
+    "priego de cordoba": "cordoba",
+    "cabra": "cordoba",
+    "baena": "cordoba",
+    "palma del rio": "cordoba",
+    "pozoblanco": "cordoba",
+    "aguilar de la frontera": "cordoba",
+    "penarroya-pueblonuevo": "cordoba",
+    "penarroya pueblonuevo": "cordoba",
+    "rute": "cordoba",
+    "fernan nunez": "cordoba",
+    "fernan-nunez": "cordoba",
+    "montoro": "cordoba",
+    "villanueva de cordoba": "cordoba",
+    "almodovar del rio": "cordoba",
+    "la carlota": "cordoba",
+    "bujalance": "cordoba",
+    "castro del rio": "cordoba",
+    "posadas": "cordoba",
+    "hornachuelos": "cordoba",
+    "hinojosa del duque": "cordoba",
+    "nueva carteya": "cordoba",
+    "la rambla": "cordoba",
+    "espejo": "cordoba",
+    "zuheros": "cordoba",
+    "iznajar": "cordoba",
+    "fuente palmera": "cordoba",
+    "el carpio": "cordoba",
+    "villa del rio": "cordoba",
+    "belmez": "cordoba",
+    "espiel": "cordoba",
+    "santaella": "cordoba",
+    "montemayor": "cordoba",
+    "benameji": "cordoba",
+    "adamuz": "cordoba",
+    "villafranca de cordoba": "cordoba",
     "gerona": "girona",
     "gipuzkoa": "guipuzcoa",
     "donostia": "guipuzcoa",

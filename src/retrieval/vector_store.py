@@ -1470,7 +1470,7 @@ class AiHorecaVectorStore:
         ),
         (
             "jornada",
-            r"(?i)(?:jornada|xornada)\s+(?:de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|horas?\s+anua(?:les|is)",
+            r"(?i)(?:jornada|xornada)\s+(?:ordinaria|de\s+traba(?:jo|llo)|laboral|anual|semanal|m[áa]xima)|horas?\s+(?:anua(?:les|is)|semanales)",
             "jornada de trabajo jornada laboral xornada laboral xornada de traballo jornada máxima anual horas anuales 40 horas semanales",
         ),
         (
@@ -1507,6 +1507,11 @@ class AiHorecaVectorStore:
             "domingos_festivos",
             r"(?i)domingos?\s+y\s+festivos?|plus(?:es)?\s+(?:de\s+|salarial\s+de\s+)?(?:domingos?|festivos?)",
             "plus salarial de domingos plus salarial de festivos domingos y festivos",
+        ),
+        (
+            "ropa_trabajo",
+            r"(?i)ropa\s+de\s+trabajo|uniform(?:e|idad)",
+            "ropa de trabajo uniforme compensación vestuario",
         ),
     )
 
@@ -2156,8 +2161,8 @@ class AiHorecaVectorStore:
                         r"(?i)vacaci[óo]n(?:es|s)",
                     ),
                     (
-                        r"(?i)(?:jornada|xornada)\s+(?:ordinaria|de\s+traba(?:jo|llo)|laboral|anual|m[áa]xima)|horas?\s+anua(?:les|is)",
-                        r"(?i)^(?!.*(?:fraccionamiento|reducci[óo]n|adaptaci[óo]n|registro|parcial)).*\b(?:jornada|xornada)\b",
+                        r"(?i)(?:jornada|xornada)\s+(?:ordinaria|de\s+traba(?:jo|llo)|laboral|anual|semanal|m[áa]xima)|horas?\s+(?:anua(?:les|is)|semanales)",
+                        r"(?i)^(?!.*(?:fraccionamiento|reducci[óo]n|adaptaci[óo]n|registro|parcial|irregular)).*\b(?:jornada|xornada)\b",
                     ),
                     (
                         r"(?i)tiemp[oa]\s+parcial|tempo\s+parcial",
@@ -2178,6 +2183,10 @@ class AiHorecaVectorStore:
                     (
                         r"(?i)(?:plus|complemento)(?:\s+\w+){0,2}\s+formaci[óo]n",
                         r"(?i)formaci[óo]n",
+                    ),
+                    (
+                        r"(?i)ropa\s+de\s+trabajo|uniform(?:e|idad)",
+                        r"(?i)ropa\s+de\s+trabajo|uniform(?:e|idad)",
                     ),
                     (
                         r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
@@ -2248,15 +2257,16 @@ class AiHorecaVectorStore:
                         picked_doc = selected[-1]
                         if (
                             picked_doc.tipo_contenido == "articulo"
-                            and re.search(r"(?i)\banexo\b", picked_doc.text)
+                            and re.search(r"(?i)\banex[oa]s?\b", picked_doc.text)
                         ):
                             annex_cands = [
                                 (idx, d)
                                 for idx, d in enumerate(terr_cands)
                                 if d.chunk_id not in selected_ids
+                                and d.chunk_id not in stale_euro_ids
                                 and d.tipo_contenido == "anexo_o_disposicion"
                                 and not self._is_classification_level_table(d, include_seniority_tables)
-                                and re.search(art_pat, f"{d.titulo_o_capitulo} {d.articulo} {d.text[:500]}")
+                                and re.search(art_pat, f"{d.titulo_o_capitulo} {d.articulo} {d.text}")
                             ]
                             if annex_cands:
                                 annex_cands.sort(
@@ -2629,7 +2639,17 @@ class AiHorecaVectorStore:
 
             _pick_with_period_preference(
                 lambda d: d.tipo_contenido == "tabla_salarial"
-                and not self._is_auxiliary_concepts_table(d),
+                and not self._is_auxiliary_concepts_table(d)
+                and (
+                    _t_euro_tbl_count() == 0
+                    or not area_pattern
+                    or not any(
+                        _belongs_to_territory(s, terr_key)
+                        and self._doc_matches_area(s, area_pattern)
+                        for s in selected
+                    )
+                    or self._doc_matches_area(d, area_pattern)
+                ),
                 max(0, QUOTA_PROVINCIAL_TABLES - _t_tbl_count()),
             )
 

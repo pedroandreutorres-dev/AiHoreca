@@ -464,5 +464,20 @@
       2025
     ],
     "justificacion": "BON n.º 209 (20/10/2026), págs. 37234-37235 (págs. 50-51 del PDF), código anuncio F2612957, código REGCON 31003805011981: Resolución 159C/2026 de 28/09/2026 y Acta Veinticincoava de la Comisión Paritaria (11/02/2026) con las Tablas Salariales 2025 Definitivas de Hostelería de Navarra aplicables desde la nómina de enero de 2026 conforme al Art. 4.º del Convenio (Niveles I-V: salario base, plus convenio, plus manutención, antigüedad 6/9 años, premio vinculación 19/29 años, salario mensual/anual, nocturnidad, domingos y festivos, recepcionistas, idiomas, sustitución descanso semanal, compensación festivo y ropa de trabajo)."
+  },
+  "convenio_cordoba.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "single_column",
+    "territorio": "cordoba",
+    "start_page": 2,
+    "end_page": 63,
+    "start_marker": "CONVENIO COLECTIVO PARA EL SECTOR DE HOSTELERIA DE LA",
+    "expected_years": [
+      2024,
+      2025,
+      2026
+    ],
+    "justificacion": "BOP de Córdoba n.º 192 (04/10/2024), anuncio BOP-A-2024-3899, código REGCON 14000355011982: Convenio Colectivo para el Sector de Hostelería de la Provincia de Córdoba 2024-2026. Se omite la pág. 1 de resolución administrativa de registro y se incluye íntegramente el texto articulado (Arts. 1-69 y Disposición Adicional Única en págs. 2-45) junto con las Tablas Salariales 2024 (+3,3%, págs. 46-51), 2025 (+3,4%, págs. 52-57) y 2026 (+3,4%, págs. 58-63) por Área Funcional y categoría de establecimiento (5 estrellas/tenedores, 4/3 estrellas/tenedores y resto de establecimientos)."
   }
 }
