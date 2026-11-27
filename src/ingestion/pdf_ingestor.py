@@ -84,6 +84,7 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"boc\.cantabria\.es\b|"
     r"cve-20[12]\d-\d{3,6}\b|"
     r"bopz$|"
+    r"bon\s+\d+,\s*de\b|"
     r"n[úu]m\.?\s*\d+$|"
     r"\d{1,2}\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+\d{4}$"
     r").*$"
@@ -1443,6 +1444,10 @@ def _collapse_table_headers_and_body(
         and all(trimmed[0][1:])
         and all(trimmed[1][1:])
         and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
+        and not (
+            re.fullmatch(r"\d{1,2}", trimmed[1][-1].strip())
+            and any(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", c) for c in trimmed[1][:-1])
+        )
     ):
         hdr = _merge_header_rows(trimmed[0], trimmed[1])
         body = trimmed[2:]
@@ -1466,7 +1471,13 @@ def _collapse_table_headers_and_body(
         and all(trimmed[0][i] or trimmed[1][i] for i in range(len(trimmed[0])))
         and not _SPANISH_DECIMALS_RE.search(" ".join(trimmed[1]))
         and not re.fullmatch(r"[IVX]+|\d+", trimmed[1][0].strip())
-        and not (len(trimmed[0]) == 2 and re.fullmatch(r"\d{1,2}", trimmed[1][1].strip()))
+        and not (
+            re.fullmatch(r"\d{1,2}", trimmed[1][-1].strip())
+            and (
+                len(trimmed[0]) == 2
+                or any(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", c) for c in trimmed[1][:-1])
+            )
+        )
         and sum(1 for c in trimmed[1] if c) >= max(2, len(trimmed[0]) // 2)
     ):
         hdr = [f"{trimmed[0][i]} {trimmed[1][i]}".strip() for i in range(len(trimmed[0]))]

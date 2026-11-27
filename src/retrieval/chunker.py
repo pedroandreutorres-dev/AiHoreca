@@ -89,7 +89,7 @@ _STANDALONE_TABLE_SECTION_RE = re.compile(
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b)[^\n]*?)\**$"
+    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b|del?\s+presente\s+convenio\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b)[^\n]*?)\**$"
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
@@ -244,6 +244,44 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "region de murcia": "murcia",
     "nafarroa": "navarra",
     "comunidad foral de navarra": "navarra",
+    "pamplona": "navarra",
+    "iruna": "navarra",
+    "tudela": "navarra",
+    "baranain": "navarra",
+    "valle de egues": "navarra",
+    "egues": "navarra",
+    "burlada": "navarra",
+    "burlata": "navarra",
+    "estella": "navarra",
+    "estella-lizarra": "navarra",
+    "estella lizarra": "navarra",
+    "lizarra": "navarra",
+    "zizur mayor": "navarra",
+    "tafalla": "navarra",
+    "ansoain": "navarra",
+    "antsoain": "navarra",
+    "villava": "navarra",
+    "atarrabia": "navarra",
+    "berriozar": "navarra",
+    "aranguren": "navarra",
+    "mutilva": "navarra",
+    "noain": "navarra",
+    "cintruenigo": "navarra",
+    "baztan": "navarra",
+    "elizondo": "navarra",
+    "corella": "navarra",
+    "alsasua": "navarra",
+    "altsasu": "navarra",
+    "sanguesa": "navarra",
+    "olite": "navarra",
+    "erriberri": "navarra",
+    "lodosa": "navarra",
+    "san adrian": "navarra",
+    "berrioplano": "navarra",
+    "cascante": "navarra",
+    "mendavia": "navarra",
+    "huarte": "navarra",
+    "uharte": "navarra",
     "orense": "ourense",
     "vigo": "pontevedra",
     "vilagarcia": "pontevedra",

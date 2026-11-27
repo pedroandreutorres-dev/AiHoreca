@@ -792,14 +792,36 @@ class AiHorecaVectorStore:
             else:
                 spans.append((d, sp))
 
+        def _refine_definitive_winners(win_docs: list[RetrievedDocument]) -> set[str]:
+            if len(win_docs) > 1:
+                dedicated_tables = [
+                    d
+                    for d in win_docs
+                    if re.search(r"(?i)(?:_tablas|_revision)", d.source_file or "")
+                ]
+                if 0 < len(dedicated_tables) < len(win_docs):
+                    win_docs = dedicated_tables
+            if len(win_docs) > 1:
+                definitive = [
+                    d
+                    for d in win_docs
+                    if re.search(
+                        r"(?i)\bdefinitiv[ao]s\b",
+                        f"{d.titulo_o_capitulo} {d.articulo} {d.text[:300]}",
+                    )
+                ]
+                if 0 < len(definitive) < len(win_docs):
+                    win_docs = definitive
+            return {d.chunk_id for d in win_docs}
+
         if not explicit_years:
-            active_today = {
-                d.chunk_id
+            active_today = [
+                d
                 for d, sp in spans
                 if sp is not None and sp[0] <= today <= sp[1]
-            }
+            ]
             if active_today:
-                return active_today
+                return _refine_definitive_winners(active_today)
 
             past_spans = [
                 (d, sp)
@@ -808,15 +830,15 @@ class AiHorecaVectorStore:
             ]
             if past_spans:
                 max_end = max(sp[1] for _, sp in past_spans)
-                return {
-                    d.chunk_id
-                    for d, sp in past_spans
-                    if sp[1].year == max_end.year
-                }
+                return _refine_definitive_winners(
+                    [d for d, sp in past_spans if sp[1].year == max_end.year]
+                )
 
             max_yr = max((cls._extract_chunk_year(d) for d in docs), default=0)
             return (
-                {d.chunk_id for d in docs if cls._extract_chunk_year(d) == max_yr}
+                _refine_definitive_winners(
+                    [d for d in docs if cls._extract_chunk_year(d) == max_yr]
+                )
                 if max_yr > 0
                 else set()
             )
@@ -832,16 +854,27 @@ class AiHorecaVectorStore:
             )
         ]
         if not matching:
+            if max(req_years) >= today.year:
+                past_spans = [
+                    (d, sp)
+                    for d, sp in spans
+                    if sp is not None and sp[0].year <= today.year
+                ]
+                if past_spans:
+                    max_end = max(sp[1] for _, sp in past_spans)
+                    return _refine_definitive_winners(
+                        [d for d, sp in past_spans if sp[1].year == max_end.year]
+                    )
             return set()
         if today.year in req_years and len(req_years) == 1:
-            active_in_req = {
-                d.chunk_id
+            active_in_req = [
+                d
                 for d, sp in matching
                 if sp[0] <= today <= sp[1]
-            }
+            ]
             if active_in_req:
-                return active_in_req
-        return {d.chunk_id for d, _ in matching}
+                return _refine_definitive_winners(active_in_req)
+        return _refine_definitive_winners([d for d, _ in matching])
 
     @staticmethod
     def _extract_aleh_area_pattern(role_context: Optional[str]) -> Optional[re.Pattern]:
@@ -2199,6 +2232,14 @@ class AiHorecaVectorStore:
                     if len(selected) == before_spec:
                         _pick(
                             lambda d, p=art_pat: _is_normative_text(d)
+                            and bool(re.search(p, f"{d.articulo} {d.text[:500]}"))
+                            and not re.search(r"\(Parte\s+[2-9]\d*/", d.articulo),
+                            1,
+                            terr_cands,
+                        )
+                    if len(selected) == before_spec:
+                        _pick(
+                            lambda d, p=art_pat: _is_normative_text(d)
                             and bool(re.search(p, f"{d.articulo} {d.text[:500]}")),
                             1,
                             terr_cands,
@@ -2246,7 +2287,11 @@ class AiHorecaVectorStore:
                     )
                     rem -= len(selected) - before_pick
                 if rem > 0:
-                    _pick(base_pred, rem, terr_cands)
+                    _pick(
+                        lambda d: base_pred(d) and d.chunk_id not in stale_euro_ids,
+                        rem,
+                        terr_cands,
+                    )
 
             if area_pattern and target_subsector:
                 if role_stems:

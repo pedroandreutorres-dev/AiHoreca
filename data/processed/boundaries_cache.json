@@ -439,5 +439,30 @@
       2026
     ],
     "justificacion": "BOPZ n.º 255 (05/11/2026), Anuncio n.º 7437, código REGCON 50000655011982: Acta de la Comisión Paritaria de 11/05/2026 que aplica la revisión salarial del Art. 43 (+1,50% con efectos económicos desde 01/01/2026) y Anexo I de Tablas Salariales vigentes para el año 2026 (Grupos I-V de actividad, niveles IA-IV y tabla de Pluses: transporte, mantenimiento de ropa, manutención, paga de octubre, servicio extra, plus de domingos y plus de festivos) en págs. 7-10 del PDF."
+  },
+  "convenio_navarra.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "base",
+    "layout": "single_column",
+    "territorio": "navarra",
+    "start_page": 2,
+    "end_page": 30,
+    "start_marker": "CONVENIO COLECTIVO DE NAVARRA PARA LA INDUSTRIA DE HOSTELERÍA",
+    "expected_years": [],
+    "justificacion": "BON n.º 211 (10/10/2023), anuncio F2313772, código REGCON 31003805011981: Convenio Colectivo de Hostelería de Navarra 2022-2025 (en ultraactividad indefinida en 2026 conforme al Art. 3.º y art. 86.3 ET). Se omite la carátula de registro (pág. 1) y se incluye el texto articulado completo (Arts. 1.º-41.º, Disposiciones Adicionales 1ª-2ª y Anexos I-III de correspondencias de puestos a Niveles I-V, precio-hora y Plan de Igualdad en págs. 2-30); los importes salariales se actualizan por las tablas definitivas de la Resolución 159C/2026 (BON n.º 209 de 20/10/2026)."
+  },
+  "convenio_navarra_tablas_2025.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "tablas",
+    "layout": "single_column",
+    "territorio": "navarra",
+    "start_page": 50,
+    "end_page": 51,
+    "start_marker": "RESOLUCIÓN 159C/2026",
+    "end_marker": "F2612957",
+    "expected_years": [
+      2025
+    ],
+    "justificacion": "BON n.º 209 (20/10/2026), págs. 37234-37235 (págs. 50-51 del PDF), código anuncio F2612957, código REGCON 31003805011981: Resolución 159C/2026 de 28/09/2026 y Acta Veinticincoava de la Comisión Paritaria (11/02/2026) con las Tablas Salariales 2025 Definitivas de Hostelería de Navarra aplicables desde la nómina de enero de 2026 conforme al Art. 4.º del Convenio (Niveles I-V: salario base, plus convenio, plus manutención, antigüedad 6/9 años, premio vinculación 19/29 años, salario mensual/anual, nocturnidad, domingos y festivos, recepcionistas, idiomas, sustitución descanso semanal, compensación festivo y ropa de trabajo)."
   }
 }

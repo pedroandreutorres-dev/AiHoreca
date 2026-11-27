@@ -3871,5 +3871,206 @@ class TestZaragozaIngestionAndRetrieval(unittest.TestCase):
         self.assertTrue(any(d.capa_normativa == "estatuto_trabajadores" for d in sel_52))
 
 
+class TestNavarraIngestionAndRetrieval(unittest.TestCase):
+    """Pruebas unitarias deterministas en CPU para Navarra (BON 211/2023 + Res. 159C/2026)."""
+
+    @staticmethod
+    def _to_doc(chunk: LegalChunk, score: float = 0.85) -> RetrievedDocument:
+        return RetrievedDocument(
+            chunk_id=chunk.chunk_id,
+            source_file=chunk.source_file,
+            norma_titulo=chunk.norma_titulo,
+            capa_normativa=chunk.capa_normativa,
+            territorio=chunk.territorio,
+            titulo_o_capitulo=chunk.titulo_o_capitulo,
+            articulo=chunk.articulo,
+            tipo_contenido=chunk.tipo_contenido,
+            text=chunk.text,
+            score=score,
+            rerank_score=score,
+        )
+
+    def test_navarra_aliases_and_chunking_are_clean_and_non_ambiguous(self) -> None:
+        for raw_loc in (
+            "Navarra",
+            "Comunidad Foral de Navarra",
+            "Nafarroa",
+            "Pamplona",
+            "Iruña",
+            "Tudela",
+            "Barañáin",
+            "Estella-Lizarra",
+            "Tafalla",
+            "Burlada",
+            "Valle de Egüés",
+            "Alsasua",
+        ):
+            self.assertEqual(_canonicalize_territory(raw_loc), "navarra", msg=raw_loc)
+            self.assertEqual(_canonicalize_llm_province(raw_loc), "navarra", msg=raw_loc)
+
+        # Topónimo compartido entre varias provincias: nunca debe forzarse a Navarra
+        self.assertNotEqual(_canonicalize_territory("Villafranca"), "navarra")
+        self.assertNotEqual(_canonicalize_llm_province("Villafranca"), "navarra")
+
+        nav_base = PROCESSED_DATA_DIR / "convenio_navarra.md"
+        nav_2025 = PROCESSED_DATA_DIR / "convenio_navarra_tablas_2025.md"
+        if not nav_base.exists() or not nav_2025.exists():
+            self.skipTest("Convenio de Navarra no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(nav_base, boundaries_cache=cache)
+        tbl_chunks = chunk_markdown_document(nav_2025, boundaries_cache=cache)
+        self.assertEqual(len(base_chunks), 62)
+        self.assertEqual(len(tbl_chunks), 3)
+        self.assertTrue(all(c.territorio == "navarra" for c in base_chunks + tbl_chunks))
+        self.assertFalse(any(c.articulo == "anexo del presente convenio." for c in base_chunks))
+
+        art27 = next(c for c in base_chunks if c.articulo.startswith("Artículo 27.º"))
+        self.assertEqual(art27.tipo_contenido, "articulo")
+
+        raw_base = nav_base.read_text(encoding="utf-8")
+        raw_2025 = nav_2025.read_text(encoding="utf-8")
+        self.assertNotIn("BON 211,", raw_base)
+        self.assertNotIn("F2612957", raw_2025)
+        self.assertIn("| GRUPO PROFESIONAL SEGUNDO | Cocinero/a | 3 |", raw_base)
+        self.assertIn("| GRUPO PROFESIONAL SEGUNDO | Camarero/a | 3 |", raw_base)
+        self.assertIn("| GRUPO PROFESIONAL SEGUNDO | Camarero/a pisos | 4 |", raw_base)
+        for val in (
+            "1325,03",
+            "231,17",
+            "140,26",
+            "1696,47",
+            "23470,06",
+            "2,38",
+            "32,58",
+            "88,19",
+            "30,15",
+            "51,36",
+            "38,40",
+            "146,66",
+        ):
+            self.assertIn(val, raw_2025)
+
+    def test_navarra_retrieval_prefers_definitive_tables_and_first_article_part(self) -> None:
+        nav_base = PROCESSED_DATA_DIR / "convenio_navarra.md"
+        nav_2025 = PROCESSED_DATA_DIR / "convenio_navarra_tablas_2025.md"
+        if not nav_base.exists() or not nav_2025.exists():
+            self.skipTest("Convenio de Navarra no disponible en data/processed/")
+
+        cache = json.loads(BOUNDARIES_CACHE_PATH.read_text(encoding="utf-8"))
+        base_chunks = chunk_markdown_document(nav_base, boundaries_cache=cache)
+        tbl_chunks = chunk_markdown_document(nav_2025, boundaries_cache=cache)
+
+        aleh_docs = [
+            RetrievedDocument(
+                chunk_id=f"aleh_nav_{i}",
+                source_file="aleh_vi_estatal.md",
+                norma_titulo="VI ALEH",
+                capa_normativa="aleh_estatal",
+                territorio="estatal",
+                titulo_o_capitulo="ALEH",
+                articulo=f"Art. {i} ALEH",
+                tipo_contenido="articulo",
+                text="Normativa estatal.",
+                score=0.2,
+                rerank_score=0.2,
+            )
+            for i in range(1, 3)
+        ]
+        et_docs = [
+            RetrievedDocument(
+                chunk_id=f"et_nav_{i}",
+                source_file="estatuto_trabajadores_consolidado.md",
+                norma_titulo="ET",
+                capa_normativa="estatuto_trabajadores",
+                territorio="estatal",
+                titulo_o_capitulo="ET",
+                articulo=f"Art. {i} ET",
+                tipo_contenido="articulo",
+                text="Normativa básica estatal.",
+                score=0.18,
+                rerank_score=0.18,
+            )
+            for i in range(1, 3)
+        ]
+
+        tbl_def = next(c for c in tbl_chunks if c.tipo_contenido == "tabla_salarial")
+        tbl_pre = next(c for c in tbl_chunks if c.articulo.startswith("Preámbulo"))
+        art4_old = next(c for c in base_chunks if c.articulo.startswith("Artículo 4.º"))
+        art5 = next(c for c in base_chunks if c.articulo.startswith("Artículo 5.º"))
+        art6 = next(c for c in base_chunks if c.articulo.startswith("Artículo 6.º"))
+        art14 = next(c for c in base_chunks if c.articulo.startswith("Artículo 14.º"))
+        art16_p1 = next(c for c in base_chunks if c.articulo.startswith("Artículo 16.º") and "(Parte 1/4)" in c.articulo)
+        art16_p2 = next(c for c in base_chunks if c.articulo.startswith("Artículo 16.º") and "(Parte 2/4)" in c.articulo)
+        art25 = next(c for c in base_chunks if c.articulo.startswith("Artículo 25.º"))
+        anexo1_p1 = next(c for c in base_chunks if c.articulo.startswith("ANEXO I") and "(Parte 1/3)" in c.articulo)
+        anexo1_p2 = next(c for c in base_chunks if c.articulo.startswith("ANEXO I") and "(Parte 2/3)" in c.articulo)
+
+        # Tablas definitivas 2025 deben imponerse a Art. 4 base (2022-2025) tanto sin año como en 2026
+        euro_pair = [self._to_doc(art4_old, 0.99), self._to_doc(tbl_def, 0.80)]
+        ref = date(2026, 11, 27)
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(euro_pair, [], reference_date=ref),
+            {tbl_def.chunk_id},
+        )
+        self.assertEqual(
+            AiHorecaVectorStore._select_preferred_monetary_tables(euro_pair, [2026], reference_date=ref),
+            {tbl_def.chunk_id},
+        )
+
+        store = AiHorecaVectorStore.__new__(AiHorecaVectorStore)
+        pool_53 = [
+            self._to_doc(art4_old, 0.99),
+            self._to_doc(tbl_def, 0.90),
+            self._to_doc(tbl_pre, 0.88),
+            self._to_doc(art5, 0.84),
+            self._to_doc(art6, 0.82),
+            self._to_doc(anexo1_p1, 0.70),
+            self._to_doc(art14, 0.40),
+            self._to_doc(art25, 0.35),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_53 = store.rerank_and_select_by_territory(
+            candidates=pool_53,
+            query="Trabajo como cocinero en un hotel de 4 estrellas en Pamplona (Navarra) en 2026. ¿Cuál es mi nivel salarial, salario base mensual, plus convenio, plus de manutención y salario anual, y cuántas pagas extraordinarias tengo?",
+            territorios=["navarra"],
+            use_cohere_rerank=False,
+            role_context="Cocinero/a (Área Funcional 2ª Cocina y Economato, Grupo Profesional II)",
+        )
+        ids_53 = {d.chunk_id for d in sel_53}
+        self.assertIn(tbl_def.chunk_id, ids_53)
+        self.assertNotIn(art4_old.chunk_id, ids_53)
+        self.assertIn(art6.chunk_id, ids_53)
+        self.assertIn(anexo1_p1.chunk_id, ids_53)
+
+        pool_54 = [
+            self._to_doc(art4_old, 0.99),
+            self._to_doc(art16_p2, 0.95),
+            self._to_doc(art14, 0.92),
+            self._to_doc(art25, 0.88),
+            self._to_doc(art16_p1, 0.70),
+            self._to_doc(tbl_def, 0.68),
+            self._to_doc(anexo1_p2, 0.62),
+            *aleh_docs,
+            *et_docs,
+        ]
+        sel_54 = store.rerank_and_select_by_territory(
+            candidates=pool_54,
+            query="Soy camarero en un restaurante en Tudela (Navarra) en 2026. ¿Cuál es mi salario base mensual y salario anual, cuál es la jornada anual máxima, cuántos días de vacaciones y descanso semanal tengo, cómo se retribuyen la nocturnidad y las horas extraordinarias, y qué plus corresponde por domingos y festivos y ropa de trabajo?",
+            territorios=["navarra"],
+            use_cohere_rerank=False,
+            role_context="Camarero/a (Área Funcional 3ª Restaurante, sala, bar y similares, Grupo Profesional II)",
+        )
+        ids_54 = {d.chunk_id for d in sel_54}
+        self.assertIn(tbl_def.chunk_id, ids_54)
+        self.assertNotIn(art4_old.chunk_id, ids_54)
+        self.assertIn(art16_p1.chunk_id, ids_54)
+        self.assertIn(art16_p2.chunk_id, ids_54)
+        self.assertIn(art14.chunk_id, ids_54)
+        self.assertIn(art25.chunk_id, ids_54)
+        self.assertIn(anexo1_p2.chunk_id, ids_54)
+
+
 if __name__ == "__main__":
     unittest.main()
