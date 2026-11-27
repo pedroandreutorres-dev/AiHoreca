@@ -42,6 +42,7 @@ HF_SQUASH_INTERVAL_DAYS = int(os.getenv("HF_SQUASH_INTERVAL_DAYS", "30"))
 PRICING_SNAPSHOT_PATH = LOGS_DIR / "pricing_snapshot.json"
 SESSION_COSTS_HISTORY_PATH = LOGS_DIR / "historico_sesiones_costes.csv"
 TURN_COSTS_HISTORY_PATH = LOGS_DIR / "historico_turnos_costes.csv"
+COST_DASHBOARD_PATH = LOGS_DIR / "dashboard_costes.html"
 GEMINI_PRICING_URL = (
     os.getenv("GEMINI_PRICING_URL") or "https://ai.google.dev/gemini-api/docs/pricing.md.txt"
 ).strip()

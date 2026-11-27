@@ -25,6 +25,7 @@ import sqlite3
 import sys
 from typing import Any
 
+from src.app.cost_dashboard import generate_cost_dashboard_html
 from src.app.pricing import (
     PricingCatalog,
     TurnCostBreakdown,
@@ -38,6 +39,7 @@ from src.graph.state import TurnUsageSummary
 from src.config import (
     AUDIT_CURSOR_PATH,
     AUDIT_REPORTS_DIR,
+    COST_DASHBOARD_PATH,
     HF_SQUASH_INTERVAL_DAYS,
     LOGS_DIR,
     PAID_TIER_FLASH_SYNTHESIS_MODEL,
@@ -1098,6 +1100,20 @@ def extract_and_audit_deltas(
                 f"${sb['flash_usd']:.5f} / €{sb['flash_usd'] * catalog.usd_to_eur:.5f} |"
             )
         md.append("")
+        radar = catalog.radar
+        if radar.needs_attention:
+            md.append("**Alertas del radar oficial de modelos y tarifas:**")
+            if radar.price_changes:
+                md.append(f"- Cambios de tarifa detectados: `{', '.join(radar.price_changes)}`")
+            if radar.deprecated_configured_models:
+                md.append(f"- Modelos en `config.py` deprecados o ausentes: `{', '.join(radar.deprecated_configured_models)}`")
+            if radar.upcoming_price_changes:
+                md.append(f"- Subidas programadas próximas: `{'; '.join(radar.upcoming_price_changes)}`")
+            if radar.new_models:
+                md.append(f"- Modelos nuevos en doc oficial: `{', '.join(radar.new_models)}`")
+            if radar.removed_models:
+                md.append(f"- Modelos retirados del catálogo oficial: `{', '.join(radar.removed_models)}`")
+            md.append("")
 
         if turn_tokens_with_usage:
             top_turns = sorted(
@@ -1468,6 +1484,11 @@ def run_daily_audit_pipeline(
         pricing_catalog=pricing_catalog,
     )
 
+    dashboard_res = generate_cost_dashboard_html(
+        pricing_catalog=pricing_catalog,
+        output_path=COST_DASHBOARD_PATH,
+    )
+
     audit_res = extract_and_audit_deltas(
         db_path=SESSIONS_DB_PATH,
         cursor_path=AUDIT_CURSOR_PATH,
@@ -1485,6 +1506,8 @@ def run_daily_audit_pipeline(
         "local_retention": retention_res,
         "sessions_archived": archived_sessions,
         "cost_analytics": cost_analytics,
+        "dashboard": dashboard_res,
+        "pricing_radar": pricing_catalog.radar.model_dump(),
         "audit": audit_res,
         "hf_squash": squash_res,
     }
@@ -1559,6 +1582,17 @@ def _cli() -> None:
         print(
             f"- Analítica costes CSV ({ca.get('pricing_source')}): {ca.get('sessions_total_csv')} sesiones, "
             f"{ca.get('turns_total_csv')} turnos"
+        )
+    dash = result.get("dashboard") or {}
+    if dash.get("dashboard_path"):
+        print(f"- Dashboard HTML: {dash['dashboard_path']} ({dash.get('bytes', 0):,} bytes)")
+    radar = result.get("pricing_radar") or {}
+    if radar.get("needs_attention"):
+        print(
+            f"- Radar modelos/tarifas: cambios={len(radar.get('price_changes') or [])}, "
+            f"deprecados_config={len(radar.get('deprecated_configured_models') or [])}, "
+            f"subidas_futuras={len(radar.get('upcoming_price_changes') or [])}, "
+            f"nuevos={len(radar.get('new_models') or [])}"
         )
     if audit.get("report_path"):
         print(f"- Informe: {audit['report_path']}")

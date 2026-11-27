@@ -730,6 +730,167 @@ class TestAuditRemediation(unittest.TestCase):
                 float(rows["ses-activa01"]["coste_total_tier_lite_usd"]),
             )
 
+    def test_pricing_radar_detects_price_changes_new_models_and_upcoming_step_ups(self) -> None:
+        """Verifica que el radar detecta cambios de tarifa, deprecación, modelos nuevos y subidas futuras."""
+        from datetime import date
+        from src.app.pricing import ModelRate, PricingCatalog, build_pricing_radar, parse_official_gemini_pricing_markdown
+
+        sample_md = """
+## Gemini 3.1 Flash-Lite  {% id="gemini-3.1-flash-lite" %}
+*[`gemini-3.1-flash-lite`](/docs/models/gemini-3.1-flash-lite)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.20
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $1.50
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini 3.8 Flash  {% id="gemini-3.8-flash" %}
+*[`gemini-3.8-flash`](/docs/models/gemini-3.8-flash)*
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.75 through December 31, 2026.
+  $1.50 starting January 1, 2027.
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $3.75 through December 31, 2026.
+  $7.50 starting January 1, 2027.
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini Old Legacy  {% id="gemini-old-legacy" %}
+*[`gemini-old-legacy`](/docs/models/gemini-old-legacy)*
+Warning: Gemini Old Legacy (`gemini-old-legacy`) is deprecated and will be shut down.
+{% tabs %}
+  {% tab title="Standard" %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+
+  ---
+
+  * Input price
+  * Free of charge
+  * $0.10
+
+  ---
+
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $0.40
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+"""
+        parsed = parse_official_gemini_pricing_markdown(sample_md, as_of=date(2026, 11, 27))
+        self.assertIn("Desde 2027-01-01", parsed["gemini-3.8-flash"].upcoming_change)
+        self.assertTrue(parsed["gemini-old-legacy"].deprecated)
+        self.assertFalse(parsed["gemini-3.1-flash-lite"].deprecated)
+
+        prev_catalog = PricingCatalog(
+            checked_at="2026-11-26T08:00:00+00:00",
+            as_of_date="2026-11-26",
+            source="live_official",
+            models={
+                "gemini-3.1-flash-lite": ModelRate(model_id="gemini-3.1-flash-lite", input_per_1m=0.25, output_per_1m=1.50, cached_input_per_1m=0.025),
+                "gemini-retired": ModelRate(model_id="gemini-retired", input_per_1m=0.50, output_per_1m=2.00, cached_input_per_1m=0.05),
+            },
+        )
+        radar = build_pricing_radar(
+            prev_catalog=prev_catalog,
+            new_models=parsed,
+            live_parsed_ids=set(parsed.keys()),
+            configured_models=["gemini-3.1-flash-lite", "gemini-old-legacy"],
+        )
+        self.assertTrue(radar.needs_attention)
+        self.assertIn("gemini-3.8-flash", radar.new_models)
+        self.assertIn("gemini-retired", radar.removed_models)
+        self.assertTrue(any("gemini-3.1-flash-lite" in c for c in radar.price_changes))
+        self.assertTrue(any("gemini-old-legacy" in d for d in radar.deprecated_configured_models))
+        self.assertTrue(any("gemini-3.8-flash" in u for u in radar.upcoming_price_changes))
+
+    def test_cost_dashboard_html_generation_is_self_contained_and_pii_free(self) -> None:
+        """Verifica que generate_cost_dashboard_html crea un HTML sin CDNs externos ni texto libre/PII."""
+        import tempfile
+        from pathlib import Path
+        from src.app.audit_runner import export_cost_analytics_csvs
+        from src.app.cost_dashboard import generate_cost_dashboard_html
+        from src.app.pricing import load_pricing_catalog
+        from src.graph.memory import SessionMemoryStore
+        from src.graph.state import AuditReport, StepUsageRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            db_path = tmp / "sessions.db"
+            sess_csv = tmp / "historico_sesiones_costes.csv"
+            turn_csv = tmp / "historico_turnos_costes.csv"
+            out_html = tmp / "dashboard_costes.html"
+
+            mem = SessionMemoryStore(db_path=db_path)
+            mem.save_turn_and_update_slots(
+                session_id="ses-dash01",
+                state={
+                    "session_id": "ses-dash01",
+                    "query": "Consulta confidencial con DNI 99988877Z",
+                    "effective_query": "Consulta efectiva",
+                    "intent": "HOSPITALITY_CORE",
+                    "route_decision": "parallel_retrieve",
+                    "territorio_normalizado": "zaragoza",
+                    "oficio_coloquial_detectado": "cocinero",
+                    "final_response": "Texto confidencial.",
+                    "audit_report": AuditReport(passed=True, has_explicit_citations=True).model_dump(),
+                    "node_timings_ms": {"analyze_and_route": 1000.0, "synthesize_response": 2000.0},
+                    "models_used": {"analyze_and_route": "gemini-3.1-flash-lite", "synthesize_response": "gemini-3.5-flash-lite"},
+                    "usage_events": [
+                        StepUsageRecord(step="analyze_and_route", provider="gemini_llm", model="gemini-3.1-flash-lite", input_tokens=2500, output_tokens=250, api_calls=1).model_dump(),
+                        StepUsageRecord(step="synthesize_response", provider="gemini_llm", model="gemini-3.5-flash-lite", input_tokens=7500, output_tokens=700, api_calls=1).model_dump(),
+                    ],
+                },
+            )
+            catalog = load_pricing_catalog(fetch_live=False, snapshot_path=tmp / "no_snap.json")
+            export_cost_analytics_csvs(db_path=db_path, pricing_catalog=catalog, sessions_csv_path=sess_csv, turns_csv_path=turn_csv)
+            dash = generate_cost_dashboard_html(
+                sessions_csv_path=sess_csv,
+                turns_csv_path=turn_csv,
+                pricing_catalog=catalog,
+                output_path=out_html,
+            )
+            self.assertTrue(out_html.exists())
+            self.assertEqual(dash["sessions_in_dashboard"], 1)
+            html_txt = out_html.read_text(encoding="utf-8")
+            self.assertIn("ses-dash01", html_txt)
+            self.assertNotIn("99988877Z", html_txt)
+            self.assertNotIn("<script src=\"http", html_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

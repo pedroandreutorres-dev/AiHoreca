@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 from src.config import (
     COHERE_RERANK_USD_PER_1K_UNITS,
+    EMBEDDING_MODEL,
+    GEMINI_FALLBACK_MODELS,
+    GEMINI_FAST_MODEL,
+    GEMINI_LITE_MODEL,
     GEMINI_PRICING_URL,
+    GEMINI_REASONING_MODEL,
     PAID_TIER_FLASH_SYNTHESIS_MODEL,
     PAID_TIER_LITE_ROUTER_MODEL,
     PAID_TIER_LITE_SYNTHESIS_MODEL,
@@ -31,7 +36,20 @@ class ModelRate(BaseModel):
     input_per_1m: float = 0.0
     output_per_1m: float = 0.0
     cached_input_per_1m: float = 0.0
+    deprecated: bool = False
+    upcoming_change: str = ""
     note: str = ""
+
+
+class PricingRadarReport(BaseModel):
+    """Alertas automáticas detectadas comparando el catálogo oficial vivo frente al snapshot y config.py."""
+
+    new_models: list[str] = Field(default_factory=list)
+    removed_models: list[str] = Field(default_factory=list)
+    price_changes: list[str] = Field(default_factory=list)
+    deprecated_configured_models: list[str] = Field(default_factory=list)
+    upcoming_price_changes: list[str] = Field(default_factory=list)
+    needs_attention: bool = False
 
 
 class PricingCatalog(BaseModel):
@@ -44,6 +62,7 @@ class PricingCatalog(BaseModel):
     usd_to_eur: float = USD_TO_EUR_RATE
     cohere_usd_per_1k_units: float = COHERE_RERANK_USD_PER_1K_UNITS
     models: dict[str, ModelRate] = Field(default_factory=dict)
+    radar: PricingRadarReport = Field(default_factory=PricingRadarReport)
 
 
 class TurnCostBreakdown(BaseModel):
@@ -145,15 +164,43 @@ def _extract_effective_usd(cell_text: str, as_of: date) -> Optional[float]:
     return None
 
 
+def _extract_future_step_up(cell_text: str, as_of: date) -> Optional[tuple[date, float]]:
+    """Detecta cambios programados futuros (`starting <Month> <Day>, <Year>`) con fecha > as_of."""
+    clean = re.sub(r"\{%.*?%\}", " ", cell_text or "", flags=re.S)
+    lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+    filtered = [
+        ln
+        for ln in lines
+        if "storage price" not in ln.lower()
+        and "/ 1,000,000 tokens per hour" not in ln.lower()
+        and not re.match(r"^\$[0-9.]+\s*\(audio\)", ln, flags=re.I)
+    ]
+    future: list[tuple[date, float]] = []
+    for ln in filtered:
+        for price_s, kind, month_s, day_s, year_s in _DATED_PRICE_RE.findall(ln):
+            if kind.lower() != "starting":
+                continue
+            month_num = _MONTHS_EN.get(month_s.lower())
+            if not month_num:
+                continue
+            try:
+                dt = date(int(year_s), month_num, int(day_s))
+            except ValueError:
+                continue
+            if dt > as_of:
+                future.append((dt, float(price_s)))
+    if not future:
+        return None
+    future.sort(key=lambda x: x[0])
+    return future[0]
+
+
 def parse_official_gemini_pricing_markdown(
     markdown_text: str,
     as_of: Optional[date] = None,
 ) -> dict[str, ModelRate]:
     """Parsea la página Markdoc oficial `pricing.md.txt` de Google AI Studio / Gemini API."""
     eff_date = as_of or date.today()
-    if eff_date.year == 2026:
-        # Asegura usar tarifa vigente si el reloj local coincide; ya es `date.today()`.
-        pass
     sections = re.split(r"(?=^## )", markdown_text or "", flags=re.M)
     parsed: dict[str, ModelRate] = {}
 
@@ -173,6 +220,11 @@ def parse_official_gemini_pricing_markdown(
         if not model_ids:
             continue
 
+        intro_slice = sec.split("{% tabs %}")[0]
+        is_deprecated = bool(
+            re.search(r"(?i)\b(?:is\s+deprecated|will\s+be\s+shut\s+down|no\s+longer\s+available)\b", intro_slice)
+        )
+
         m_std = re.search(r'{%\s*tab\s+title="Standard"\s*%}(.*?){%\s*/tab\s*%}', sec, flags=re.S)
         std_block = m_std.group(1) if m_std else sec
         rows = re.split(r"\n\s*---\s*\n", std_block)
@@ -180,6 +232,8 @@ def parse_official_gemini_pricing_markdown(
         in_price: Optional[float] = None
         out_price: Optional[float] = None
         cache_price: Optional[float] = None
+        future_in: Optional[tuple[date, float]] = None
+        future_out: Optional[tuple[date, float]] = None
 
         for row in rows:
             cells = [
@@ -194,10 +248,14 @@ def parse_official_gemini_pricing_markdown(
                 val = _extract_effective_usd(paid_cell, eff_date)
                 if val is not None and in_price is None:
                     in_price = val
+                if future_in is None:
+                    future_in = _extract_future_step_up(paid_cell, eff_date)
             elif feat.startswith("output price"):
                 val = _extract_effective_usd(paid_cell, eff_date)
                 if val is not None and out_price is None:
                     out_price = val
+                if future_out is None:
+                    future_out = _extract_future_step_up(paid_cell, eff_date)
             elif feat.startswith("context caching price"):
                 val = _extract_effective_usd(paid_cell, eff_date)
                 if val is not None and cache_price is None:
@@ -206,10 +264,17 @@ def parse_official_gemini_pricing_markdown(
         if in_price is None and out_price is None:
             continue
 
+        upcoming_parts: list[str] = []
+        step_date = (future_in[0] if future_in else None) or (future_out[0] if future_out else None)
+        if step_date is not None:
+            p_in = f"in ${future_in[1]:.2f}" if future_in else ""
+            p_out = f"out ${future_out[1]:.2f}" if future_out else ""
+            detail = " / ".join(x for x in (p_in, p_out) if x)
+            upcoming_parts.append(f"Desde {step_date.isoformat()}: {detail}")
+
         note_str = f"Parsed live ({title}, as_of={eff_date.isoformat()})"
         for raw_id in model_ids:
             mid = raw_id.lower().strip()
-            # No pisar modelos ya resueltos con más precisión si hay enlaces secundarios
             if mid not in parsed:
                 parsed[mid] = ModelRate(
                     model_id=mid,
@@ -219,10 +284,108 @@ def parse_official_gemini_pricing_markdown(
                         cache_price if cache_price is not None else (in_price or 0.0) * 0.1,
                         6,
                     ),
+                    deprecated=is_deprecated,
+                    upcoming_change="; ".join(upcoming_parts),
                     note=note_str,
                 )
 
     return parsed
+
+
+def _get_configured_model_candidates() -> list[str]:
+    ordered: list[str] = [
+        GEMINI_LITE_MODEL,
+        GEMINI_FAST_MODEL,
+        GEMINI_REASONING_MODEL,
+        *GEMINI_FALLBACK_MODELS,
+        EMBEDDING_MODEL,
+        PAID_TIER_LITE_ROUTER_MODEL,
+        PAID_TIER_LITE_SYNTHESIS_MODEL,
+        PAID_TIER_FLASH_SYNTHESIS_MODEL,
+    ]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for m in ordered:
+        clean = (m or "").strip().lower()
+        if clean and clean not in seen:
+            seen.add(clean)
+            unique.append(clean)
+    return unique
+
+
+def _canonical_live_alias(model_name: str) -> str:
+    raw = (model_name or "").strip().lower()
+    if raw.startswith("models/"):
+        raw = raw[len("models/") :]
+    aliases = {
+        "gemini-flash-lite-latest": "gemini-2.5-flash-lite",
+        "gemini-flash-latest": "gemini-2.5-flash",
+        "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+    }
+    return aliases.get(raw, raw)
+
+
+def build_pricing_radar(
+    prev_catalog: Optional[PricingCatalog],
+    new_models: dict[str, ModelRate],
+    live_parsed_ids: Optional[set[str]] = None,
+    configured_models: Optional[list[str]] = None,
+) -> PricingRadarReport:
+    """Detecta variaciones de precios, modelos nuevos/retirados, deprecaciones y subidas futuras."""
+    cfg_models = configured_models if configured_models is not None else _get_configured_model_candidates()
+    prev_models = prev_catalog.models if prev_catalog is not None else {}
+
+    new_models_list: list[str] = []
+    removed_models_list: list[str] = []
+    price_changes: list[str] = []
+
+    if prev_models:
+        compare_keys = live_parsed_ids if live_parsed_ids is not None else set(new_models.keys())
+        new_models_list = sorted(m for m in compare_keys if m not in prev_models)
+        if live_parsed_ids is not None:
+            # Solo señalar retirados que estaban en el catálogo vivo anterior y ya no aparecen en vivo
+            removed_models_list = sorted(
+                m for m, r in prev_models.items() if "fallback" not in (r.note or "").lower() and m not in live_parsed_ids
+            )
+        for mid in sorted(compare_keys & set(prev_models.keys())):
+            old_r = prev_models[mid]
+            new_r = new_models[mid]
+            diffs: list[str] = []
+            if abs(old_r.input_per_1m - new_r.input_per_1m) > 1e-6:
+                diffs.append(f"in ${old_r.input_per_1m:.3f}->${new_r.input_per_1m:.3f}")
+            if abs(old_r.output_per_1m - new_r.output_per_1m) > 1e-6:
+                diffs.append(f"out ${old_r.output_per_1m:.3f}->${new_r.output_per_1m:.3f}")
+            if abs(old_r.cached_input_per_1m - new_r.cached_input_per_1m) > 1e-6:
+                diffs.append(f"cache ${old_r.cached_input_per_1m:.3f}->${new_r.cached_input_per_1m:.3f}")
+            if diffs:
+                price_changes.append(f"{mid}: {', '.join(diffs)}")
+
+    deprecated_cfg: list[str] = []
+    for cfg in cfg_models:
+        canon = _canonical_live_alias(cfg)
+        stripped = re.sub(r"-(?:preview|latest)(?:-\d{2}-\d{4})?$", "", canon)
+        rate = new_models.get(canon) or new_models.get(stripped)
+        if rate and rate.deprecated:
+            deprecated_cfg.append(f"{cfg} (marcado deprecado en doc oficial)")
+        elif live_parsed_ids is not None and canon not in live_parsed_ids and stripped not in live_parsed_ids:
+            deprecated_cfg.append(f"{cfg} (ausente en pricing.md.txt)")
+
+    # Subidas programadas futuras en modelos activos o de la familia Flash/Lite
+    cfg_canons = {_canonical_live_alias(c) for c in cfg_models}
+    upcoming_list: list[str] = []
+    for mid, rate in sorted(new_models.items()):
+        if rate.upcoming_change and (mid in cfg_canons or "flash" in mid):
+            upcoming_list.append(f"{mid}: {rate.upcoming_change}")
+
+    needs_attention = bool(price_changes or deprecated_cfg or upcoming_list or new_models_list or removed_models_list)
+    return PricingRadarReport(
+        new_models=new_models_list,
+        removed_models=removed_models_list,
+        price_changes=price_changes,
+        deprecated_configured_models=deprecated_cfg,
+        upcoming_price_changes=upcoming_list,
+        needs_attention=needs_attention,
+    )
 
 
 def _builtin_fallback_models() -> dict[str, ModelRate]:
@@ -245,9 +408,16 @@ def load_pricing_catalog(
     timeout_sec: float = 8.0,
     as_of: Optional[date] = None,
 ) -> PricingCatalog:
-    """Obtiene tarifas oficiales Paid Tier en vivo, guardando snapshot JSON con fallback offline."""
+    """Obtiene tarifas oficiales Paid Tier en vivo, guardando snapshot JSON y evaluando el radar de cambios."""
     eff_date = as_of or date.today()
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    prev_catalog: Optional[PricingCatalog] = None
+    if snapshot_path.exists():
+        try:
+            prev_catalog = PricingCatalog.model_validate_json(snapshot_path.read_text(encoding="utf-8"))
+        except Exception:
+            prev_catalog = None
 
     if fetch_live and pricing_url:
         try:
@@ -255,10 +425,11 @@ def load_pricing_catalog(
             with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 md_text = resp.read().decode("utf-8", errors="ignore")
             parsed_models = parse_official_gemini_pricing_markdown(md_text, as_of=eff_date)
-            # Completar modelos base conocidos si faltara alguno secundario
             if len(parsed_models) >= 5 and "gemini-3.5-flash-lite" in parsed_models:
+                live_ids = set(parsed_models.keys())
                 for k, v in _builtin_fallback_models().items():
                     parsed_models.setdefault(k, v)
+                radar = build_pricing_radar(prev_catalog, parsed_models, live_parsed_ids=live_ids)
                 catalog = PricingCatalog(
                     checked_at=now_iso,
                     as_of_date=eff_date.isoformat(),
@@ -267,6 +438,7 @@ def load_pricing_catalog(
                     usd_to_eur=USD_TO_EUR_RATE,
                     cohere_usd_per_1k_units=COHERE_RERANK_USD_PER_1K_UNITS,
                     models=parsed_models,
+                    radar=radar,
                 )
                 try:
                     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,17 +449,15 @@ def load_pricing_catalog(
         except Exception:
             pass
 
-    if snapshot_path.exists():
-        try:
-            snap = PricingCatalog.model_validate_json(snapshot_path.read_text(encoding="utf-8"))
-            if snap.models:
-                snap.source = "cached_snapshot"
-                snap.usd_to_eur = USD_TO_EUR_RATE
-                snap.cohere_usd_per_1k_units = COHERE_RERANK_USD_PER_1K_UNITS
-                return snap
-        except Exception:
-            pass
+    if prev_catalog is not None and prev_catalog.models:
+        prev_catalog.source = "cached_snapshot"
+        prev_catalog.usd_to_eur = USD_TO_EUR_RATE
+        prev_catalog.cohere_usd_per_1k_units = COHERE_RERANK_USD_PER_1K_UNITS
+        if not prev_catalog.radar.upcoming_price_changes and not prev_catalog.radar.deprecated_configured_models:
+            prev_catalog.radar = build_pricing_radar(None, prev_catalog.models, live_parsed_ids=None)
+        return prev_catalog
 
+    fallback_models = _builtin_fallback_models()
     return PricingCatalog(
         checked_at=now_iso,
         as_of_date=eff_date.isoformat(),
@@ -295,7 +465,8 @@ def load_pricing_catalog(
         pricing_url=pricing_url,
         usd_to_eur=USD_TO_EUR_RATE,
         cohere_usd_per_1k_units=COHERE_RERANK_USD_PER_1K_UNITS,
-        models=_builtin_fallback_models(),
+        models=fallback_models,
+        radar=build_pricing_radar(None, fallback_models, live_parsed_ids=None),
     )
 
 
