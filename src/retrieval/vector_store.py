@@ -1378,7 +1378,7 @@ class AiHorecaVectorStore:
                 or (
                     "anexo" in doc.titulo_o_capitulo.lower()
                     and re.search(
-                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?)|CATEGOR[ÍI]A\s+[A-D]\b|CLASIFICACI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA))\b",
+                        r"(?i)\b(?:GRUPO\s+(?:[IVX]+|PRIMERO|SEGUNDO|TERCERO|CUARTO|QUINTO|SEXTO|S[ÉE]PTIMO|OCTAVO|[A-C]\b)|NIVEL\s+(?:[IVX]+|[1-6]\.?[º°]?)|CATEGOR[ÍI]A\s+[A-D]\b|CLASIFICACI[ÓO]N\s+(?:PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA))\b",
                         body_head,
                     )
                 )
@@ -1512,6 +1512,16 @@ class AiHorecaVectorStore:
             "ropa_trabajo",
             r"(?i)ropa\s+de\s+trabajo|uniform(?:e|idad)",
             "ropa de trabajo uniforme compensación vestuario",
+        ),
+        (
+            "asuntos_propios",
+            r"(?i)asuntos?\s+propios?",
+            "días por asuntos propios asuntos propios permiso licencia retribuida",
+        ),
+        (
+            "festivos",
+            r"(?i)d[íi]a\s+festivo|festivo\s+abonable|fiestas?\s+abonables",
+            "fiestas abonables y no recuperables día festivo trabajado compensación en metálico",
         ),
     )
 
@@ -2191,6 +2201,14 @@ class AiHorecaVectorStore:
                     (
                         r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
                         r"(?i)comisi[óo]n\s+(?:mixta\s+|mista\s+)?paritaria|paga\s+[úu]nica|plus\s+(?:de\s+)?transporte",
+                    ),
+                    (
+                        r"(?i)asuntos?\s+propios?",
+                        r"(?i)asuntos?\s+propios?",
+                    ),
+                    (
+                        r"(?i)d[íi]a\s+festivo|festivo\s+abonable|fiestas?\s+abonables",
+                        r"(?i)fiestas?\s+abonables|festivos?",
                     ),
                 )
                 matched_specific_specs = [

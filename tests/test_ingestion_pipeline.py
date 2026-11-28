@@ -4269,5 +4269,61 @@ class TestCordobaIngestionAndRetrieval(unittest.TestCase):
             self.assertIn(art.chunk_id, ids_56, msg=art.articulo)
 
 
+class TestAlmeriaIngestionAndRetrieval(unittest.TestCase):
+    """Regresión determinista en CPU para la ingesta, chunking, aliases y rescate de Almería."""
+
+    def test_almeria_markdown_and_chunking_structure(self) -> None:
+        md_path = PROCESSED_DATA_DIR / "convenio_almeria.md"
+        cache_path = PROCESSED_DATA_DIR / "boundaries_cache.json"
+        if not md_path.exists():
+            self.skipTest("convenio_almeria.md no disponible en workspace")
+        md_text = md_path.read_text(encoding="utf-8")
+        self.assertNotIn("ov.dipalme.org", md_text)
+        self.assertNotIn("Documento firmado electrónicamente", md_text)
+        self.assertNotRegex(md_text, r"(?m)^_{10,}$")
+
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        chunks = chunk_markdown_document(md_path, cache)
+        self.assertEqual(len(chunks), 83)
+        by_art = {c.articulo: c for c in chunks}
+        self.assertIn("Artículo 31. Salario base.", by_art)
+        self.assertEqual(by_art["Artículo 31. Salario base."].tipo_contenido, "tabla_salarial")
+        self.assertIn("1365,70", by_art["Artículo 31. Salario base."].text)
+        self.assertIn("1183,64", by_art["Artículo 31. Salario base."].text)
+
+        self.assertIn("Artículo 32. Antigüedad.", by_art)
+        self.assertEqual(by_art["Artículo 32. Antigüedad."].tipo_contenido, "tabla_salarial")
+        self.assertIn("35,51", by_art["Artículo 32. Antigüedad."].text)
+        self.assertIn("449,78", by_art["Artículo 32. Antigüedad."].text)
+
+        self.assertEqual(by_art["Artículo 69. Acoso sexual."].tipo_contenido, "articulo")
+        self.assertEqual(by_art["Artículo 70. Formación Continua."].tipo_contenido, "articulo")
+        self.assertEqual(by_art["DISPOSICIONES ADICIONALES"].tipo_contenido, "anexo_o_disposicion")
+        self.assertEqual(by_art["ANEXO"].tipo_contenido, "anexo_o_disposicion")
+        anexo_txt = by_art["ANEXO"].text
+        self.assertIn("GRUPO CUARTO", anexo_txt)
+        self.assertIn("Cocinero/a", anexo_txt)
+        self.assertIn("Camarero/a", anexo_txt)
+
+    def test_almeria_municipality_aliases_and_ambiguity_guards(self) -> None:
+        from src.graph.nodes import _canonicalize_llm_province
+
+        for loc in (
+            "Almería",
+            "Roquetas de Mar",
+            "El Ejido",
+            "Níjar",
+            "Mojácar",
+            "Vera",
+            "Huércal-Overa",
+        ):
+            self.assertEqual(_canonicalize_territory(loc), "almeria", msg=loc)
+            self.assertEqual(_canonicalize_llm_province(loc), "almeria", msg=loc)
+
+        for ambig in ("Aguadulce", "Alhama", "Vélez", "San José"):
+            self.assertNotEqual(_canonicalize_territory(ambig), "almeria", msg=ambig)
+            self.assertNotEqual(_canonicalize_llm_province(ambig), "almeria", msg=ambig)
+
+
 if __name__ == "__main__":
     unittest.main()

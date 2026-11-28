@@ -73,6 +73,8 @@ _RESIDUAL_NOISE_LINE = re.compile(
     r"boc\.cantabria\.es.*|"
     r"cve-20[12]\d-\d{3,6}.*|"
     r"bopz|"
+    r"firmado\s+de\s+conformidad\s+con\s+el\s+art\.\s*\d+\s+del\s+reglamento.*|"
+    r"documento\s+firmado\s+electr[óo]nicamente\.?\s+verificable\s+en.*|"
     r"n[úu]m\.?\s*\d+|"
     r"\d{1,2}\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+\d{4}"
     r")$"
@@ -89,7 +91,8 @@ _STANDALONE_TABLE_SECTION_RE = re.compile(
 )
 
 _CHAPTER_OR_TITLE_RE = re.compile(
-    r"(?i)^(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b|del?\s+presente\s+convenio\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b)[^\n]*?)\**$"
+    r"(?i)^(?:(?:#{1,4}\s*)?\**((?:(?:T[ÍI]TULO|CAP[ÍI]TULO|ANEXO|PROTOCOLO)\s+(?!d[ée]cimo\b|del?\s+presente\s+convenio\b)[IVXLCDM0-9]+(?!\s+del\s+convenio\s+colectivo,)|TABLAS?\s+DE\s+RETRIBUCIONES\b|T[ÁA]BOAS?\s+SALARIA(?:IS|LES)\.?\b)[^\n]*?)\**|"
+    r"#{1,4}\s+\**((?:A\s*N\s*E\s*X\s*O(?:\s+(?:[ÚU]NICO|GRUPOS\s+PROFESIONALES))?|DISPOSICIONES\s+(?:ADICIONALES|TRANSITORIAS|DEROGATORIAS|FINALES)))\**)$"
 )
 
 _TABLE_YEAR_OR_PROVINCE_RE = re.compile(
@@ -146,6 +149,52 @@ _CANONICAL_TERRITORY_MAP: dict[str, str] = {
     "laudio": "alava",
     "amurrio": "alava",
     "alacant": "alicante",
+    "roquetas de mar": "almeria",
+    "roquetas": "almeria",
+    "el ejido": "almeria",
+    "ejido": "almeria",
+    "nijar": "almeria",
+    "vicar": "almeria",
+    "adra": "almeria",
+    "huercal-overa": "almeria",
+    "huercal overa": "almeria",
+    "huercal de almeria": "almeria",
+    "vera": "almeria",
+    "cuevas del almanzora": "almeria",
+    "berja": "almeria",
+    "garrucha": "almeria",
+    "mojacar": "almeria",
+    "carboneras": "almeria",
+    "albox": "almeria",
+    "pulpi": "almeria",
+    "olula del rio": "almeria",
+    "macael": "almeria",
+    "tabernas": "almeria",
+    "sorbas": "almeria",
+    "finana": "almeria",
+    "laujar de andarax": "almeria",
+    "alhama de almeria": "almeria",
+    "pechina": "almeria",
+    "benahadux": "almeria",
+    "gador": "almeria",
+    "viator": "almeria",
+    "almerimar": "almeria",
+    "cabo de gata": "almeria",
+    "retamar": "almeria",
+    "san juan de los terreros": "almeria",
+    "velez-rubio": "almeria",
+    "velez rubio": "almeria",
+    "velez-blanco": "almeria",
+    "velez blanco": "almeria",
+    "tijola": "almeria",
+    "cantoria": "almeria",
+    "arboleas": "almeria",
+    "turre": "almeria",
+    "antas": "almeria",
+    "los gallardos": "almeria",
+    "seron": "almeria",
+    "purchena": "almeria",
+    "dalias": "almeria",
     "illes balears": "baleares",
     "islas baleares": "baleares",
     "balears": "baleares",
@@ -674,6 +723,10 @@ def chunk_markdown_document(
                     and not _ARTICLE_START_RE.match(next_str)
                     and not _CHAPTER_OR_TITLE_RE.match(next_str)
                     and not _DISPOSITION_START_RE.match(next_str)
+                    and not re.match(
+                        r"(?i)^(?:Primera|Segunda|Tercera|Cuarta|Quinta|Sexta|S[ée]ptima|Octava|Novena|D[ée]cima|\d+[ªº])\.",
+                        clean_next,
+                    )
                 ):
                     chap_title = f"{chap_title} - {clean_next}"
                     idx = lookahead
@@ -848,6 +901,7 @@ def chunk_markdown_document(
                 "anexo" in chapter.lower()
                 or "disposición" in article.lower()
                 or "disposicion" in article.lower()
+                or "disposiciones" in article.lower()
             ):
                 tipo_contenido = "anexo_o_disposicion"
             else:

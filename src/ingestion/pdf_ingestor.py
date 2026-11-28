@@ -98,6 +98,9 @@ _BULLETIN_HEADER_NOISE = re.compile(
     r"este\s+documento\s+es\s+una\s+copia\s+electr[óo]nica\s+de\s+un\s+documento\s+original\s+digitalizado\.?$|"
     r"powered\s+by\s+tcpdf\b|"
     r"hay\s+varias\s+firmas\s+ilegibles\.?$|"
+    r"firmado\s+de\s+conformidad\s+con\s+el\s+art\.\s*\d+\s+del\s+reglamento\b|"
+    r"documento\s+firmado\s+electr[óo]nicamente\.?\s+verificable\s+en\b|"
+    r"_{10,}$|"
     r"n[úu]m\.?\s*\d+$|"
     r"\d{1,2}\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|xaneiro|febreiro|maio|xu[ñn]o|xullo|setembro|outubro|novembro|decembro)\s+\d{4}$"
     r").*$"
@@ -280,7 +283,11 @@ def _format_plain_page_to_markdown(page_text: str) -> str:
             continue
 
         # Formatear encabezados estructurales jurídicos (exigiendo mayúscula inicial para no promocionar frases partidas)
-        if re.match(
+        if re.fullmatch(r"A\s{1,3}N\s{1,3}E\s{1,3}X\s{1,3}O", stripped):
+            cleaned_lines.append("\n## ANEXO\n")
+        elif re.fullmatch(r"DISPOSICIONES\s+(?:ADICIONALES|TRANSITORIAS|DEROGATORIAS|FINALES)", stripped):
+            cleaned_lines.append(f"\n## {stripped}\n")
+        elif re.match(
             r"^(?:CAP[ÍI]TULO|Cap[íi]tulo|T[ÍI]TULO|T[íi]tulo|ANEXO|Anexo)\s+(?!d[ée]cimo\b)[IVXLCDM0-9]+(?![IVXLCDM0-9])(?!\s*(?:,|(?i:del?\s+(?:presente\s+|vigente\s+|actual\s+|citado\s+)?(?:convenio|estatuto|real\s+decreto|ley)\b|de\s+este\s+convenio\b)))",
             stripped,
         ):
@@ -964,6 +971,8 @@ def _extract_clean_vector_table_page_cpu(doc: pymupdf.Document, page_idx: int) -
     cleaned_lines: list[str] = []
     for line in raw_md.splitlines():
         stripped = line.strip()
+        if re.fullmatch(r"_{10,}", stripped):
+            continue
         if _BULLETIN_HEADER_NOISE.match(re.sub(r"[*_#<>\s]+", " ", stripped).strip()):
             continue
         if re.fullmatch(r"[*_#\s]*\d{1,5}[*_#\s]*", stripped):
@@ -1314,6 +1323,41 @@ def _collect_vector_table_raw_rows(
         cell_x_bounds[c] if c < len(cell_x_bounds) else (0.0, 0.0)
         for c in keep_cols
     ]
+
+    # Fusiona columnas adyacentes mutuamente excluyentes provocadas por doble borde/padding interior (~<=12 pt)
+    ncols_t = len(trimmed[0]) if trimmed else 0
+    if ncols_t >= 2:
+        merged_cols_idx: list[int] = []
+        merged_x_bounds: list[tuple[float, float]] = []
+        col_map: list[list[int]] = []
+        c_idx = 0
+        while c_idx < ncols_t:
+            if (
+                c_idx + 1 < ncols_t
+                and abs(kept_x_bounds[c_idx + 1][0] - kept_x_bounds[c_idx][0]) <= 12.0
+                and all(not (r[c_idx] and r[c_idx + 1]) for r in trimmed)
+                and any(r[c_idx] for r in trimmed)
+                and any(r[c_idx + 1] for r in trimmed)
+            ):
+                col_map.append([c_idx, c_idx + 1])
+                merged_x_bounds.append(
+                    (
+                        min(kept_x_bounds[c_idx][0], kept_x_bounds[c_idx + 1][0]),
+                        max(kept_x_bounds[c_idx][1], kept_x_bounds[c_idx + 1][1]),
+                    )
+                )
+                c_idx += 2
+            else:
+                col_map.append([c_idx])
+                merged_x_bounds.append(kept_x_bounds[c_idx])
+                c_idx += 1
+        if len(col_map) < ncols_t:
+            trimmed = [
+                [next((r[ci] for ci in grp if r[ci]), "") for grp in col_map]
+                for r in trimmed
+            ]
+            kept_x_bounds = merged_x_bounds
+
     return trimmed, row_colspans, kept_x_bounds
 
 

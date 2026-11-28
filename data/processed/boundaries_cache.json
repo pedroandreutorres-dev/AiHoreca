@@ -479,5 +479,18 @@
       2026
     ],
     "justificacion": "BOP de Córdoba n.º 192 (04/10/2024), anuncio BOP-A-2024-3899, código REGCON 14000355011982: Convenio Colectivo para el Sector de Hostelería de la Provincia de Córdoba 2024-2026. Se omite la pág. 1 de resolución administrativa de registro y se incluye íntegramente el texto articulado (Arts. 1-69 y Disposición Adicional Única en págs. 2-45) junto con las Tablas Salariales 2024 (+3,3%, págs. 46-51), 2025 (+3,4%, págs. 52-57) y 2026 (+3,4%, págs. 58-63) por Área Funcional y categoría de establecimiento (5 estrellas/tenedores, 4/3 estrellas/tenedores y resto de establecimientos)."
+  },
+  "convenio_almeria.pdf": {
+    "doc_type": "convenio_hosteleria",
+    "doc_role": "completo",
+    "layout": "single_column",
+    "territorio": "almeria",
+    "start_page": 1,
+    "end_page": 18,
+    "start_marker": "CONVENIO COLECTIVO PROVINCIAL DE TRABAJO DE HOSTELERIA Y TURISMO 2025",
+    "expected_years": [
+      2025
+    ],
+    "justificacion": "BOP de Almería n.º 109 (10/06/2025), edicto 1527/25, código REGCON 04000365011982: Convenio Colectivo Provincial de Trabajo de Hostelería y Turismo de Almería 2025 (en ultraactividad en 2026 conforme al Art. 6 y art. 86.3 ET). Incluye desde la pág. 1 (a partir del start_marker, omitiendo el anuncio de registro) hasta la pág. 18 el texto articulado íntegro (Arts. 1-70), tablas salariales 2025 (Art. 31) y tabla de antigüedad 2025 (Art. 32), Disposiciones Adicionales 1ª-5ª y Anexo de Grupos Profesionales I-VI."
   }
 }
